@@ -99,7 +99,8 @@ fun ListenTogetherScreenHost(
     onSyncPlayerTogglePlayPause: () -> Unit,
     onSyncPlayerNext: () -> Unit,
     onForceResyncFromRoom: (ListenRoom) -> Unit,
-    onPlayRoomTrackLocally: (Track, List<Track>) -> Unit
+    onPlayRoomTrackLocally: (Track, List<Track>) -> Unit,
+    onQuickSearchTracks: suspend (String) -> List<Track>
 ) {
     BackHandler(onBack = onBack)
 
@@ -129,7 +130,8 @@ fun ListenTogetherScreenHost(
                     onSyncPlayerTogglePlayPause = onSyncPlayerTogglePlayPause,
                     onSyncPlayerNext = onSyncPlayerNext,
                     onForceResyncFromRoom = onForceResyncFromRoom,
-                    onPlayRoomTrackLocally = onPlayRoomTrackLocally
+                    onPlayRoomTrackLocally = onPlayRoomTrackLocally,
+                    onQuickSearchTracks = onQuickSearchTracks
                 )
             }
         }
@@ -365,7 +367,8 @@ private fun ListenTogetherSignedInScreen(
     onSyncPlayerTogglePlayPause: () -> Unit,
     onSyncPlayerNext: () -> Unit,
     onForceResyncFromRoom: (ListenRoom) -> Unit,
-    onPlayRoomTrackLocally: (Track, List<Track>) -> Unit
+    onPlayRoomTrackLocally: (Track, List<Track>) -> Unit,
+    onQuickSearchTracks: suspend (String) -> List<Track>
 ) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
@@ -397,8 +400,12 @@ private fun ListenTogetherSignedInScreen(
                 onToggleGuestsControl = { listenViewModel.toggleGuestsCanControl(it) },
                 onTogglePlayPause = onSyncPlayerTogglePlayPause,
                 onSkipNext = onSyncPlayerNext,
+                onToggleVoteSkip = { listenViewModel.toggleVoteSkip() },
                 onForceResync = { onForceResyncFromRoom(activeRoom) },
-                onAddCurrentTrackToRoomQueue = { track -> listenViewModel.addTrackToRoomQueue(track) },
+                onAddTrackToRoomQueue = { track, playNext -> listenViewModel.addTrackToRoomQueue(track, playNext) },
+                onUpvoteSharedQueueIndex = { idx -> listenViewModel.upvoteRoomQueueTrack(idx) },
+                onMoveSharedQueueItem = { from, to -> listenViewModel.moveRoomQueueTrack(from, to) },
+                onRemoveSharedQueueIndex = { idx -> listenViewModel.removeRoomQueueTrack(idx) },
                 onPlaySharedQueueIndex = { index ->
                     val queue = activeRoom.parsedQueue()
                     val chosen = queue.getOrNull(index)
@@ -407,7 +414,9 @@ private fun ListenTogetherSignedInScreen(
                         onPlayRoomTrackLocally(chosen.toTrack(), queue.map { it.toTrack() })
                     }
                 },
+                onSendChatMessage = { text -> listenViewModel.sendChatMessage(text) },
                 onSendReaction = { emoji -> listenViewModel.sendReaction(emoji) },
+                onQuickSearchTracks = onQuickSearchTracks,
                 onLeaveOrEnd = { listenViewModel.leaveOrEndCurrentRoom() },
                 onShowSnackbar = onShowSnackbar
             )

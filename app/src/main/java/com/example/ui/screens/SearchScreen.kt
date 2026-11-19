@@ -57,6 +57,7 @@ import com.example.model.ArtistSummary
 import com.example.model.RemotePlaylistSummary
 import com.example.model.Track
 import com.example.ui.components.AlbumArtImage
+import com.example.ui.components.SearchResultsSkeletonShimmer
 import com.example.ui.components.SectionHeader
 import com.example.ui.components.TrackRowItem
 import com.example.viewmodel.SearchUiState
@@ -339,14 +340,7 @@ fun SearchScreen(
                 }
             } else if (searchState.isSearching) {
                 item {
-                    Box(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(vertical = 48.dp),
-                        contentAlignment = Alignment.Center
-                    ) {
-                        CircularProgressIndicator(color = MaterialTheme.colorScheme.primary)
-                    }
+                    SearchResultsSkeletonShimmer()
                 }
             } else if (searchState.errorMessage != null) {
                 item {

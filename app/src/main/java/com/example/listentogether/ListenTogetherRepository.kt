@@ -18,6 +18,7 @@ import kotlinx.coroutines.flow.emitAll
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.tasks.await
+import java.util.UUID
 
 class ListenTogetherRepository(
     private val db: FirebaseFirestore,
@@ -136,7 +137,6 @@ class ListenTogetherRepository(
             val safeRoomName = roomName.trim().ifBlank { "Ruang Koplingfy" }.take(60)
             val safeHostName = hostName.trim().ifBlank { "Host" }.take(60)
 
-            // Find an unused 6-char room code
             var roomCode = QrCodeUtils.generateRoomCode()
             for (attempt in 0 until 5) {
                 val snap = db.collection("listen_rooms").document(roomCode).get().await()
@@ -145,8 +145,9 @@ class ListenTogetherRepository(
             }
 
             docPath = "listen_rooms/$roomCode"
+            val safeTrack = initialTrack?.takeUnless { it.isLocal }
             val queueMaps = initialQueue
-                .filter { !it.isLocal }
+                .filter { !it.isLocal && it.id != safeTrack?.id }
                 .take(25)
                 .map { t ->
                     RoomQueueTrack(
@@ -157,11 +158,11 @@ class ListenTogetherRepository(
                         artworkUrl = t.artworkUrl.orEmpty(),
                         durationMs = t.durationMs,
                         addedByName = safeHostName,
-                        addedByUid = uid
+                        addedByUid = uid,
+                        upvoterUids = listOf(uid)
                     ).toFirestoreMap()
                 }
 
-            val safeTrack = initialTrack?.takeUnless { it.isLocal }
             val payload = mapOf(
                 "hostUid" to uid,
                 "hostName" to safeHostName,
@@ -180,6 +181,8 @@ class ListenTogetherRepository(
                 "positionMs" to if (safeTrack != null) initialPositionMs.coerceIn(0L, 86_400_000L) else 0L,
                 "syncSequence" to 1L,
                 "queueTracks" to queueMaps,
+                "chatMessages" to emptyList<Map<String, Any>>(),
+                "skipVoteUids" to emptyList<String>(),
                 "lastActionBy" to "$safeHostName membuat ruang".take(140),
                 "createdAt" to FieldValue.serverTimestamp(),
                 "updatedAt" to FieldValue.serverTimestamp()
@@ -254,6 +257,7 @@ class ListenTogetherRepository(
             val safeName = displayName.trim().ifBlank { "Pendengar" }.take(60)
             val updatedUids = room.memberUids.filterNot { it == uid }
             val updatedNames = room.memberNames.filterNot { it.startsWith("$uid|") }
+            val updatedVotes = room.skipVoteUids.filterNot { it == uid }
             if (updatedUids.isEmpty()) return Result.success(Unit)
 
             db.collection("listen_rooms").document(room.roomCode)
@@ -261,6 +265,7 @@ class ListenTogetherRepository(
                     mapOf(
                         "memberUids" to updatedUids,
                         "memberNames" to updatedNames,
+                        "skipVoteUids" to updatedVotes,
                         "lastActionBy" to "$safeName keluar ruang".take(140),
                         "updatedAt" to FieldValue.serverTimestamp()
                     )
@@ -342,6 +347,7 @@ class ListenTogetherRepository(
             if (room.status != "active") return Result.success(room.syncSequence)
             val nextSeq = room.syncSequence + 1L
             val safeTrack = track?.takeUnless { it.isLocal }
+            val trackChanged = safeTrack != null && safeTrack.id != room.currentTrackId
 
             val updates = mutableMapOf<String, Any>(
                 "playing" to playing,
@@ -358,6 +364,9 @@ class ListenTogetherRepository(
                 updates["currentTrackArtwork"] = (safeTrack.artworkUrl ?: "").take(600)
                 updates["currentTrackDurationMs"] = safeTrack.durationMs.coerceIn(0L, 86_400_000L)
             }
+            if (trackChanged) {
+                updates["skipVoteUids"] = emptyList<String>()
+            }
             if (queueTracks != null) {
                 updates["queueTracks"] = queueTracks.take(30).map { it.toFirestoreMap() }
             }
@@ -372,10 +381,12 @@ class ListenTogetherRepository(
         }
     }
 
+    // ---- Collaborative Antrian Bersama (Any joined member can contribute!) ----
     suspend fun addTrackToSharedQueue(
         room: ListenRoom,
         actorName: String,
-        track: Track
+        track: Track,
+        playNext: Boolean = false
     ): Result<Unit> {
         val docPath = "listen_rooms/${room.roomCode}"
         return try {
@@ -385,7 +396,7 @@ class ListenTogetherRepository(
             }
             val currentQueue = room.parsedQueue()
             if (currentQueue.size >= 30) {
-                return Result.failure(IllegalStateException("Antrean bersama penuh (maksimal 30 lagu)."))
+                return Result.failure(IllegalStateException("Antrian bersama penuh (maksimal 30 lagu)."))
             }
             val safeActor = actorName.trim().ifBlank { "Pendengar" }.take(60)
             val newItem = RoomQueueTrack(
@@ -396,19 +407,245 @@ class ListenTogetherRepository(
                 artworkUrl = track.artworkUrl.orEmpty(),
                 durationMs = track.durationMs,
                 addedByName = safeActor,
-                addedByUid = uid
+                addedByUid = uid,
+                upvoterUids = listOf(uid)
             )
-            val updatedQueue = (currentQueue + newItem).take(30).map { it.toFirestoreMap() }
+            val updatedList = if (playNext) {
+                (listOf(newItem) + currentQueue).take(30)
+            } else {
+                (currentQueue + newItem).take(30)
+            }
+            val verb = if (playNext) "menempatkan di urutan berikutnya" else "menambahkan ke antrian bersama"
             db.collection("listen_rooms").document(room.roomCode)
                 .update(
                     mapOf(
-                        "queueTracks" to updatedQueue,
+                        "queueTracks" to updatedList.map { it.toFirestoreMap() },
                         "syncSequence" to (room.syncSequence + 1L),
-                        "lastActionBy" to "$safeActor menambahkan \"${track.title}\"".take(140),
+                        "lastActionBy" to "$safeActor $verb: \"${track.title}\"".take(140),
                         "updatedAt" to FieldValue.serverTimestamp()
                     )
                 ).await()
             Result.success(Unit)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            handleFirestoreError(e, OperationType.UPDATE, docPath)
+            Result.failure(e)
+        }
+    }
+
+    suspend fun toggleUpvoteSharedQueueTrack(
+        room: ListenRoom,
+        actorName: String,
+        index: Int
+    ): Result<Unit> {
+        val docPath = "listen_rooms/${room.roomCode}"
+        return try {
+            val uid = requireUserId()
+            val queue = room.parsedQueue().toMutableList()
+            val target = queue.getOrNull(index) ?: return Result.success(Unit)
+            val alreadyUpvoted = uid in target.upvoterUids
+            val nextUpvoters = if (alreadyUpvoted) {
+                target.upvoterUids.filterNot { it == uid }
+            } else {
+                (target.upvoterUids + uid).distinct().take(25)
+            }
+            queue[index] = target.copy(upvoterUids = nextUpvoters)
+            // Stable sort: higher upvote count rises toward top of the collaborative queue
+            val sorted = queue.sortedByDescending { it.upvoterUids.size }
+            val safeActor = actorName.trim().ifBlank { "Pendengar" }.take(60)
+            val action = if (alreadyUpvoted) {
+                "$safeActor membatalkan vote \"${target.title}\""
+            } else {
+                "🔥 $safeActor menaikkan \"${target.title}\" (${nextUpvoters.size} vote)"
+            }
+            db.collection("listen_rooms").document(room.roomCode)
+                .update(
+                    mapOf(
+                        "queueTracks" to sorted.take(30).map { it.toFirestoreMap() },
+                        "syncSequence" to (room.syncSequence + 1L),
+                        "lastActionBy" to action.take(140),
+                        "updatedAt" to FieldValue.serverTimestamp()
+                    )
+                ).await()
+            Result.success(Unit)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            handleFirestoreError(e, OperationType.UPDATE, docPath)
+            Result.failure(e)
+        }
+    }
+
+    suspend fun moveSharedQueueTrack(
+        room: ListenRoom,
+        actorName: String,
+        fromIndex: Int,
+        toIndex: Int
+    ): Result<Unit> {
+        val docPath = "listen_rooms/${room.roomCode}"
+        return try {
+            requireUserId()
+            val queue = room.parsedQueue().toMutableList()
+            if (fromIndex !in queue.indices || toIndex !in queue.indices || fromIndex == toIndex) {
+                return Result.success(Unit)
+            }
+            val item = queue.removeAt(fromIndex)
+            queue.add(toIndex, item)
+            val safeActor = actorName.trim().ifBlank { "Pendengar" }.take(60)
+            db.collection("listen_rooms").document(room.roomCode)
+                .update(
+                    mapOf(
+                        "queueTracks" to queue.take(30).map { it.toFirestoreMap() },
+                        "syncSequence" to (room.syncSequence + 1L),
+                        "lastActionBy" to "$safeActor mengatur ulang antrian bersama".take(140),
+                        "updatedAt" to FieldValue.serverTimestamp()
+                    )
+                ).await()
+            Result.success(Unit)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            handleFirestoreError(e, OperationType.UPDATE, docPath)
+            Result.failure(e)
+        }
+    }
+
+    suspend fun removeSharedQueueTrack(
+        room: ListenRoom,
+        actorName: String,
+        index: Int
+    ): Result<Unit> {
+        val docPath = "listen_rooms/${room.roomCode}"
+        return try {
+            requireUserId()
+            val queue = room.parsedQueue().toMutableList()
+            val removed = queue.getOrNull(index) ?: return Result.success(Unit)
+            queue.removeAt(index)
+            val safeActor = actorName.trim().ifBlank { "Pendengar" }.take(60)
+            db.collection("listen_rooms").document(room.roomCode)
+                .update(
+                    mapOf(
+                        "queueTracks" to queue.take(30).map { it.toFirestoreMap() },
+                        "syncSequence" to (room.syncSequence + 1L),
+                        "lastActionBy" to "$safeActor menghapus \"${removed.title}\" dari antrian".take(140),
+                        "updatedAt" to FieldValue.serverTimestamp()
+                    )
+                ).await()
+            Result.success(Unit)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            handleFirestoreError(e, OperationType.UPDATE, docPath)
+            Result.failure(e)
+        }
+    }
+
+    // ---- Live Chat in Play Bersama ----
+    suspend fun sendChatMessage(
+        room: ListenRoom,
+        senderName: String,
+        text: String
+    ): Result<Unit> {
+        val docPath = "listen_rooms/${room.roomCode}"
+        return try {
+            val uid = requireUserId()
+            val cleaned = text.trim().take(240)
+            if (cleaned.isBlank()) return Result.success(Unit)
+            val safeSender = senderName.trim().ifBlank { "Pendengar" }.take(60)
+            val newMsg = RoomChatMessage(
+                id = UUID.randomUUID().toString().take(12),
+                uid = uid,
+                senderName = safeSender,
+                text = cleaned,
+                sentAtMs = System.currentTimeMillis()
+            )
+            val updated = (room.parsedChatMessages() + newMsg).takeLast(40).map { it.toFirestoreMap() }
+            db.collection("listen_rooms").document(room.roomCode)
+                .update(
+                    mapOf(
+                        "chatMessages" to updated,
+                        "lastActionBy" to "💬 $safeSender: $cleaned".take(140),
+                        "updatedAt" to FieldValue.serverTimestamp()
+                    )
+                ).await()
+            Result.success(Unit)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            handleFirestoreError(e, OperationType.UPDATE, docPath)
+            Result.failure(e)
+        }
+    }
+
+    // ---- Vote Skip (Majority auto-advances to next shared queue track!) ----
+    suspend fun toggleVoteSkip(
+        room: ListenRoom,
+        actorName: String
+    ): Result<Boolean> {
+        val docPath = "listen_rooms/${room.roomCode}"
+        return try {
+            val uid = requireUserId()
+            if (room.status != "active") return Result.success(false)
+            val safeActor = actorName.trim().ifBlank { "Pendengar" }.take(60)
+            val currentVotes = room.skipVoteUids.filter { it in room.memberUids }.distinct()
+            val alreadyVoted = uid in currentVotes
+
+            if (alreadyVoted) {
+                val updated = currentVotes.filterNot { it == uid }
+                db.collection("listen_rooms").document(room.roomCode)
+                    .update(
+                        mapOf(
+                            "skipVoteUids" to updated,
+                            "lastActionBy" to "$safeActor membatalkan Vote Skip (${updated.size}/${room.votesNeededToSkip()})".take(140),
+                            "updatedAt" to FieldValue.serverTimestamp()
+                        )
+                    ).await()
+                return Result.success(false)
+            }
+
+            val nextVotes = (currentVotes + uid).distinct()
+            val reachedMajority = nextVotes.size * 2 > room.memberUids.size
+            val queue = room.parsedQueue()
+
+            if (reachedMajority && queue.isNotEmpty()) {
+                val nextTrack = queue.first()
+                val remaining = queue.drop(1).map { it.toFirestoreMap() }
+                db.collection("listen_rooms").document(room.roomCode)
+                    .update(
+                        mapOf(
+                            "currentTrackId" to nextTrack.trackId.take(128),
+                            "currentTrackTitle" to nextTrack.title.take(200),
+                            "currentTrackArtist" to nextTrack.artist.take(200),
+                            "currentTrackAlbum" to nextTrack.album.take(200),
+                            "currentTrackArtwork" to nextTrack.artworkUrl.take(600),
+                            "currentTrackDurationMs" to nextTrack.durationMs.coerceIn(0L, 86_400_000L),
+                            "playing" to true,
+                            "positionMs" to 0L,
+                            "syncSequence" to (room.syncSequence + 1L),
+                            "queueTracks" to remaining,
+                            "skipVoteUids" to emptyList<String>(),
+                            "lastActionBy" to "⏭️ Vote Skip tercapai! Memutar \"${nextTrack.title}\"".take(140),
+                            "updatedAt" to FieldValue.serverTimestamp()
+                        )
+                    ).await()
+                Result.success(true)
+            } else {
+                val note = if (reachedMajority && queue.isEmpty()) {
+                    "⏭️ Vote Skip tercapai (${nextVotes.size}/${room.votesNeededToSkip()}), tambahkan lagu ke antrian!"
+                } else {
+                    "⏭️ $safeActor vote skip (${nextVotes.size}/${room.votesNeededToSkip()})"
+                }
+                db.collection("listen_rooms").document(room.roomCode)
+                    .update(
+                        mapOf(
+                            "skipVoteUids" to nextVotes.take(25),
+                            "lastActionBy" to note.take(140),
+                            "updatedAt" to FieldValue.serverTimestamp()
+                        )
+                    ).await()
+                Result.success(false)
+            }
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {

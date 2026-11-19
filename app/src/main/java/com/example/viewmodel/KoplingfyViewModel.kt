@@ -30,6 +30,7 @@ import com.example.model.ThemeMode
 import com.example.model.Track
 import com.example.model.YouTubeAccount
 import com.example.player.KoplingfyAudioEngine
+import com.example.player.KoplingfyMediaBridge
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -179,11 +180,32 @@ class KoplingfyViewModel(application: Application) : AndroidViewModel(applicatio
     private var detailObserveJob: Job? = null
 
     init {
+        registerMediaBridgeCallbacks()
         observeAudioEngine()
         observeSettingsForAudio()
         observeAccountAuth()
         refreshStorageStats()
         loadHomeFeed(KoplingfyMoods.allMoods.first())
+    }
+
+    private fun registerMediaBridgeCallbacks() {
+        KoplingfyMediaBridge.onTogglePlayPause = { togglePlayPause() }
+        KoplingfyMediaBridge.onPlay = { audioEngine.resume() }
+        KoplingfyMediaBridge.onPause = { audioEngine.pause() }
+        KoplingfyMediaBridge.onNext = { skipNext() }
+        KoplingfyMediaBridge.onPrevious = { skipPrevious() }
+        KoplingfyMediaBridge.onSeekTo = { seekTo(it) }
+    }
+
+    private fun publishMediaBridgeState(state: PlayerUiState) {
+        KoplingfyMediaBridge.publishState(
+            context = getApplication(),
+            track = state.currentTrack,
+            isPlaying = state.isPlaying,
+            isBuffering = state.isBuffering,
+            positionMs = state.positionMs,
+            durationMs = state.durationMs
+        )
     }
 
     private fun observeAccountAuth() {
@@ -197,15 +219,19 @@ class KoplingfyViewModel(application: Application) : AndroidViewModel(applicatio
     private fun observeAudioEngine() {
         viewModelScope.launch {
             audioEngine.state.collectLatest { engine ->
+                var updatedState: PlayerUiState? = null
                 _playerState.update { state ->
-                    state.copy(
+                    val next = state.copy(
                         isPlaying = engine.isPlaying,
                         isBuffering = engine.isBuffering,
                         positionMs = engine.positionMs,
                         durationMs = if (engine.durationMs > 0) engine.durationMs else state.currentTrack?.durationMs ?: 0L,
                         audioError = engine.errorMessage ?: state.audioError
                     )
+                    updatedState = next
+                    next
                 }
+                updatedState?.let { publishMediaBridgeState(it) }
             }
         }
     }
@@ -216,8 +242,14 @@ class KoplingfyViewModel(application: Application) : AndroidViewModel(applicatio
                 audioEngine.updatePlaybackParams(cfg.playbackSpeed, cfg.playbackPitch)
                 audioEngine.updateEqualizerBands(cfg.customBandsDb)
                 audioEngine.updateBassBoostAndNormalization(cfg.bassBoostStrength, cfg.normalizeAudio)
+                audioEngine.updateCrossfadeSeconds(cfg.crossfadeSeconds)
             }
         }
+    }
+
+    suspend fun quickSearchTracksForSharedQueue(query: String): List<Track> {
+        if (query.isBlank()) return emptyList()
+        return repository.fetchTracksByQuery(query.trim(), limit = 15)
     }
 
     // ---- Home & Explore ----
@@ -1016,6 +1048,8 @@ class KoplingfyViewModel(application: Application) : AndroidViewModel(applicatio
     fun setPlaybackSpeed(speed: Float) = viewModelScope.launch { preferences.setPlaybackSpeed(speed) }
     fun setPlaybackPitch(pitch: Float) = viewModelScope.launch { preferences.setPlaybackPitch(pitch) }
     fun setGaplessPlayback(enabled: Boolean) = viewModelScope.launch { preferences.setGaplessPlayback(enabled) }
+    fun setDynamicArtworkColor(enabled: Boolean) = viewModelScope.launch { preferences.setDynamicArtworkColor(enabled) }
+    fun setCrossfadeSeconds(seconds: Int) = viewModelScope.launch { preferences.setCrossfadeSeconds(seconds) }
 
     fun showMessage(msg: String) {
         _snackbarMessage.value = msg

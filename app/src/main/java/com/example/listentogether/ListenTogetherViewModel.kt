@@ -286,18 +286,82 @@ class ListenTogetherViewModel(
         }
     }
 
-    fun addTrackToRoomQueue(track: Track) {
+    fun addTrackToRoomQueue(track: Track, playNext: Boolean = false) {
         val room = _sessionState.value.activeRoom ?: return
-        if (!_sessionState.value.canControl(currentUserId)) {
-            _sessionState.update { it.copy(errorMessage = "Hanya Host yang dapat mengubah antrean saat ini.") }
+        if (room.status != "active" || currentUserId !in room.memberUids) {
+            _sessionState.update { it.copy(errorMessage = "Gabung ke ruang aktif untuk menambah antrian bersama.") }
             return
         }
         viewModelScope.launch {
-            val res = repository.addTrackToSharedQueue(room, currentUserName, track)
+            val res = repository.addTrackToSharedQueue(room, currentUserName, track, playNext = playNext)
             res.onSuccess {
-                _sessionState.update { it.copy(statusMessage = "\"${track.title}\" ditambahkan ke antrean bersama") }
+                val msg = if (playNext) {
+                    "\"${track.title}\" ditempatkan berikutnya di antrian bersama"
+                } else {
+                    "\"${track.title}\" ditambahkan ke antrian bersama"
+                }
+                _sessionState.update { it.copy(statusMessage = msg) }
             }.onFailure { err ->
-                _sessionState.update { it.copy(errorMessage = err.message ?: "Gagal menambahkan lagu ke antrean ruang") }
+                _sessionState.update { it.copy(errorMessage = err.message ?: "Gagal menambahkan lagu ke antrian ruang") }
+            }
+        }
+    }
+
+    fun upvoteRoomQueueTrack(index: Int) {
+        val room = _sessionState.value.activeRoom ?: return
+        if (room.status != "active" || currentUserId !in room.memberUids) return
+        viewModelScope.launch {
+            val res = repository.toggleUpvoteSharedQueueTrack(room, currentUserName, index)
+            res.onFailure { err ->
+                _sessionState.update { it.copy(errorMessage = err.message ?: "Gagal memberi vote lagu") }
+            }
+        }
+    }
+
+    fun moveRoomQueueTrack(fromIndex: Int, toIndex: Int) {
+        val room = _sessionState.value.activeRoom ?: return
+        if (room.status != "active" || currentUserId !in room.memberUids) return
+        viewModelScope.launch {
+            val res = repository.moveSharedQueueTrack(room, currentUserName, fromIndex, toIndex)
+            res.onFailure { err ->
+                _sessionState.update { it.copy(errorMessage = err.message ?: "Gagal memindahkan urutan antrian") }
+            }
+        }
+    }
+
+    fun removeRoomQueueTrack(index: Int) {
+        val room = _sessionState.value.activeRoom ?: return
+        if (room.status != "active" || currentUserId !in room.memberUids) return
+        viewModelScope.launch {
+            val res = repository.removeSharedQueueTrack(room, currentUserName, index)
+            res.onFailure { err ->
+                _sessionState.update { it.copy(errorMessage = err.message ?: "Gagal menghapus lagu dari antrian") }
+            }
+        }
+    }
+
+    fun sendChatMessage(text: String) {
+        val room = _sessionState.value.activeRoom ?: return
+        if (room.status != "active" || currentUserId !in room.memberUids) return
+        viewModelScope.launch {
+            val res = repository.sendChatMessage(room, currentUserName, text)
+            res.onFailure { err ->
+                _sessionState.update { it.copy(errorMessage = err.message ?: "Gagal mengirim pesan obrolan") }
+            }
+        }
+    }
+
+    fun toggleVoteSkip() {
+        val room = _sessionState.value.activeRoom ?: return
+        if (room.status != "active" || currentUserId !in room.memberUids) return
+        viewModelScope.launch {
+            val res = repository.toggleVoteSkip(room, currentUserName)
+            res.onSuccess { skipped ->
+                if (skipped) {
+                    _sessionState.update { it.copy(statusMessage = "Vote Skip tercapai! Beralih ke lagu berikutnya.") }
+                }
+            }.onFailure { err ->
+                _sessionState.update { it.copy(errorMessage = err.message ?: "Gagal memproses Vote Skip") }
             }
         }
     }

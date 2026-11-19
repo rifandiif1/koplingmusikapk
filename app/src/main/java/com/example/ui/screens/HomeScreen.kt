@@ -61,6 +61,7 @@ import com.example.model.Track
 import com.example.model.YouTubeAccount
 import com.example.ui.components.AlbumArtImage
 import com.example.ui.components.GlassActionPill
+import com.example.ui.components.HomeFeedSkeletonShimmer
 import com.example.ui.components.SectionHeader
 import com.example.ui.components.TrackRowItem
 import com.example.viewmodel.HomeUiState
@@ -183,25 +184,7 @@ fun HomeScreen(
             // ---- Loading or Error Banner ----
             if (homeState.isLoading) {
                 item {
-                    Box(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(vertical = 32.dp),
-                        contentAlignment = Alignment.Center
-                    ) {
-                        Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                            CircularProgressIndicator(
-                                color = MaterialTheme.colorScheme.primary,
-                                strokeWidth = 3.dp
-                            )
-                            Spacer(modifier = Modifier.height(12.dp))
-                            Text(
-                                text = "Menyiapkan kurasi ${homeState.selectedMood.label}…",
-                                style = MaterialTheme.typography.bodyMedium,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
-                            )
-                        }
-                    }
+                    HomeFeedSkeletonShimmer()
                 }
             } else if (homeState.errorMessage != null) {
                 item {

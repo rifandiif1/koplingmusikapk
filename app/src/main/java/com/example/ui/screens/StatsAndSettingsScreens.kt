@@ -1,5 +1,6 @@
 package com.example.ui.screens
 
+import android.content.Intent
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Canvas
@@ -26,10 +27,12 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.ArrowBack
 import androidx.compose.material.icons.rounded.AccountCircle
 import androidx.compose.material.icons.rounded.Album
+import androidx.compose.material.icons.rounded.AutoAwesome
 import androidx.compose.material.icons.rounded.Backup
 import androidx.compose.material.icons.rounded.Check
 import androidx.compose.material.icons.rounded.CleaningServices
 import androidx.compose.material.icons.rounded.DeleteSweep
+import androidx.compose.material.icons.rounded.Download
 import androidx.compose.material.icons.rounded.Equalizer
 import androidx.compose.material.icons.rounded.GraphicEq
 import androidx.compose.material.icons.rounded.HighQuality
@@ -37,6 +40,7 @@ import androidx.compose.material.icons.rounded.Login
 import androidx.compose.material.icons.rounded.Logout
 import androidx.compose.material.icons.rounded.Palette
 import androidx.compose.material.icons.rounded.Restore
+import androidx.compose.material.icons.rounded.Share
 import androidx.compose.material.icons.rounded.Storage
 import androidx.compose.material.icons.rounded.Sync
 import androidx.compose.material3.Button
@@ -45,10 +49,16 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.RadioButton
+import androidx.compose.material3.Slider
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -57,12 +67,14 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import com.example.R
 import com.example.model.AccentPreset
 import com.example.model.AudioQuality
@@ -75,17 +87,26 @@ import com.example.model.ThemeMode
 import com.example.model.Track
 import com.example.model.YouTubeAccount
 import com.example.ui.components.AlbumArtImage
+import com.example.ui.components.RecapCardGenerator
 import com.example.ui.components.SectionHeader
 import com.example.viewmodel.StorageStats
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 @Composable
 fun StatsScreen(
     stats: ListeningStats,
     bottomContentPadding: Dp,
     onBack: () -> Unit,
-    onPlayTrack: (Track, List<Track>) -> Unit
+    onPlayTrack: (Track, List<Track>) -> Unit,
+    onShowSnackbar: (String) -> Unit = {}
 ) {
     BackHandler(onBack = onBack)
+    val context = LocalContext.current
+    val scope = rememberCoroutineScope()
+    var isSavingRecap by remember { mutableStateOf(false) }
+    val (personaTitle, personaDesc) = remember(stats) { RecapCardGenerator.computePersona(stats) }
 
     LazyColumn(
         modifier = Modifier
@@ -96,7 +117,167 @@ fun StatsScreen(
         verticalArrangement = Arrangement.spacedBy(20.dp)
     ) {
         item {
-            SubScreenTopBar(title = "Statistik Dengar", subtitle = "Ringkasan aktivitas musikmu", onBack = onBack)
+            SubScreenTopBar(title = "Statistik & Recap", subtitle = "Ringkasan & kartu gaya dengar musikmu", onBack = onBack)
+        }
+
+        // ---- Koplingfy Recap Poster Card ----
+        item {
+            Surface(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 20.dp),
+                shape = RoundedCornerShape(26.dp),
+                border = BorderStroke(1.2.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.45f)),
+                shadowElevation = 10.dp
+            ) {
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .background(
+                            Brush.linearGradient(
+                                listOf(
+                                    MaterialTheme.colorScheme.primary.copy(alpha = 0.24f),
+                                    MaterialTheme.colorScheme.surface,
+                                    MaterialTheme.colorScheme.secondary.copy(alpha = 0.16f)
+                                )
+                            )
+                        )
+                        .padding(20.dp)
+                ) {
+                    Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            Icon(
+                                imageVector = Icons.Rounded.AutoAwesome,
+                                contentDescription = null,
+                                tint = MaterialTheme.colorScheme.primary,
+                                modifier = Modifier.size(18.dp)
+                            )
+                            Text(
+                                text = "KOPLINGFY RECAP",
+                                style = MaterialTheme.typography.labelMedium,
+                                fontWeight = FontWeight.ExtraBold,
+                                letterSpacing = 1.6.sp,
+                                color = MaterialTheme.colorScheme.primary
+                            )
+                        }
+
+                        Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                            Text(
+                                text = personaTitle,
+                                style = MaterialTheme.typography.headlineSmall,
+                                fontWeight = FontWeight.ExtraBold,
+                                color = MaterialTheme.colorScheme.onSurface
+                            )
+                            Text(
+                                text = personaDesc,
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+
+                        val topArtistName = stats.topArtists.firstOrNull()?.artist ?: "Belum ada artis favorit"
+                        val topTrackName = stats.topTracks.firstOrNull()?.let { "${it.track.title} — ${it.track.artist}" }
+                            ?: "Mulai putar lagu untuk mengisi Recap"
+
+                        Surface(
+                            shape = RoundedCornerShape(16.dp),
+                            color = MaterialTheme.colorScheme.surfaceContainerHigh.copy(alpha = 0.8f),
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Column(
+                                modifier = Modifier.padding(14.dp),
+                                verticalArrangement = Arrangement.spacedBy(6.dp)
+                            ) {
+                                Text(
+                                    text = "Artis #1: $topArtistName",
+                                    style = MaterialTheme.typography.labelLarge,
+                                    fontWeight = FontWeight.Bold,
+                                    color = MaterialTheme.colorScheme.primary,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+                                Text(
+                                    text = "Lagu #1: $topTrackName",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurface,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+                            }
+                        }
+
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(10.dp)
+                        ) {
+                            Button(
+                                onClick = {
+                                    if (isSavingRecap) return@Button
+                                    isSavingRecap = true
+                                    scope.launch {
+                                        val res = withContext(Dispatchers.IO) {
+                                            RecapCardGenerator.saveRecapToGallery(context, stats)
+                                        }
+                                        isSavingRecap = false
+                                        if (res.isSuccess) {
+                                            onShowSnackbar("Poster Koplingfy Recap disimpan ke Galeri!")
+                                        } else {
+                                            onShowSnackbar("Gagal menyimpan Recap: ${res.exceptionOrNull()?.message}")
+                                        }
+                                    }
+                                },
+                                enabled = !isSavingRecap,
+                                shape = RoundedCornerShape(14.dp),
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .height(46.dp)
+                                    .testTag("save_recap_card_button")
+                            ) {
+                                if (isSavingRecap) {
+                                    CircularProgressIndicator(
+                                        modifier = Modifier.size(18.dp),
+                                        strokeWidth = 2.dp,
+                                        color = MaterialTheme.colorScheme.onPrimary
+                                    )
+                                } else {
+                                    Icon(Icons.Rounded.Download, contentDescription = null, modifier = Modifier.size(18.dp))
+                                    Spacer(modifier = Modifier.width(6.dp))
+                                    Text("Simpan Poster", fontWeight = FontWeight.Bold, maxLines = 1)
+                                }
+                            }
+
+                            OutlinedButton(
+                                onClick = {
+                                    val shareText = buildString {
+                                        appendLine("🎵 Koplingfy Recap Saya")
+                                        appendLine("Persona: $personaTitle")
+                                        appendLine("Total Putar: ${stats.totalPlays}x • ${stats.totalMinutes} menit aktif")
+                                        stats.topArtists.firstOrNull()?.let { appendLine("Artis #1: ${it.artist}") }
+                                        stats.topTracks.firstOrNull()?.let { appendLine("Lagu #1: ${it.track.title} — ${it.track.artist}") }
+                                    }
+                                    val intent = Intent(Intent.ACTION_SEND).apply {
+                                        type = "text/plain"
+                                        putExtra(Intent.EXTRA_SUBJECT, "Koplingfy Recap")
+                                        putExtra(Intent.EXTRA_TEXT, shareText)
+                                    }
+                                    runCatching { context.startActivity(Intent.createChooser(intent, "Bagikan Koplingfy Recap")) }
+                                },
+                                shape = RoundedCornerShape(14.dp),
+                                modifier = Modifier
+                                    .height(46.dp)
+                                    .testTag("share_recap_button")
+                            ) {
+                                Icon(Icons.Rounded.Share, contentDescription = "Bagikan Recap", modifier = Modifier.size(18.dp))
+                                Spacer(modifier = Modifier.width(6.dp))
+                                Text("Bagikan")
+                            }
+                        }
+                    }
+                }
+            }
         }
 
         item {
@@ -349,6 +530,8 @@ fun SettingsScreen(
     onAutoplayRadioChange: (Boolean) -> Unit,
     onKeepScreenOnLyricsChange: (Boolean) -> Unit,
     onGaplessChange: (Boolean) -> Unit,
+    onDynamicArtworkColorChange: (Boolean) -> Unit = {},
+    onCrossfadeSecondsChange: (Int) -> Unit = {},
     onClearCache: () -> Unit,
     onClearDownloads: () -> Unit,
     onExportBackup: () -> Unit,
@@ -555,6 +738,12 @@ fun SettingsScreen(
                     }
                 }
                 SettingsToggleRow(
+                    title = "Warna Dinamis Sampul Album",
+                    subtitle = "Sesuaikan aksen pemutar & gradien mengikuti sampul lagu",
+                    checked = settings.dynamicArtworkColor,
+                    onCheckedChange = onDynamicArtworkColorChange
+                )
+                SettingsToggleRow(
                     title = "Layar Tetap Menyala Saat Lirik",
                     subtitle = "Cegah layar mati otomatis saat membaca lirik",
                     checked = settings.keepScreenOnLyrics,
@@ -603,6 +792,30 @@ fun SettingsScreen(
                     subtitle = "Transisi cepat antar lagu dalam antrean",
                     checked = settings.gaplessPlayback,
                     onCheckedChange = onGaplessChange
+                )
+
+                Spacer(modifier = Modifier.height(6.dp))
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(
+                        text = "Crossfade Transisi Lagu",
+                        style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.SemiBold)
+                    )
+                    Text(
+                        text = if (settings.crossfadeSeconds == 0) "Mati" else "${settings.crossfadeSeconds} detik",
+                        style = MaterialTheme.typography.labelMedium,
+                        color = MaterialTheme.colorScheme.primary
+                    )
+                }
+                Slider(
+                    value = settings.crossfadeSeconds.toFloat(),
+                    onValueChange = { onCrossfadeSecondsChange(it.toInt().coerceIn(0, 10)) },
+                    valueRange = 0f..10f,
+                    steps = 9,
+                    modifier = Modifier.testTag("settings_crossfade_slider")
                 )
 
                 Spacer(modifier = Modifier.height(8.dp))

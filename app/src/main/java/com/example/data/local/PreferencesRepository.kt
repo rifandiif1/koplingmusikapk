@@ -4,6 +4,7 @@ import android.content.Context
 import androidx.datastore.preferences.core.booleanPreferencesKey
 import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.floatPreferencesKey
+import androidx.datastore.preferences.core.intPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
 import com.example.model.AccentPreset
@@ -38,6 +39,8 @@ class PreferencesRepository(private val context: Context) {
         val PLAYBACK_PITCH = floatPreferencesKey("playback_pitch")
         val HIGH_QUALITY = booleanPreferencesKey("high_quality")
         val GAPLESS = booleanPreferencesKey("gapless")
+        val DYNAMIC_ARTWORK_COLOR = booleanPreferencesKey("dynamic_artwork_color")
+        val CROSSFADE_SECONDS = intPreferencesKey("crossfade_seconds")
 
         // YouTube Music Account (Metrolist InnerTube auth)
         val YTM_COOKIE = stringPreferencesKey("ytm_cookie")
@@ -82,7 +85,9 @@ class PreferencesRepository(private val context: Context) {
             playbackSpeed = prefs[Keys.PLAYBACK_SPEED] ?: 1.0f,
             playbackPitch = prefs[Keys.PLAYBACK_PITCH] ?: 1.0f,
             highQualityStream = prefs[Keys.HIGH_QUALITY] ?: true,
-            gaplessPlayback = prefs[Keys.GAPLESS] ?: true
+            gaplessPlayback = prefs[Keys.GAPLESS] ?: true,
+            dynamicArtworkColor = prefs[Keys.DYNAMIC_ARTWORK_COLOR] ?: true,
+            crossfadeSeconds = (prefs[Keys.CROSSFADE_SECONDS] ?: 0).coerceIn(0, 10)
         )
     }
 
@@ -193,5 +198,13 @@ class PreferencesRepository(private val context: Context) {
 
     suspend fun setGaplessPlayback(enabled: Boolean) {
         context.koplingfyDataStore.edit { it[Keys.GAPLESS] = enabled }
+    }
+
+    suspend fun setDynamicArtworkColor(enabled: Boolean) {
+        context.koplingfyDataStore.edit { it[Keys.DYNAMIC_ARTWORK_COLOR] = enabled }
+    }
+
+    suspend fun setCrossfadeSeconds(seconds: Int) {
+        context.koplingfyDataStore.edit { it[Keys.CROSSFADE_SECONDS] = seconds.coerceIn(0, 10) }
     }
 }

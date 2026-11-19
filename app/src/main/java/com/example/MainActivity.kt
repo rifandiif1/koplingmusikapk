@@ -1,12 +1,16 @@
 package com.example
 
+import android.Manifest
 import android.content.Intent
+import android.content.pm.PackageManager
+import android.os.Build
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.core.content.ContextCompat
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
@@ -249,10 +253,33 @@ fun KoplingfyAppRoot(
     var savingQueueAsPlaylist by remember { mutableStateOf(false) }
 
     val snackbarHostState = remember { SnackbarHostState() }
-    val activeRoomCode = listenSessionState.activeRoom?.takeIf { it.status == "active" }?.roomCode
+    val activeRoom = listenSessionState.activeRoom?.takeIf { it.status == "active" }
+    val activeRoomCode = activeRoom?.roomCode
+    val isActiveRoomMember = currentGoogleUser != null &&
+        listenViewModel != null &&
+        activeRoom != null &&
+        currentGoogleUser.uid in activeRoom.memberUids
     val canControlActiveRoom = currentGoogleUser != null &&
         listenViewModel != null &&
         listenSessionState.canControl(currentGoogleUser.uid)
+
+    var askedNotificationPermission by rememberSaveable { mutableStateOf(false) }
+    val notificationPermissionLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.RequestPermission()
+    ) { /* Media playback continues seamlessly even if notification permission is declined */ }
+
+    LaunchedEffect(playerState.isPlaying) {
+        if (playerState.isPlaying && !askedNotificationPermission && Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            askedNotificationPermission = true
+            val granted = ContextCompat.checkSelfPermission(
+                context,
+                Manifest.permission.POST_NOTIFICATIONS
+            ) == PackageManager.PERMISSION_GRANTED
+            if (!granted) {
+                notificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+            }
+        }
+    }
 
     LaunchedEffect(snackbarMsg) {
         val msg = snackbarMsg
@@ -502,7 +529,8 @@ fun KoplingfyAppRoot(
                                         },
                                         onPlayRoomTrackLocally = { track, queue ->
                                             viewModel.playTrack(track, queue, expandPlayer = false)
-                                        }
+                                        },
+                                        onQuickSearchTracks = viewModel::quickSearchTracksForSharedQueue
                                     )
                                 }
                                 OverlayPage.YOUTUBE_LOGIN -> {
@@ -568,6 +596,8 @@ fun KoplingfyAppRoot(
                                         onAutoplayRadioChange = viewModel::setAutoplayRadio,
                                         onKeepScreenOnLyricsChange = viewModel::setKeepScreenOnLyrics,
                                         onGaplessChange = viewModel::setGaplessPlayback,
+                                        onDynamicArtworkColorChange = viewModel::setDynamicArtworkColor,
+                                        onCrossfadeSecondsChange = viewModel::setCrossfadeSeconds,
                                         onClearCache = viewModel::clearAppCache,
                                         onClearDownloads = viewModel::clearAllDownloads,
                                         onExportBackup = { backupExportLauncher.launch("koplingfy_backup.json") },
@@ -579,7 +609,8 @@ fun KoplingfyAppRoot(
                                         stats = listeningStats,
                                         bottomContentPadding = bottomListPadding,
                                         onBack = { overlayPage = OverlayPage.NONE },
-                                        onPlayTrack = { track, list -> playTrackWithRoomSync(track, list, false) }
+                                        onPlayTrack = { track, list -> playTrackWithRoomSync(track, list, false) },
+                                        onShowSnackbar = viewModel::showMessage
                                     )
                                 }
                                 OverlayPage.NONE -> {
@@ -682,9 +713,11 @@ fun KoplingfyAppRoot(
                             ) {
                                 FloatingMiniPlayer(
                                     playerState = playerState,
+                                    dynamicColorEnabled = settings.dynamicArtworkColor,
                                     onExpand = { viewModel.setPlayerExpanded(true) },
                                     onTogglePlayPause = togglePlayPauseWithRoomSync,
                                     onNext = skipNextWithRoomSync,
+                                    onPrevious = skipPreviousWithRoomSync,
                                     modifier = Modifier
                                         .padding(
                                             start = if (isExpandedWidth) 84.dp else 0.dp,
@@ -773,6 +806,31 @@ fun KoplingfyAppRoot(
                                 onOpenYouTubeLogin = openYouTubeLogin,
                                 onOpenListenTogether = openListenTogether,
                                 activeRoomCode = activeRoomCode,
+                                activeRoom = activeRoom,
+                                currentUserId = currentGoogleUser?.uid,
+                                onQuickSearchTracks = viewModel::quickSearchTracksForSharedQueue,
+                                onAddTrackToSharedQueue = if (isActiveRoomMember && listenViewModel != null) {
+                                    { chosen, playNext -> listenViewModel.addTrackToRoomQueue(chosen, playNext) }
+                                } else null,
+                                onUpvoteSharedQueueItem = if (isActiveRoomMember && listenViewModel != null) {
+                                    { idx -> listenViewModel.upvoteRoomQueueTrack(idx) }
+                                } else null,
+                                onMoveSharedQueueItem = if (isActiveRoomMember && listenViewModel != null) {
+                                    { from, to -> listenViewModel.moveRoomQueueTrack(from, to) }
+                                } else null,
+                                onRemoveSharedQueueItem = if (isActiveRoomMember && listenViewModel != null) {
+                                    { idx -> listenViewModel.removeRoomQueueTrack(idx) }
+                                } else null,
+                                onPlaySharedQueueItem = if (canControlActiveRoom && listenViewModel != null && activeRoom != null) {
+                                    { idx ->
+                                        val q = activeRoom.parsedQueue()
+                                        val chosen = q.getOrNull(idx)
+                                        if (chosen != null) {
+                                            listenViewModel.playRoomQueueTrack(idx)
+                                            viewModel.playTrack(chosen.toTrack(), q.map { it.toTrack() }, expandPlayer = true)
+                                        }
+                                    }
+                                } else null,
                                 onAddToPlaylist = { addToPlaylistTrack = currentTrack },
                                 onTrackOptions = { optionsTrack = currentTrack },
                                 onSelectQueueItem = { item -> playTrackWithRoomSync(item, playerState.queue, true) },
@@ -792,7 +850,8 @@ fun KoplingfyAppRoot(
                                 onBassBoostChange = viewModel::setBassBoost,
                                 onNormalizeAudioChange = viewModel::setNormalizeAudio,
                                 onSpeedChange = viewModel::setPlaybackSpeed,
-                                onPitchChange = viewModel::setPlaybackPitch
+                                onPitchChange = viewModel::setPlaybackPitch,
+                                onCrossfadeChange = viewModel::setCrossfadeSeconds
                             )
                         }
                     }
@@ -818,7 +877,7 @@ fun KoplingfyAppRoot(
                 "Hapus dari Playlist Ini"
             } else "Hapus Audio Lokal"
 
-            val addToListenRoomLambda: (() -> Unit)? = if (canControlActiveRoom && listenViewModel != null) {
+            val addToListenRoomLambda: (() -> Unit)? = if (isActiveRoomMember && listenViewModel != null) {
                 { listenViewModel.addTrackToRoomQueue(activeOptionTrack) }
             } else null
 

@@ -59,6 +59,8 @@ class KoplingfyAudioEngine(
     private var currentBandsDb: List<Float> = listOf(0f, 0f, 0f, 0f, 0f)
     private var currentBassStrength: Float = 0f
     private var normalizeAudio: Boolean = true
+    private var crossfadeSeconds: Int = 0
+    private var isDucked: Boolean = false
     private var pendingStartPositionMs: Long = 0L
     private var pendingAutoStart: Boolean = true
 
@@ -78,9 +80,11 @@ class KoplingfyAudioEngine(
             AudioManager.AUDIOFOCUS_LOSS,
             AudioManager.AUDIOFOCUS_LOSS_TRANSIENT -> pause()
             AudioManager.AUDIOFOCUS_LOSS_TRANSIENT_CAN_DUCK -> {
+                isDucked = true
                 runCatching { mediaPlayer?.setVolume(0.3f, 0.3f) }
             }
             AudioManager.AUDIOFOCUS_GAIN -> {
+                isDucked = false
                 runCatching { mediaPlayer?.setVolume(1.0f, 1.0f) }
             }
         }
@@ -140,6 +144,8 @@ class KoplingfyAudioEngine(
                     pendingStartPositionMs = 0L
                     pendingAutoStart = true
                     if (shouldStart) {
+                        val initVol = if (crossfadeSeconds > 0 && safeStartPos < 1_000L && !isDucked) 0.12f else if (isDucked) 0.3f else 1.0f
+                        runCatching { player.setVolume(initVol, initVol) }
                         player.start()
                         startProgressPolling()
                     }
@@ -266,6 +272,13 @@ class KoplingfyAudioEngine(
         applyBassAndLoudness()
     }
 
+    fun updateCrossfadeSeconds(seconds: Int) {
+        crossfadeSeconds = seconds.coerceIn(0, 10)
+        if (crossfadeSeconds == 0 && !isDucked) {
+            runCatching { mediaPlayer?.setVolume(1.0f, 1.0f) }
+        }
+    }
+
     private fun applyPlaybackParams(mp: MediaPlayer) {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
             try {
@@ -367,18 +380,38 @@ class KoplingfyAudioEngine(
                 if (mp != null) {
                     try {
                         if (mp.isPlaying) {
+                            val pos = mp.currentPosition.toLong()
+                            val dur = mp.duration.toLong().coerceAtLeast(_state.value.durationMs)
+                            applyCrossfadeVolume(mp, pos, dur)
                             _state.value = _state.value.copy(
                                 isPlaying = true,
-                                positionMs = mp.currentPosition.toLong(),
-                                durationMs = mp.duration.toLong().coerceAtLeast(_state.value.durationMs)
+                                positionMs = pos,
+                                durationMs = dur
                             )
                         }
                     } catch (_: IllegalStateException) {
                     }
                 }
-                delay(250L)
+                delay(200L)
             }
         }
+    }
+
+    private fun applyCrossfadeVolume(mp: MediaPlayer, positionMs: Long, durationMs: Long) {
+        val maxVol = if (isDucked) 0.3f else 1.0f
+        if (crossfadeSeconds <= 0 || durationMs <= 12_000L) {
+            runCatching { mp.setVolume(maxVol, maxVol) }
+            return
+        }
+        val fadeWindowMs = (crossfadeSeconds * 1_000L).coerceAtMost(durationMs / 3L)
+        val remainingMs = (durationMs - positionMs).coerceAtLeast(0L)
+        val factor = when {
+            positionMs < fadeWindowMs -> (positionMs.toFloat() / fadeWindowMs.toFloat()).coerceIn(0.12f, 1.0f)
+            remainingMs < fadeWindowMs -> (remainingMs.toFloat() / fadeWindowMs.toFloat()).coerceIn(0.08f, 1.0f)
+            else -> 1.0f
+        }
+        val vol = (maxVol * factor).coerceIn(0.05f, 1.0f)
+        runCatching { mp.setVolume(vol, vol) }
     }
 
     private fun stopProgressPolling() {

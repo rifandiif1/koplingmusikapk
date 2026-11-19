@@ -15,7 +15,9 @@ import androidx.compose.animation.core.tween
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.gestures.detectHorizontalDragGestures
+import androidx.compose.foundation.gestures.detectVerticalDragGestures
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -43,6 +45,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.PlaylistAdd
 import androidx.compose.material.icons.automirrored.rounded.QueueMusic
+import androidx.compose.material.icons.rounded.Add
 import androidx.compose.material.icons.rounded.ArrowDownward
 import androidx.compose.material.icons.rounded.ArrowUpward
 import androidx.compose.material.icons.rounded.Bedtime
@@ -50,11 +53,13 @@ import androidx.compose.material.icons.rounded.CheckCircle
 import androidx.compose.material.icons.rounded.Close
 import androidx.compose.material.icons.rounded.DeleteSweep
 import androidx.compose.material.icons.rounded.Download
+import androidx.compose.material.icons.rounded.DragHandle
 import androidx.compose.material.icons.rounded.Equalizer
 import androidx.compose.material.icons.rounded.Favorite
 import androidx.compose.material.icons.rounded.FavoriteBorder
 import androidx.compose.material.icons.rounded.Groups
 import androidx.compose.material.icons.rounded.KeyboardArrowDown
+import androidx.compose.material.icons.rounded.LocalFireDepartment
 import androidx.compose.material.icons.rounded.Login
 import androidx.compose.material.icons.rounded.Lyrics
 import androidx.compose.material.icons.rounded.MoreHoriz
@@ -81,7 +86,6 @@ import androidx.compose.material3.SliderDefaults
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
@@ -90,6 +94,7 @@ import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -100,8 +105,10 @@ import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.draw.scale
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
@@ -110,6 +117,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.R
+import com.example.listentogether.ListenRoom
 import com.example.model.AudioSettings
 import com.example.model.EqPreset
 import com.example.model.PlayerArtStyle
@@ -119,14 +127,19 @@ import com.example.model.Track
 import com.example.ui.components.AlbumArtImage
 import com.example.ui.components.AudioVisualizerBars
 import com.example.ui.components.formatDuration
+import com.example.ui.screens.AddToSharedQueueSearchSheet
+import com.example.ui.theme.rememberDynamicArtworkPalette
 import com.example.viewmodel.PlayerUiState
+import kotlin.math.abs
 
 @Composable
 fun FloatingMiniPlayer(
     playerState: PlayerUiState,
+    dynamicColorEnabled: Boolean = true,
     onExpand: () -> Unit,
     onTogglePlayPause: () -> Unit,
     onNext: () -> Unit,
+    onPrevious: () -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     val track = playerState.currentTrack ?: return
@@ -134,21 +147,72 @@ fun FloatingMiniPlayer(
         (playerState.positionMs.toFloat() / playerState.durationMs.toFloat()).coerceIn(0f, 1f)
     } else 0f
 
+    val dynamicPalette = rememberDynamicArtworkPalette(
+        artworkUrl = track.artworkUrl,
+        enabled = dynamicColorEnabled
+    )
+    val accent = dynamicPalette.primaryAccent
+
+    var dragX by remember { mutableFloatStateOf(0f) }
+    var dragY by remember { mutableFloatStateOf(0f) }
+    val animatedOffsetX by animateFloatAsState(
+        targetValue = dragX.coerceIn(-90f, 90f),
+        animationSpec = spring(dampingRatio = Spring.DampingRatioMediumBouncy),
+        label = "mini_drag_x"
+    )
+    val currentOnNext by rememberUpdatedState(onNext)
+    val currentOnPrev by rememberUpdatedState(onPrevious)
+    val currentOnExpand by rememberUpdatedState(onExpand)
+
     Surface(
         onClick = onExpand,
         modifier = modifier
             .fillMaxWidth()
             .padding(horizontal = 12.dp)
+            .graphicsLayer { translationX = animatedOffsetX * 0.45f }
+            .pointerInput(track.id) {
+                detectDragGestures(
+                    onDragStart = {
+                        dragX = 0f
+                        dragY = 0f
+                    },
+                    onDrag = { _, dragAmount ->
+                        dragX += dragAmount.x
+                        dragY += dragAmount.y
+                    },
+                    onDragEnd = {
+                        when {
+                            dragY < -75f && abs(dragY) > abs(dragX) -> currentOnExpand()
+                            dragX < -85f && abs(dragX) > abs(dragY) -> currentOnNext()
+                            dragX > 85f && abs(dragX) > abs(dragY) -> currentOnPrev()
+                        }
+                        dragX = 0f
+                        dragY = 0f
+                    },
+                    onDragCancel = {
+                        dragX = 0f
+                        dragY = 0f
+                    }
+                )
+            }
             .testTag("mini_player_bar"),
         shape = RoundedCornerShape(22.dp),
         color = MaterialTheme.colorScheme.surfaceContainerHigh,
-        border = BorderStroke(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.35f)),
+        border = BorderStroke(1.dp, accent.copy(alpha = 0.45f)),
         shadowElevation = 16.dp
     ) {
         Column {
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
+                    .background(
+                        Brush.horizontalGradient(
+                            colors = listOf(
+                                dynamicPalette.deepAmbient.copy(alpha = 0.24f),
+                                Color.Transparent
+                            )
+                        )
+                    )
                     .padding(horizontal = 12.dp, vertical = 10.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
@@ -170,7 +234,7 @@ fun FloatingMiniPlayer(
                         ) {
                             AudioVisualizerBars(
                                 isPlaying = true,
-                                color = MaterialTheme.colorScheme.primary,
+                                color = accent,
                                 barWidth = 2.dp,
                                 maxHeight = 10.dp
                             )
@@ -191,7 +255,7 @@ fun FloatingMiniPlayer(
                     Text(
                         text = if (playerState.isBuffering) "Memuat audio penuh…" else track.artist,
                         style = MaterialTheme.typography.bodySmall,
-                        color = if (playerState.isBuffering) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
+                        color = if (playerState.isBuffering) accent else MaterialTheme.colorScheme.onSurfaceVariant,
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis
                     )
@@ -205,13 +269,13 @@ fun FloatingMiniPlayer(
                         CircularProgressIndicator(
                             modifier = Modifier.size(20.dp),
                             strokeWidth = 2.dp,
-                            color = MaterialTheme.colorScheme.primary
+                            color = accent
                         )
                     } else {
                         Icon(
                             imageVector = if (playerState.isPlaying) Icons.Rounded.Pause else Icons.Rounded.PlayArrow,
                             contentDescription = stringResource(R.string.cd_play_pause),
-                            tint = MaterialTheme.colorScheme.primary,
+                            tint = accent,
                             modifier = Modifier.size(28.dp)
                         )
                     }
@@ -235,7 +299,7 @@ fun FloatingMiniPlayer(
                 modifier = Modifier
                     .fillMaxWidth()
                     .height(2.5.dp),
-                color = MaterialTheme.colorScheme.primary,
+                color = accent,
                 trackColor = MaterialTheme.colorScheme.outlineVariant
             )
         }
@@ -264,6 +328,14 @@ fun FullScreenPlayerModal(
     onOpenYouTubeLogin: () -> Unit,
     onOpenListenTogether: () -> Unit,
     activeRoomCode: String? = null,
+    activeRoom: ListenRoom? = null,
+    currentUserId: String? = null,
+    onQuickSearchTracks: (suspend (String) -> List<Track>)? = null,
+    onAddTrackToSharedQueue: ((Track, Boolean) -> Unit)? = null,
+    onUpvoteSharedQueueItem: ((Int) -> Unit)? = null,
+    onMoveSharedQueueItem: ((Int, Int) -> Unit)? = null,
+    onRemoveSharedQueueItem: ((Int) -> Unit)? = null,
+    onPlaySharedQueueItem: ((Int) -> Unit)? = null,
     onAddToPlaylist: () -> Unit,
     onTrackOptions: () -> Unit,
     onSelectQueueItem: (Track) -> Unit,
@@ -280,7 +352,8 @@ fun FullScreenPlayerModal(
     onBassBoostChange: (Float) -> Unit,
     onNormalizeAudioChange: (Boolean) -> Unit,
     onSpeedChange: (Float) -> Unit,
-    onPitchChange: (Float) -> Unit
+    onPitchChange: (Float) -> Unit,
+    onCrossfadeChange: (Int) -> Unit = {}
 ) {
     BackHandler(onBack = onCollapse)
 
@@ -289,6 +362,7 @@ fun FullScreenPlayerModal(
     var activeTab by remember { mutableIntStateOf(0) }
     var showSleepSheet by remember { mutableStateOf(false) }
     var showAudioFxSheet by remember { mutableStateOf(false) }
+    var showSharedQueueSearchSheet by remember { mutableStateOf(false) }
 
     // Keep screen on while reading lyrics (Metrolist feature)
     val context = LocalContext.current
@@ -302,8 +376,13 @@ fun FullScreenPlayerModal(
         }
     }
 
-    val primary = MaterialTheme.colorScheme.primary
-    val secondary = MaterialTheme.colorScheme.secondary
+    val dynamicPalette = rememberDynamicArtworkPalette(
+        artworkUrl = track.artworkUrl,
+        enabled = settings.dynamicArtworkColor
+    )
+    val accentPrimary = dynamicPalette.primaryAccent
+    val accentGlow = dynamicPalette.glowHighlight
+    val accentAmbient = dynamicPalette.deepAmbient
     val bg = MaterialTheme.colorScheme.background
 
     val likeScale by animateFloatAsState(
@@ -312,7 +391,7 @@ fun FullScreenPlayerModal(
         label = "like_scale"
     )
 
-    // CRITICAL FIX: 100% OPAQUE solid base background + touch blocker so menu behind NEVER bleeds through!
+    // 100% OPAQUE solid base background + touch blocker so menu behind NEVER bleeds through!
     Box(
         modifier = Modifier
             .fillMaxSize()
@@ -343,8 +422,8 @@ fun FullScreenPlayerModal(
                         .background(
                             Brush.verticalGradient(
                                 colors = listOf(
-                                    bg.copy(alpha = 0.72f),
-                                    bg.copy(alpha = 0.88f),
+                                    accentAmbient.copy(alpha = 0.42f),
+                                    bg.copy(alpha = 0.86f),
                                     bg.copy(alpha = 0.98f)
                                 )
                             )
@@ -358,8 +437,8 @@ fun FullScreenPlayerModal(
                         .background(
                             Brush.verticalGradient(
                                 colors = listOf(
-                                    primary.copy(alpha = 0.24f),
-                                    secondary.copy(alpha = 0.10f),
+                                    accentPrimary.copy(alpha = 0.28f),
+                                    accentAmbient.copy(alpha = 0.14f),
                                     bg
                                 )
                             )
@@ -400,13 +479,13 @@ fun FullScreenPlayerModal(
                 Column(horizontalAlignment = Alignment.CenterHorizontally) {
                     Surface(
                         shape = RoundedCornerShape(50),
-                        color = MaterialTheme.colorScheme.primary.copy(alpha = 0.16f),
-                        border = BorderStroke(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.35f))
+                        color = accentPrimary.copy(alpha = 0.18f),
+                        border = BorderStroke(1.dp, accentPrimary.copy(alpha = 0.42f))
                     ) {
                         Text(
                             text = playerState.streamSourceLabel.uppercase(),
                             style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold),
-                            color = MaterialTheme.colorScheme.primary,
+                            color = accentPrimary,
                             modifier = Modifier.padding(horizontal = 10.dp, vertical = 3.dp)
                         )
                     }
@@ -429,7 +508,7 @@ fun FullScreenPlayerModal(
                         Icon(
                             imageVector = Icons.Rounded.Groups,
                             contentDescription = "Play Bersama",
-                            tint = if (activeRoomCode != null) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onBackground
+                            tint = if (activeRoomCode != null) accentPrimary else MaterialTheme.colorScheme.onBackground
                         )
                     }
                     IconButton(
@@ -447,7 +526,7 @@ fun FullScreenPlayerModal(
 
             Spacer(modifier = Modifier.height(8.dp))
 
-            // ---- Center Stage: Artwork (swipeable) / Lyrics / Queue ----
+            // ---- Center Stage: Artwork (swipeable) / Karaoke Lyrics / Drag & Shared Queue ----
             Box(
                 modifier = Modifier
                     .weight(1f)
@@ -460,12 +539,15 @@ fun FullScreenPlayerModal(
                             track = track,
                             isPlaying = playerState.isPlaying,
                             artStyle = settings.playerArtStyle,
+                            accentColor = accentPrimary,
                             onSwipeNext = onNext,
                             onSwipePrev = onPrevious
                         )
                         1 -> SyncedLyricsStage(
                             playerState = playerState,
                             fontScale = settings.lyricsFontScale,
+                            accentPrimary = accentPrimary,
+                            accentGlow = accentGlow,
                             onFontScaleChange = onLyricsFontScaleChange,
                             onShareLyrics = onShareLyrics,
                             onSeekTo = onSeek
@@ -475,12 +557,22 @@ fun FullScreenPlayerModal(
                             currentIndex = playerState.currentIndex,
                             isPlaying = playerState.isPlaying,
                             autoplayRadio = settings.autoplayRadio,
+                            accentColor = accentPrimary,
+                            activeRoom = activeRoom,
+                            currentUserId = currentUserId,
                             onToggleAutoplay = onToggleAutoplay,
                             onSelect = onSelectQueueItem,
                             onMoveItem = onMoveQueueItem,
                             onRemove = onRemoveQueueItem,
                             onClearUpcoming = onClearUpcomingQueue,
-                            onSaveQueue = onSaveQueueAsPlaylist
+                            onSaveQueue = onSaveQueueAsPlaylist,
+                            onOpenAddSharedQueue = if (onQuickSearchTracks != null && onAddTrackToSharedQueue != null) {
+                                { showSharedQueueSearchSheet = true }
+                            } else null,
+                            onUpvoteSharedQueue = onUpvoteSharedQueueItem,
+                            onMoveSharedQueue = onMoveSharedQueueItem,
+                            onRemoveSharedQueue = onRemoveSharedQueueItem,
+                            onPlaySharedQueue = onPlaySharedQueueItem
                         )
                     }
                 }
@@ -554,14 +646,14 @@ fun FullScreenPlayerModal(
                                 progress = { downloadProgress },
                                 modifier = Modifier.size(22.dp),
                                 strokeWidth = 2.5.dp,
-                                color = MaterialTheme.colorScheme.primary
+                                color = accentPrimary
                             )
                         }
                         isDownloaded -> {
                             Icon(
                                 imageVector = Icons.Rounded.CheckCircle,
                                 contentDescription = "Tersimpan offline",
-                                tint = MaterialTheme.colorScheme.primary,
+                                tint = accentPrimary,
                                 modifier = Modifier.size(24.dp)
                             )
                         }
@@ -597,7 +689,7 @@ fun FullScreenPlayerModal(
                     Icon(
                         imageVector = if (isLiked) Icons.Rounded.Favorite else Icons.Rounded.FavoriteBorder,
                         contentDescription = stringResource(R.string.cd_like_track),
-                        tint = if (isLiked) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
+                        tint = if (isLiked) accentPrimary else MaterialTheme.colorScheme.onSurfaceVariant,
                         modifier = Modifier.size(26.dp)
                     )
                 }
@@ -622,8 +714,8 @@ fun FullScreenPlayerModal(
                     isDragging = false
                 },
                 colors = SliderDefaults.colors(
-                    thumbColor = MaterialTheme.colorScheme.primary,
-                    activeTrackColor = MaterialTheme.colorScheme.primary,
+                    thumbColor = accentPrimary,
+                    activeTrackColor = accentPrimary,
                     inactiveTrackColor = MaterialTheme.colorScheme.surfaceVariant
                 ),
                 modifier = Modifier.fillMaxWidth().testTag("player_seek_slider")
@@ -660,7 +752,7 @@ fun FullScreenPlayerModal(
                     Icon(
                         imageVector = Icons.Rounded.Shuffle,
                         contentDescription = "Acak",
-                        tint = if (playerState.isShuffleEnabled) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant
+                        tint = if (playerState.isShuffleEnabled) accentPrimary else MaterialTheme.colorScheme.onSurfaceVariant
                     )
                 }
 
@@ -679,14 +771,14 @@ fun FullScreenPlayerModal(
                 Surface(
                     onClick = onTogglePlayPause,
                     shape = RoundedCornerShape(26.dp),
-                    color = MaterialTheme.colorScheme.primary,
+                    color = accentPrimary,
                     shadowElevation = 12.dp,
                     modifier = Modifier.size(72.dp).testTag("player_play_pause_button")
                 ) {
                     Box(contentAlignment = Alignment.Center) {
                         if (playerState.isBuffering) {
                             CircularProgressIndicator(
-                                color = MaterialTheme.colorScheme.onPrimary,
+                                color = Color(0xFF0A0B0F),
                                 modifier = Modifier.size(28.dp),
                                 strokeWidth = 3.dp
                             )
@@ -694,7 +786,7 @@ fun FullScreenPlayerModal(
                             Icon(
                                 imageVector = if (playerState.isPlaying) Icons.Rounded.Pause else Icons.Rounded.PlayArrow,
                                 contentDescription = stringResource(R.string.cd_play_pause),
-                                tint = MaterialTheme.colorScheme.onPrimary,
+                                tint = Color(0xFF0A0B0F),
                                 modifier = Modifier.size(38.dp)
                             )
                         }
@@ -724,7 +816,7 @@ fun FullScreenPlayerModal(
                         imageVector = icon,
                         contentDescription = "Ulangi",
                         tint = if (playerState.repeatMode != KoplingfyRepeatMode.OFF) {
-                            MaterialTheme.colorScheme.primary
+                            accentPrimary
                         } else MaterialTheme.colorScheme.onSurfaceVariant
                     )
                 }
@@ -749,13 +841,15 @@ fun FullScreenPlayerModal(
                         icon = Icons.Rounded.Lyrics,
                         label = "Lirik",
                         active = activeTab == 1,
+                        accentColor = accentPrimary,
                         onClick = { activeTab = if (activeTab == 1) 0 else 1 },
                         modifier = Modifier.testTag("player_tab_lyrics")
                     )
                     UtilityChip(
                         icon = Icons.AutoMirrored.Rounded.QueueMusic,
-                        label = "Antrean",
+                        label = if (activeRoomCode != null) "Antrian+" else "Antrean",
                         active = activeTab == 2,
+                        accentColor = accentPrimary,
                         onClick = { activeTab = if (activeTab == 2) 0 else 2 },
                         modifier = Modifier.testTag("player_tab_queue")
                     )
@@ -763,6 +857,7 @@ fun FullScreenPlayerModal(
                         icon = Icons.Rounded.Radio,
                         label = if (playerState.isLoadingRadio) "…" else "Radio",
                         active = playerState.isLoadingRadio,
+                        accentColor = accentPrimary,
                         onClick = onStartRadio,
                         modifier = Modifier.testTag("player_radio_button")
                     )
@@ -780,13 +875,18 @@ fun FullScreenPlayerModal(
                         icon = Icons.Rounded.Bedtime,
                         label = timerLabel,
                         active = timerActive,
+                        accentColor = accentPrimary,
                         onClick = { showSleepSheet = true },
                         modifier = Modifier.testTag("player_sleep_timer_button")
                     )
                     UtilityChip(
                         icon = Icons.Rounded.Equalizer,
                         label = "EQ",
-                        active = settings.eqPreset != EqPreset.FLAT || settings.playbackSpeed != 1.0f || settings.bassBoostStrength > 0.05f,
+                        active = settings.eqPreset != EqPreset.FLAT ||
+                            settings.playbackSpeed != 1.0f ||
+                            settings.bassBoostStrength > 0.05f ||
+                            settings.crossfadeSeconds > 0,
+                        accentColor = accentPrimary,
                         onClick = { showAudioFxSheet = true },
                         modifier = Modifier.testTag("player_audio_fx_button")
                     )
@@ -794,6 +894,7 @@ fun FullScreenPlayerModal(
                         icon = Icons.Rounded.Share,
                         label = "Bagikan",
                         active = false,
+                        accentColor = accentPrimary,
                         onClick = onShareTrack,
                         modifier = Modifier.testTag("player_share_button")
                     )
@@ -827,7 +928,18 @@ fun FullScreenPlayerModal(
             onBassBoostChange = onBassBoostChange,
             onNormalizeAudioChange = onNormalizeAudioChange,
             onSpeedChange = onSpeedChange,
-            onPitchChange = onPitchChange
+            onPitchChange = onPitchChange,
+            onCrossfadeChange = onCrossfadeChange
+        )
+    }
+
+    if (showSharedQueueSearchSheet && onQuickSearchTracks != null && onAddTrackToSharedQueue != null) {
+        AddToSharedQueueSearchSheet(
+            onDismiss = { showSharedQueueSearchSheet = false },
+            onSearch = onQuickSearchTracks,
+            onAddTrack = { chosen, playNext ->
+                onAddTrackToSharedQueue(chosen, playNext)
+            }
         )
     }
 }
@@ -837,6 +949,7 @@ private fun PlayerArtworkStage(
     track: Track,
     isPlaying: Boolean,
     artStyle: PlayerArtStyle,
+    accentColor: Color,
     onSwipeNext: () -> Unit,
     onSwipePrev: () -> Unit
 ) {
@@ -885,7 +998,7 @@ private fun PlayerArtworkStage(
                     .rotate(if (isPlaying) rotation else 0f),
                 shape = CircleShape,
                 color = Color(0xFF0E1016),
-                border = BorderStroke(3.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.55f)),
+                border = BorderStroke(3.dp, accentColor.copy(alpha = 0.65f)),
                 shadowElevation = 24.dp
             ) {
                 Box(contentAlignment = Alignment.Center) {
@@ -902,7 +1015,7 @@ private fun PlayerArtworkStage(
                             .background(MaterialTheme.colorScheme.background)
                             .padding(6.dp)
                             .clip(CircleShape)
-                            .background(MaterialTheme.colorScheme.primary)
+                            .background(accentColor)
                     )
                 }
             }
@@ -910,7 +1023,7 @@ private fun PlayerArtworkStage(
             Surface(
                 modifier = Modifier.fillMaxSize(),
                 shape = RoundedCornerShape(30.dp),
-                border = BorderStroke(1.5.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.38f)),
+                border = BorderStroke(1.5.dp, accentColor.copy(alpha = 0.45f)),
                 shadowElevation = 22.dp
             ) {
                 AlbumArtImage(
@@ -928,6 +1041,8 @@ private fun PlayerArtworkStage(
 private fun SyncedLyricsStage(
     playerState: PlayerUiState,
     fontScale: Float,
+    accentPrimary: Color,
+    accentGlow: Color,
     onFontScaleChange: (Float) -> Unit,
     onShareLyrics: (String) -> Unit,
     onSeekTo: (Long) -> Unit
@@ -936,7 +1051,7 @@ private fun SyncedLyricsStage(
     val listState = rememberLazyListState()
 
     val activeLineIndex = remember(lyrics.syncedLines, playerState.positionMs) {
-        lyrics.syncedLines.indexOfLast { it.timestampMs <= playerState.positionMs + 300L }
+        lyrics.syncedLines.indexOfLast { it.timestampMs <= playerState.positionMs + 250L }
     }
 
     LaunchedEffect(activeLineIndex) {
@@ -954,7 +1069,7 @@ private fun SyncedLyricsStage(
         border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant)
     ) {
         Column(modifier = Modifier.fillMaxSize()) {
-            // Lyrics toolbar (Provider badge, font scale -/+, Share)
+            // Lyrics toolbar (Karaoke badge, Provider badge, font scale -/+, Share)
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -962,11 +1077,29 @@ private fun SyncedLyricsStage(
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                Text(
-                    text = if (lyrics.providerName.isNotBlank()) "Lirik • ${lyrics.providerName}" else "Lirik",
-                    style = MaterialTheme.typography.labelMedium,
-                    color = MaterialTheme.colorScheme.primary
-                )
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    Text(
+                        text = if (lyrics.providerName.isNotBlank()) "Lirik • ${lyrics.providerName}" else "Lirik",
+                        style = MaterialTheme.typography.labelMedium,
+                        color = accentPrimary
+                    )
+                    if (lyrics.syncedLines.isNotEmpty()) {
+                        Surface(
+                            shape = RoundedCornerShape(50),
+                            color = accentPrimary.copy(alpha = 0.16f)
+                        ) {
+                            Text(
+                                text = "KARAOKE",
+                                style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold),
+                                color = accentPrimary,
+                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 2.dp)
+                            )
+                        }
+                    }
+                }
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     IconButton(
                         onClick = { onFontScaleChange((fontScale - 0.1f).coerceAtLeast(0.8f)) },
@@ -1001,7 +1134,7 @@ private fun SyncedLyricsStage(
                     lyrics.isLoading -> {
                         Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                             Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                                CircularProgressIndicator(color = MaterialTheme.colorScheme.primary)
+                                CircularProgressIndicator(color = accentPrimary)
                                 Spacer(Modifier.height(10.dp))
                                 Text("Mencari lirik LRCLIB & YouTube Music…", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                             }
@@ -1013,7 +1146,7 @@ private fun SyncedLyricsStage(
                                 text = "♪ Lagu Instrumental ♪\nNikmati alunan musiknya.",
                                 style = MaterialTheme.typography.titleMedium,
                                 textAlign = TextAlign.Center,
-                                color = MaterialTheme.colorScheme.primary
+                                color = accentPrimary
                             )
                         }
                     }
@@ -1021,29 +1154,80 @@ private fun SyncedLyricsStage(
                         LazyColumn(
                             state = listState,
                             contentPadding = PaddingValues(horizontal = 20.dp, vertical = 18.dp),
-                            verticalArrangement = Arrangement.spacedBy(14.dp)
+                            verticalArrangement = Arrangement.spacedBy(16.dp)
                         ) {
                             itemsIndexed(lyrics.syncedLines) { idx, line ->
                                 val isActive = idx == activeLineIndex
-                                Text(
-                                    text = line.text,
-                                    style = if (isActive) {
-                                        MaterialTheme.typography.headlineSmall.copy(
-                                            fontSize = (21f * fontScale).sp,
-                                            fontWeight = FontWeight.Bold
-                                        )
-                                    } else {
-                                        MaterialTheme.typography.titleMedium.copy(
-                                            fontSize = (16f * fontScale).sp
-                                        )
-                                    },
-                                    color = if (isActive) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.65f),
-                                    modifier = Modifier
-                                        .fillMaxWidth()
-                                        .clip(RoundedCornerShape(10.dp))
-                                        .clickable { onSeekTo(line.timestampMs) }
-                                        .padding(vertical = 4.dp)
+                                val isPast = idx < activeLineIndex
+                                val lineScale by animateFloatAsState(
+                                    targetValue = if (isActive) 1.03f else 1f,
+                                    animationSpec = tween(220),
+                                    label = "lyric_line_scale"
                                 )
+
+                                if (isActive) {
+                                    // Karaoke progressive horizontal sweep between current timestamp and next timestamp
+                                    val nextTs = lyrics.syncedLines.getOrNull(idx + 1)?.timestampMs
+                                        ?: (line.timestampMs + 3_500L)
+                                    val lineDuration = (nextTs - line.timestampMs).coerceAtLeast(600L)
+                                    val rawProgress = ((playerState.positionMs - line.timestampMs).toFloat() / lineDuration.toFloat())
+                                        .coerceIn(0.05f, 1f)
+                                    val sweepStop = rawProgress.coerceIn(0.05f, 0.99f)
+                                    val softEdge = (sweepStop + 0.08f).coerceAtMost(1f)
+                                    val karaokeBrush = Brush.horizontalGradient(
+                                        colorStops = arrayOf(
+                                            0f to accentPrimary,
+                                            sweepStop to accentGlow,
+                                            softEdge to MaterialTheme.colorScheme.onSurface.copy(alpha = 0.38f),
+                                            1f to MaterialTheme.colorScheme.onSurface.copy(alpha = 0.34f)
+                                        )
+                                    )
+                                    Column(
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .scale(lineScale)
+                                            .clip(RoundedCornerShape(12.dp))
+                                            .background(accentPrimary.copy(alpha = 0.09f))
+                                            .clickable { onSeekTo(line.timestampMs) }
+                                            .padding(horizontal = 12.dp, vertical = 10.dp),
+                                        verticalArrangement = Arrangement.spacedBy(6.dp)
+                                    ) {
+                                        Text(
+                                            text = line.text,
+                                            style = MaterialTheme.typography.headlineSmall.copy(
+                                                fontSize = (21f * fontScale).sp,
+                                                fontWeight = FontWeight.ExtraBold,
+                                                brush = karaokeBrush
+                                            )
+                                        )
+                                        LinearProgressIndicator(
+                                            progress = { rawProgress },
+                                            modifier = Modifier
+                                                .fillMaxWidth()
+                                                .height(2.5.dp)
+                                                .clip(RoundedCornerShape(50)),
+                                            color = accentPrimary,
+                                            trackColor = accentPrimary.copy(alpha = 0.16f)
+                                        )
+                                    }
+                                } else {
+                                    Text(
+                                        text = line.text,
+                                        style = MaterialTheme.typography.titleMedium.copy(
+                                            fontSize = (16f * fontScale).sp
+                                        ),
+                                        color = if (isPast) {
+                                            MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.42f)
+                                        } else {
+                                            MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.72f)
+                                        },
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .clip(RoundedCornerShape(10.dp))
+                                            .clickable { onSeekTo(line.timestampMs) }
+                                            .padding(horizontal = 6.dp, vertical = 4.dp)
+                                    )
+                                }
                             }
                         }
                     }
@@ -1086,13 +1270,30 @@ private fun QueueStage(
     currentIndex: Int,
     isPlaying: Boolean,
     autoplayRadio: Boolean,
+    accentColor: Color,
+    activeRoom: ListenRoom?,
+    currentUserId: String?,
     onToggleAutoplay: (Boolean) -> Unit,
     onSelect: (Track) -> Unit,
     onMoveItem: (Int, Int) -> Unit,
     onRemove: (Int) -> Unit,
     onClearUpcoming: () -> Unit,
-    onSaveQueue: () -> Unit
+    onSaveQueue: () -> Unit,
+    onOpenAddSharedQueue: (() -> Unit)?,
+    onUpvoteSharedQueue: ((Int) -> Unit)?,
+    onMoveSharedQueue: ((Int, Int) -> Unit)?,
+    onRemoveSharedQueue: ((Int) -> Unit)?,
+    onPlaySharedQueue: ((Int) -> Unit)?
 ) {
+    val hasActiveRoom = activeRoom != null && activeRoom.status == "active"
+    var showSharedTab by remember(hasActiveRoom) { mutableStateOf(hasActiveRoom) }
+    val sharedQueue = remember(activeRoom?.queueTracks) { activeRoom?.parsedQueue().orEmpty() }
+    val isHost = activeRoom != null && currentUserId != null && activeRoom.hostUid == currentUserId
+    val isJoined = hasActiveRoom && currentUserId != null && currentUserId in activeRoom!!.memberUids
+    val canControlRoom = isJoined && (isHost || activeRoom!!.guestsCanControl)
+
+    val rowStepPx = with(LocalDensity.current) { 58.dp.toPx() }
+
     Surface(
         modifier = Modifier
             .fillMaxSize()
@@ -1102,97 +1303,325 @@ private fun QueueStage(
         border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant)
     ) {
         Column(modifier = Modifier.fillMaxSize().padding(14.dp)) {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Text(
-                    text = "Antrean (${queue.size})",
-                    style = MaterialTheme.typography.titleMedium,
-                    modifier = Modifier.padding(start = 6.dp)
-                )
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    IconButton(onClick = onSaveQueue, modifier = Modifier.size(36.dp)) {
-                        Icon(Icons.Rounded.Save, contentDescription = "Simpan antrean ke playlist", modifier = Modifier.size(18.dp))
-                    }
-                    IconButton(onClick = onClearUpcoming, modifier = Modifier.size(36.dp)) {
-                        Icon(Icons.Rounded.DeleteSweep, contentDescription = "Bersihkan antrean", modifier = Modifier.size(18.dp))
+            if (hasActiveRoom) {
+                Surface(
+                    shape = RoundedCornerShape(14.dp),
+                    color = MaterialTheme.colorScheme.surfaceContainerHigh,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(bottom = 10.dp)
+                ) {
+                    Row(
+                        modifier = Modifier.padding(4.dp),
+                        horizontalArrangement = Arrangement.spacedBy(4.dp)
+                    ) {
+                        Surface(
+                            onClick = { showSharedTab = false },
+                            shape = RoundedCornerShape(10.dp),
+                            color = if (!showSharedTab) accentColor else Color.Transparent,
+                            modifier = Modifier.weight(1f).testTag("queue_tab_local")
+                        ) {
+                            Text(
+                                text = "Antrean Lokal (${queue.size})",
+                                style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Bold),
+                                color = if (!showSharedTab) Color(0xFF0A0B0F) else MaterialTheme.colorScheme.onSurfaceVariant,
+                                textAlign = TextAlign.Center,
+                                modifier = Modifier.padding(vertical = 8.dp)
+                            )
+                        }
+                        Surface(
+                            onClick = { showSharedTab = true },
+                            shape = RoundedCornerShape(10.dp),
+                            color = if (showSharedTab) accentColor else Color.Transparent,
+                            modifier = Modifier.weight(1f).testTag("queue_tab_shared")
+                        ) {
+                            Text(
+                                text = "Antrian Bersama (${sharedQueue.size})",
+                                style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Bold),
+                                color = if (showSharedTab) Color(0xFF0A0B0F) else MaterialTheme.colorScheme.onSurfaceVariant,
+                                textAlign = TextAlign.Center,
+                                modifier = Modifier.padding(vertical = 8.dp)
+                            )
+                        }
                     }
                 }
             }
 
-            // Metrolist Autoplay Radio Switch
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 6.dp, vertical = 4.dp),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Text(
-                    text = "Putar Otomatis Radio Serupa",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-                Switch(checked = autoplayRadio, onCheckedChange = onToggleAutoplay)
-            }
-
-            LazyColumn(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                itemsIndexed(queue, key = { idx, t -> "q_${idx}_${t.id}" }) { idx, item ->
-                    val isCurrent = idx == currentIndex
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .clip(RoundedCornerShape(14.dp))
-                            .background(if (isCurrent) MaterialTheme.colorScheme.primary.copy(alpha = 0.14f) else Color.Transparent)
-                            .clickable { onSelect(item) }
-                            .padding(8.dp),
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        AlbumArtImage(
-                            url = item.artworkUrl,
-                            contentDescription = item.title,
-                            modifier = Modifier.size(42.dp),
-                            shape = RoundedCornerShape(10.dp)
-                        )
-                        Spacer(Modifier.width(10.dp))
-                        Column(modifier = Modifier.weight(1f)) {
-                            Text(
-                                text = item.title,
-                                style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.SemiBold),
-                                color = if (isCurrent) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface,
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis
-                            )
-                            Text(
-                                text = item.artist,
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis
-                            )
-                        }
-                        if (isCurrent) {
-                            AudioVisualizerBars(isPlaying = isPlaying, maxHeight = 14.dp)
-                        } else {
-                            if (idx > 0) {
-                                IconButton(onClick = { onMoveItem(idx, idx - 1) }, modifier = Modifier.size(30.dp)) {
-                                    Icon(Icons.Rounded.ArrowUpward, contentDescription = "Naik", modifier = Modifier.size(16.dp))
-                                }
-                            }
-                            if (idx < queue.lastIndex) {
-                                IconButton(onClick = { onMoveItem(idx, idx + 1) }, modifier = Modifier.size(30.dp)) {
-                                    Icon(Icons.Rounded.ArrowDownward, contentDescription = "Turun", modifier = Modifier.size(16.dp))
-                                }
-                            }
-                            IconButton(onClick = { onRemove(idx) }, modifier = Modifier.size(30.dp)) {
-                                Icon(
-                                    imageVector = Icons.Rounded.Close,
-                                    contentDescription = "Hapus dari antrean",
-                                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                                    modifier = Modifier.size(16.dp)
+            if (hasActiveRoom && showSharedTab) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(
+                        text = "LIVE • ${activeRoom!!.roomCode}",
+                        style = MaterialTheme.typography.labelLarge,
+                        fontWeight = FontWeight.Bold,
+                        color = accentColor,
+                        modifier = Modifier.padding(start = 4.dp)
+                    )
+                    if (isJoined && onOpenAddSharedQueue != null) {
+                        Surface(
+                            onClick = onOpenAddSharedQueue,
+                            shape = RoundedCornerShape(50),
+                            color = accentColor.copy(alpha = 0.18f),
+                            modifier = Modifier.testTag("player_add_shared_queue_button")
+                        ) {
+                            Row(
+                                modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(4.dp)
+                            ) {
+                                Icon(Icons.Rounded.Add, contentDescription = null, tint = accentColor, modifier = Modifier.size(16.dp))
+                                Text(
+                                    text = "Tambah Lagu",
+                                    style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold),
+                                    color = accentColor
                                 )
+                            }
+                        }
+                    }
+                }
+                Spacer(modifier = Modifier.height(8.dp))
+
+                if (sharedQueue.isEmpty()) {
+                    Box(
+                        modifier = Modifier.fillMaxSize(),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Text(
+                            text = "Antrian bersama masih kosong.\nKetuk \"Tambah Lagu\" untuk menambahkan.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            textAlign = TextAlign.Center
+                        )
+                    }
+                } else {
+                    LazyColumn(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                        itemsIndexed(sharedQueue, key = { idx, item -> "sq_${idx}_${item.trackId}" }) { idx, qTrack ->
+                            val isUpvoted = currentUserId != null && currentUserId in qTrack.upvoterUids
+                            val canRemove = canControlRoom || (isJoined && qTrack.addedByUid == currentUserId)
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clip(RoundedCornerShape(14.dp))
+                                    .background(MaterialTheme.colorScheme.surfaceContainerLow)
+                                    .clickable(enabled = canControlRoom && onPlaySharedQueue != null) {
+                                        onPlaySharedQueue?.invoke(idx)
+                                    }
+                                    .padding(8.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                AlbumArtImage(
+                                    url = qTrack.artworkUrl,
+                                    contentDescription = qTrack.title,
+                                    modifier = Modifier.size(42.dp),
+                                    shape = RoundedCornerShape(10.dp)
+                                )
+                                Spacer(Modifier.width(10.dp))
+                                Column(modifier = Modifier.weight(1f)) {
+                                    Text(
+                                        text = qTrack.title,
+                                        style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.SemiBold),
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis
+                                    )
+                                    Text(
+                                        text = "${qTrack.artist} • ${qTrack.addedByName.ifBlank { "Peserta" }}",
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis
+                                    )
+                                }
+                                if (isJoined && onUpvoteSharedQueue != null) {
+                                    Surface(
+                                        onClick = { onUpvoteSharedQueue(idx) },
+                                        shape = RoundedCornerShape(50),
+                                        color = if (isUpvoted) accentColor.copy(alpha = 0.22f) else MaterialTheme.colorScheme.surfaceContainerHigh
+                                    ) {
+                                        Row(
+                                            modifier = Modifier.padding(horizontal = 7.dp, vertical = 4.dp),
+                                            verticalAlignment = Alignment.CenterVertically,
+                                            horizontalArrangement = Arrangement.spacedBy(2.dp)
+                                        ) {
+                                            Icon(
+                                                imageVector = Icons.Rounded.LocalFireDepartment,
+                                                contentDescription = "Vote",
+                                                tint = if (isUpvoted) accentColor else MaterialTheme.colorScheme.onSurfaceVariant,
+                                                modifier = Modifier.size(14.dp)
+                                            )
+                                            Text(
+                                                text = "${qTrack.upvoterUids.size}",
+                                                style = MaterialTheme.typography.labelSmall,
+                                                color = if (isUpvoted) accentColor else MaterialTheme.colorScheme.onSurfaceVariant
+                                            )
+                                        }
+                                    }
+                                }
+                                if (isJoined && onMoveSharedQueue != null && idx > 0) {
+                                    IconButton(onClick = { onMoveSharedQueue(idx, idx - 1) }, modifier = Modifier.size(28.dp)) {
+                                        Icon(Icons.Rounded.ArrowUpward, contentDescription = "Naik", modifier = Modifier.size(15.dp))
+                                    }
+                                }
+                                if (canRemove && onRemoveSharedQueue != null) {
+                                    IconButton(onClick = { onRemoveSharedQueue(idx) }, modifier = Modifier.size(28.dp)) {
+                                        Icon(Icons.Rounded.Close, contentDescription = "Hapus", modifier = Modifier.size(15.dp))
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            } else {
+                // Local Queue with Drag-to-Reorder handle
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(
+                        text = "Antrean (${queue.size}) • Tahan & seret",
+                        style = MaterialTheme.typography.titleSmall,
+                        fontWeight = FontWeight.Bold,
+                        modifier = Modifier.padding(start = 6.dp)
+                    )
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        IconButton(onClick = onSaveQueue, modifier = Modifier.size(36.dp)) {
+                            Icon(Icons.Rounded.Save, contentDescription = "Simpan antrean ke playlist", modifier = Modifier.size(18.dp))
+                        }
+                        IconButton(onClick = onClearUpcoming, modifier = Modifier.size(36.dp)) {
+                            Icon(Icons.Rounded.DeleteSweep, contentDescription = "Bersihkan antrean", modifier = Modifier.size(18.dp))
+                        }
+                    }
+                }
+
+                // Metrolist Autoplay Radio Switch
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 6.dp, vertical = 4.dp),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(
+                        text = "Putar Otomatis Radio Serupa",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    Switch(checked = autoplayRadio, onCheckedChange = onToggleAutoplay)
+                }
+
+                LazyColumn(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    itemsIndexed(queue, key = { idx, t -> "q_${idx}_${t.id}" }) { idx, item ->
+                        val isCurrent = idx == currentIndex
+                        var dragAccumulatedY by remember(item.id, idx) { mutableFloatStateOf(0f) }
+                        var isBeingDragged by remember(item.id, idx) { mutableStateOf(false) }
+                        val latestIdx by rememberUpdatedState(idx)
+                        val latestLastIdx by rememberUpdatedState(queue.lastIndex)
+
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .graphicsLayer {
+                                    translationY = if (isBeingDragged) dragAccumulatedY.coerceIn(-48f, 48f) else 0f
+                                }
+                                .clip(RoundedCornerShape(14.dp))
+                                .background(
+                                    when {
+                                        isBeingDragged -> accentColor.copy(alpha = 0.22f)
+                                        isCurrent -> accentColor.copy(alpha = 0.14f)
+                                        else -> Color.Transparent
+                                    }
+                                )
+                                .clickable { onSelect(item) }
+                                .padding(8.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            if (!isCurrent) {
+                                Box(
+                                    modifier = Modifier
+                                        .size(32.dp)
+                                        .pointerInput(item.id) {
+                                            detectVerticalDragGestures(
+                                                onDragStart = {
+                                                    isBeingDragged = true
+                                                    dragAccumulatedY = 0f
+                                                },
+                                                onVerticalDrag = { _, dragAmount ->
+                                                    dragAccumulatedY += dragAmount
+                                                    if (dragAccumulatedY <= -rowStepPx && latestIdx > 0) {
+                                                        onMoveItem(latestIdx, latestIdx - 1)
+                                                        dragAccumulatedY += rowStepPx
+                                                    } else if (dragAccumulatedY >= rowStepPx && latestIdx < latestLastIdx) {
+                                                        onMoveItem(latestIdx, latestIdx + 1)
+                                                        dragAccumulatedY -= rowStepPx
+                                                    }
+                                                },
+                                                onDragEnd = {
+                                                    isBeingDragged = false
+                                                    dragAccumulatedY = 0f
+                                                },
+                                                onDragCancel = {
+                                                    isBeingDragged = false
+                                                    dragAccumulatedY = 0f
+                                                }
+                                            )
+                                        },
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Rounded.DragHandle,
+                                        contentDescription = "Seret untuk ubah urutan",
+                                        tint = if (isBeingDragged) accentColor else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.65f),
+                                        modifier = Modifier.size(18.dp)
+                                    )
+                                }
+                            }
+                            AlbumArtImage(
+                                url = item.artworkUrl,
+                                contentDescription = item.title,
+                                modifier = Modifier.size(42.dp),
+                                shape = RoundedCornerShape(10.dp)
+                            )
+                            Spacer(Modifier.width(10.dp))
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(
+                                    text = item.title,
+                                    style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.SemiBold),
+                                    color = if (isCurrent) accentColor else MaterialTheme.colorScheme.onSurface,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+                                Text(
+                                    text = item.artist,
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+                            }
+                            if (isCurrent) {
+                                AudioVisualizerBars(isPlaying = isPlaying, color = accentColor, maxHeight = 14.dp)
+                            } else {
+                                if (idx > 0) {
+                                    IconButton(onClick = { onMoveItem(idx, idx - 1) }, modifier = Modifier.size(28.dp)) {
+                                        Icon(Icons.Rounded.ArrowUpward, contentDescription = "Naik", modifier = Modifier.size(15.dp))
+                                    }
+                                }
+                                if (idx < queue.lastIndex) {
+                                    IconButton(onClick = { onMoveItem(idx, idx + 1) }, modifier = Modifier.size(28.dp)) {
+                                        Icon(Icons.Rounded.ArrowDownward, contentDescription = "Turun", modifier = Modifier.size(15.dp))
+                                    }
+                                }
+                                IconButton(onClick = { onRemove(idx) }, modifier = Modifier.size(28.dp)) {
+                                    Icon(
+                                        imageVector = Icons.Rounded.Close,
+                                        contentDescription = "Hapus dari antrean",
+                                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        modifier = Modifier.size(15.dp)
+                                    )
+                                }
                             }
                         }
                     }
@@ -1207,13 +1636,14 @@ private fun UtilityChip(
     icon: androidx.compose.ui.graphics.vector.ImageVector,
     label: String,
     active: Boolean,
+    accentColor: Color,
     onClick: () -> Unit,
     modifier: Modifier = Modifier
 ) {
     Surface(
         onClick = onClick,
         shape = RoundedCornerShape(14.dp),
-        color = if (active) MaterialTheme.colorScheme.primary.copy(alpha = 0.18f) else Color.Transparent,
+        color = if (active) accentColor.copy(alpha = 0.18f) else Color.Transparent,
         modifier = modifier
     ) {
         Column(
@@ -1223,14 +1653,14 @@ private fun UtilityChip(
             Icon(
                 imageVector = icon,
                 contentDescription = label,
-                tint = if (active) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
+                tint = if (active) accentColor else MaterialTheme.colorScheme.onSurfaceVariant,
                 modifier = Modifier.size(19.dp)
             )
             Spacer(modifier = Modifier.height(2.dp))
             Text(
                 text = label,
                 style = MaterialTheme.typography.labelSmall,
-                color = if (active) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
+                color = if (active) accentColor else MaterialTheme.colorScheme.onSurfaceVariant,
                 maxLines = 1
             )
         }

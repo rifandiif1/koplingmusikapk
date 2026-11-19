@@ -109,7 +109,8 @@ fun AudioFxBottomSheet(
     onBassBoostChange: (Float) -> Unit,
     onNormalizeAudioChange: (Boolean) -> Unit,
     onSpeedChange: (Float) -> Unit,
-    onPitchChange: (Float) -> Unit
+    onPitchChange: (Float) -> Unit,
+    onCrossfadeChange: (Int) -> Unit = {}
 ) {
     val freqLabels = listOf("60Hz", "230Hz", "910Hz", "3.6kHz", "14kHz")
 
@@ -268,6 +269,23 @@ fun AudioFxBottomSheet(
                     value = settings.playbackPitch,
                     onValueChange = onPitchChange,
                     valueRange = 0.75f..1.5f
+                )
+            }
+
+            Column {
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                    Text("Crossfade Transisi Lagu", style = MaterialTheme.typography.titleSmall)
+                    Text(
+                        text = if (settings.crossfadeSeconds == 0) "Mati" else "${settings.crossfadeSeconds} detik",
+                        style = MaterialTheme.typography.labelMedium,
+                        color = MaterialTheme.colorScheme.primary
+                    )
+                }
+                Slider(
+                    value = settings.crossfadeSeconds.toFloat(),
+                    onValueChange = { onCrossfadeChange(it.toInt().coerceIn(0, 10)) },
+                    valueRange = 0f..10f,
+                    steps = 9
                 )
             }
         }

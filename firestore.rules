@@ -29,6 +29,14 @@ service cloud.firestore {
       return code is string && code.size() == 6 && code.matches('^[A-Z2-9]{6}$');
     }
 
+    function existingSkipVotes() {
+      return ('skipVoteUids' in existing()) ? existing().skipVoteUids : [];
+    }
+
+    function incomingSkipVotes() {
+      return ('skipVoteUids' in incoming()) ? incoming().skipVoteUids : [];
+    }
+
     // ---- Validation Helpers (Anti-Update-Gap) ----
     function isValidListenRoom(data) {
       return data.keys().hasAll([
@@ -43,7 +51,8 @@ service cloud.firestore {
                'memberUids', 'memberNames', 'currentTrackId', 'currentTrackTitle',
                'currentTrackArtist', 'currentTrackAlbum', 'currentTrackArtwork',
                'currentTrackDurationMs', 'playing', 'positionMs', 'syncSequence',
-               'queueTracks', 'lastActionBy', 'createdAt', 'updatedAt'
+               'queueTracks', 'chatMessages', 'skipVoteUids', 'lastActionBy',
+               'createdAt', 'updatedAt'
              ]) &&
              isValidId(data.hostUid) &&
              data.hostName is string && data.hostName.size() >= 1 && data.hostName.size() <= 60 &&
@@ -65,6 +74,8 @@ service cloud.firestore {
              data.syncSequence is int && data.syncSequence >= 0 &&
              data.queueTracks is list && data.queueTracks.size() <= 30 &&
              (data.queueTracks.size() == 0 || data.queueTracks[0] is map) &&
+             (!('chatMessages' in data) || (data.chatMessages is list && data.chatMessages.size() <= 40 && (data.chatMessages.size() == 0 || data.chatMessages[0] is map))) &&
+             (!('skipVoteUids' in data) || (data.skipVoteUids is list && data.skipVoteUids.size() <= 25 && (data.skipVoteUids.size() == 0 || data.skipVoteUids[0] is string))) &&
              data.lastActionBy is string && data.lastActionBy.size() <= 140 &&
              data.createdAt is timestamp &&
              data.updatedAt is timestamp;
@@ -125,9 +136,9 @@ service cloud.firestore {
                            !(request.auth.uid in incoming().memberUids) &&
                            incoming().memberUids.size() == existing().memberUids.size() - 1 &&
                            existing().memberUids.hasAll(incoming().memberUids) &&
-                           incoming().diff(existing()).affectedKeys().hasOnly(['memberUids', 'memberNames', 'lastActionBy', 'updatedAt'])
+                           incoming().diff(existing()).affectedKeys().hasOnly(['memberUids', 'memberNames', 'skipVoteUids', 'lastActionBy', 'updatedAt'])
                          ) ||
-                         // Action 3: Synchronized playback, queue, or live reaction update
+                         // Action 3: Synchronized playback & queue update by Host or permitted Guest
                          (
                            (
                              request.auth.uid == existing().hostUid ||
@@ -137,7 +148,7 @@ service cloud.firestore {
                              'currentTrackId', 'currentTrackTitle', 'currentTrackArtist',
                              'currentTrackAlbum', 'currentTrackArtwork', 'currentTrackDurationMs',
                              'playing', 'positionMs', 'syncSequence', 'queueTracks',
-                             'lastActionBy', 'updatedAt'
+                             'skipVoteUids', 'lastActionBy', 'updatedAt'
                            ])
                          ) ||
                          // Action 4: Host room settings or ending the session
@@ -153,6 +164,39 @@ service cloud.firestore {
                            incoming().diff(existing()).affectedKeys().hasOnly([
                              'lastActionBy', 'updatedAt'
                            ])
+                         ) ||
+                         // Action 6: Any joined member collaborates on the shared queue (add / upvote / reorder)
+                         (
+                           request.auth.uid in existing().memberUids &&
+                           incoming().diff(existing()).affectedKeys().hasOnly([
+                             'queueTracks', 'syncSequence', 'lastActionBy', 'updatedAt'
+                           ])
+                         ) ||
+                         // Action 7: Any joined member sends a live chat message
+                         (
+                           request.auth.uid in existing().memberUids &&
+                           incoming().diff(existing()).affectedKeys().hasOnly([
+                             'chatMessages', 'lastActionBy', 'updatedAt'
+                           ])
+                         ) ||
+                         // Action 8: Joined member casts/toggles a Vote Skip (or triggers majority skip)
+                         (
+                           request.auth.uid in existing().memberUids && (
+                             incoming().diff(existing()).affectedKeys().hasOnly([
+                               'skipVoteUids', 'lastActionBy', 'updatedAt'
+                             ]) ||
+                             (
+                               !(request.auth.uid in existingSkipVotes()) &&
+                               (existingSkipVotes().size() + 1) * 2 > existing().memberUids.size() &&
+                               incomingSkipVotes().size() == 0 &&
+                               incoming().diff(existing()).affectedKeys().hasOnly([
+                                 'currentTrackId', 'currentTrackTitle', 'currentTrackArtist',
+                                 'currentTrackAlbum', 'currentTrackArtwork', 'currentTrackDurationMs',
+                                 'playing', 'positionMs', 'syncSequence', 'queueTracks',
+                                 'skipVoteUids', 'lastActionBy', 'updatedAt'
+                               ])
+                             )
+                           )
                          )
                        );
 

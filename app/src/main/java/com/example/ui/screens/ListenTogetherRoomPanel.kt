@@ -18,6 +18,7 @@ import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
@@ -28,33 +29,52 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.KeyboardActions
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.ArrowBack
 import androidx.compose.material.icons.automirrored.rounded.ExitToApp
 import androidx.compose.material.icons.automirrored.rounded.QueueMusic
+import androidx.compose.material.icons.automirrored.rounded.Send
 import androidx.compose.material.icons.rounded.Add
+import androidx.compose.material.icons.rounded.ArrowDownward
+import androidx.compose.material.icons.rounded.ArrowUpward
+import androidx.compose.material.icons.rounded.ChatBubbleOutline
 import androidx.compose.material.icons.rounded.Close
 import androidx.compose.material.icons.rounded.ContentCopy
 import androidx.compose.material.icons.rounded.Download
+import androidx.compose.material.icons.rounded.FastForward
+import androidx.compose.material.icons.rounded.LocalFireDepartment
 import androidx.compose.material.icons.rounded.MusicNote
 import androidx.compose.material.icons.rounded.Pause
 import androidx.compose.material.icons.rounded.Person
 import androidx.compose.material.icons.rounded.PlayArrow
 import androidx.compose.material.icons.rounded.QrCode2
+import androidx.compose.material.icons.rounded.QueuePlayNext
+import androidx.compose.material.icons.rounded.Search
 import androidx.compose.material.icons.rounded.Share
 import androidx.compose.material.icons.rounded.SkipNext
 import androidx.compose.material.icons.rounded.Sync
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -65,6 +85,7 @@ import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
@@ -77,6 +98,7 @@ import com.example.listentogether.ListenRoom
 import com.example.listentogether.QrCodeUtils
 import com.example.model.Track
 import com.example.viewmodel.PlayerUiState
+import kotlinx.coroutines.launch
 
 @Composable
 fun ListenTogetherActiveRoomContent(
@@ -92,18 +114,31 @@ fun ListenTogetherActiveRoomContent(
     onToggleGuestsControl: (Boolean) -> Unit,
     onTogglePlayPause: () -> Unit,
     onSkipNext: () -> Unit,
+    onToggleVoteSkip: () -> Unit,
     onForceResync: () -> Unit,
-    onAddCurrentTrackToRoomQueue: (Track) -> Unit,
+    onAddTrackToRoomQueue: (Track, Boolean) -> Unit,
+    onUpvoteSharedQueueIndex: (Int) -> Unit,
+    onMoveSharedQueueItem: (Int, Int) -> Unit,
+    onRemoveSharedQueueIndex: (Int) -> Unit,
     onPlaySharedQueueIndex: (Int) -> Unit,
+    onSendChatMessage: (String) -> Unit,
     onSendReaction: (String) -> Unit,
+    onQuickSearchTracks: suspend (String) -> List<Track>,
     onLeaveOrEnd: () -> Unit,
     onShowSnackbar: (String) -> Unit
 ) {
     val context = LocalContext.current
     val isHost = room.hostUid == currentUserId
-    val canControl = room.status == "active" && (isHost || (room.guestsCanControl && currentUserId in room.memberUids))
+    val isJoinedMember = room.status == "active" && currentUserId in room.memberUids
+    val canControl = isJoinedMember && (isHost || room.guestsCanControl)
     val participants = remember(room.memberUids, room.memberNames, room.hostUid) { room.parsedParticipants() }
     val sharedQueue = remember(room.queueTracks) { room.parsedQueue() }
+    val chatMessages = remember(room.chatMessages) { room.parsedChatMessages() }
+    val hasVotedSkip = currentUserId in room.skipVoteUids
+    val votesNeeded = room.votesNeededToSkip()
+
+    var showAddQueueSearchSheet by remember { mutableStateOf(false) }
+    var chatDraft by rememberSaveable { mutableStateOf("") }
 
     val copyRoomCode: () -> Unit = {
         val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager
@@ -297,7 +332,7 @@ fun ListenTogetherActiveRoomContent(
             }
         }
 
-        // ---- Synchronized Now Playing Card ----
+        // ---- Synchronized Now Playing Card + Vote Skip ----
         item {
             Surface(
                 shape = RoundedCornerShape(24.dp),
@@ -410,6 +445,64 @@ fun ListenTogetherActiveRoomContent(
                         }
                     }
 
+                    // Vote Skip Button (available for ALL joined members when shared queue has songs)
+                    if (isJoinedMember && room.currentTrackId.isNotBlank()) {
+                        Surface(
+                            onClick = onToggleVoteSkip,
+                            shape = RoundedCornerShape(14.dp),
+                            color = if (hasVotedSkip) {
+                                MaterialTheme.colorScheme.secondary.copy(alpha = 0.22f)
+                            } else {
+                                MaterialTheme.colorScheme.surfaceContainerHigh
+                            },
+                            border = BorderStroke(
+                                1.dp,
+                                if (hasVotedSkip) MaterialTheme.colorScheme.secondary else MaterialTheme.colorScheme.outlineVariant
+                            ),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .testTag("room_vote_skip_button")
+                        ) {
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(horizontal = 14.dp, vertical = 10.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.SpaceBetween
+                            ) {
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Rounded.FastForward,
+                                        contentDescription = null,
+                                        tint = if (hasVotedSkip) MaterialTheme.colorScheme.secondary else MaterialTheme.colorScheme.onSurfaceVariant,
+                                        modifier = Modifier.size(18.dp)
+                                    )
+                                    Text(
+                                        text = if (hasVotedSkip) "Sudah Vote Skip (Ketuk batal)" else "Vote Skip Lagu Ini",
+                                        style = MaterialTheme.typography.labelLarge,
+                                        fontWeight = FontWeight.SemiBold,
+                                        color = if (hasVotedSkip) MaterialTheme.colorScheme.secondary else MaterialTheme.colorScheme.onSurface
+                                    )
+                                }
+                                Surface(
+                                    shape = RoundedCornerShape(50),
+                                    color = if (hasVotedSkip) MaterialTheme.colorScheme.secondary else MaterialTheme.colorScheme.surfaceContainerHighest
+                                ) {
+                                    Text(
+                                        text = "${room.skipVoteUids.size}/$votesNeeded",
+                                        style = MaterialTheme.typography.labelMedium,
+                                        fontWeight = FontWeight.Bold,
+                                        color = if (hasVotedSkip) MaterialTheme.colorScheme.onSecondary else MaterialTheme.colorScheme.onSurface,
+                                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 3.dp)
+                                    )
+                                }
+                            }
+                        }
+                    }
+
                     // Live Emoji Reactions bar
                     Row(
                         modifier = Modifier.fillMaxWidth(),
@@ -487,56 +580,69 @@ fun ListenTogetherActiveRoomContent(
             }
         }
 
-        // ---- Shared Room Queue ----
+        // ---- Collaborative Antrian Bersama (Shared Queue) ----
         item {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.SpaceBetween
-            ) {
+            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
                 Row(
+                    modifier = Modifier.fillMaxWidth(),
                     verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    horizontalArrangement = Arrangement.SpaceBetween
                 ) {
-                    Icon(
-                        imageVector = Icons.AutoMirrored.Rounded.QueueMusic,
-                        contentDescription = null,
-                        tint = MaterialTheme.colorScheme.primary,
-                        modifier = Modifier.size(20.dp)
-                    )
-                    Text(
-                        text = "Antrean Bersama (${sharedQueue.size})",
-                        style = MaterialTheme.typography.titleSmall,
-                        fontWeight = FontWeight.Bold
-                    )
-                }
-
-                val currentLocal = playerState.currentTrack
-                if (canControl && currentLocal != null && !currentLocal.isLocal && currentLocal.id != room.currentTrackId) {
-                    Surface(
-                        shape = RoundedCornerShape(12.dp),
-                        color = MaterialTheme.colorScheme.primary.copy(alpha = 0.16f),
-                        modifier = Modifier
-                            .clickable { onAddCurrentTrackToRoomQueue(currentLocal) }
-                            .testTag("push_current_track_to_room_queue")
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
-                        Row(
-                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(4.dp)
-                        ) {
-                            Icon(
-                                imageVector = Icons.Rounded.Add,
-                                contentDescription = null,
-                                tint = MaterialTheme.colorScheme.primary,
-                                modifier = Modifier.size(16.dp)
+                        Icon(
+                            imageVector = Icons.AutoMirrored.Rounded.QueueMusic,
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.primary,
+                            modifier = Modifier.size(20.dp)
+                        )
+                        Column {
+                            Text(
+                                text = "Antrian Bersama (${sharedQueue.size}/30)",
+                                style = MaterialTheme.typography.titleSmall,
+                                fontWeight = FontWeight.Bold
                             )
                             Text(
-                                text = "Tambah Lagu Aktif",
+                                text = "Semua anggota bisa tambah, upvote & atur urutan",
                                 style = MaterialTheme.typography.labelSmall,
-                                fontWeight = FontWeight.Bold,
-                                color = MaterialTheme.colorScheme.primary
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
                             )
+                        }
+                    }
+                }
+
+                if (isJoinedMember) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        Button(
+                            onClick = { showAddQueueSearchSheet = true },
+                            shape = RoundedCornerShape(14.dp),
+                            contentPadding = PaddingValues(horizontal = 14.dp, vertical = 10.dp),
+                            modifier = Modifier
+                                .weight(1f)
+                                .testTag("room_search_add_queue_button")
+                        ) {
+                            Icon(Icons.Rounded.Search, contentDescription = null, modifier = Modifier.size(18.dp))
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text("Cari & Tambah Lagu", fontWeight = FontWeight.Bold, maxLines = 1)
+                        }
+
+                        val currentLocal = playerState.currentTrack
+                        if (currentLocal != null && !currentLocal.isLocal && currentLocal.id != room.currentTrackId) {
+                            OutlinedButton(
+                                onClick = { onAddTrackToRoomQueue(currentLocal, false) },
+                                shape = RoundedCornerShape(14.dp),
+                                contentPadding = PaddingValues(horizontal = 12.dp, vertical = 10.dp),
+                                modifier = Modifier.testTag("push_current_track_to_room_queue")
+                            ) {
+                                Icon(Icons.Rounded.Add, contentDescription = null, modifier = Modifier.size(16.dp))
+                                Spacer(modifier = Modifier.width(4.dp))
+                                Text("Lagu Aktif", maxLines = 1)
+                            }
                         }
                     }
                 }
@@ -551,7 +657,7 @@ fun ListenTogetherActiveRoomContent(
                     modifier = Modifier.fillMaxWidth()
                 ) {
                     Text(
-                        text = "Antrean bersama masih kosong. Putar lagu atau pilih \"Tambah ke Ruang Bersama\" dari menu titik tiga pada lagu mana saja.",
+                        text = "Antrian bersama masih kosong. Ketuk \"Cari & Tambah Lagu\" di atas atau pilih \"Tambah ke Antrian Play Bersama\" dari menu lagu mana saja.",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         modifier = Modifier.padding(16.dp)
@@ -560,50 +666,267 @@ fun ListenTogetherActiveRoomContent(
             }
         } else {
             itemsIndexed(sharedQueue, key = { idx, item -> "${item.trackId}_$idx" }) { idx, qTrack ->
+                val isUpvoted = currentUserId in qTrack.upvoterUids
+                val canRemoveItem = canControl || (isJoinedMember && qTrack.addedByUid == currentUserId)
                 Surface(
-                    shape = RoundedCornerShape(16.dp),
+                    shape = RoundedCornerShape(18.dp),
                     color = MaterialTheme.colorScheme.surfaceContainer,
+                    border = BorderStroke(
+                        0.8.dp,
+                        if (qTrack.upvoterUids.isNotEmpty()) MaterialTheme.colorScheme.primary.copy(alpha = 0.35f)
+                        else MaterialTheme.colorScheme.outlineVariant
+                    ),
                     modifier = Modifier
                         .fillMaxWidth()
                         .clickable(enabled = canControl) { onPlaySharedQueueIndex(idx) }
                         .testTag("room_queue_item_$idx")
                 ) {
-                    Row(
-                        modifier = Modifier.padding(12.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(12.dp)
-                    ) {
-                        AsyncImage(
-                            model = qTrack.artworkUrl,
-                            contentDescription = qTrack.title,
-                            contentScale = ContentScale.Crop,
-                            modifier = Modifier
-                                .size(48.dp)
-                                .clip(RoundedCornerShape(10.dp))
-                                .background(MaterialTheme.colorScheme.surfaceContainerHigh)
-                        )
-                        Column(modifier = Modifier.weight(1f)) {
-                            Text(
-                                text = qTrack.title,
-                                style = MaterialTheme.typography.bodyMedium,
-                                fontWeight = FontWeight.SemiBold,
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis
+                    Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(12.dp)
+                        ) {
+                            AsyncImage(
+                                model = qTrack.artworkUrl,
+                                contentDescription = qTrack.title,
+                                contentScale = ContentScale.Crop,
+                                modifier = Modifier
+                                    .size(48.dp)
+                                    .clip(RoundedCornerShape(10.dp))
+                                    .background(MaterialTheme.colorScheme.surfaceContainerHigh)
                             )
-                            Text(
-                                text = "${qTrack.artist} • oleh ${qTrack.addedByName.ifBlank { "Peserta" }}",
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis
-                            )
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(
+                                    text = qTrack.title,
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    fontWeight = FontWeight.SemiBold,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+                                Text(
+                                    text = "${qTrack.artist} • oleh ${qTrack.addedByName.ifBlank { "Peserta" }}",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+                            }
+                            if (canControl) {
+                                IconButton(
+                                    onClick = { onPlaySharedQueueIndex(idx) },
+                                    modifier = Modifier.size(36.dp)
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Rounded.PlayArrow,
+                                        contentDescription = "Putar Sekarang",
+                                        tint = MaterialTheme.colorScheme.primary
+                                    )
+                                }
+                            }
                         }
-                        if (canControl) {
-                            Icon(
-                                imageVector = Icons.Rounded.PlayArrow,
-                                contentDescription = "Putar Sekarang",
-                                tint = MaterialTheme.colorScheme.primary
+
+                        if (isJoinedMember) {
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.SpaceBetween
+                            ) {
+                                // Upvote chip to prioritize track
+                                Surface(
+                                    onClick = { onUpvoteSharedQueueIndex(idx) },
+                                    shape = RoundedCornerShape(50),
+                                    color = if (isUpvoted) {
+                                        MaterialTheme.colorScheme.primary.copy(alpha = 0.2f)
+                                    } else {
+                                        MaterialTheme.colorScheme.surfaceContainerHigh
+                                    },
+                                    border = BorderStroke(
+                                        0.8.dp,
+                                        if (isUpvoted) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outlineVariant
+                                    ),
+                                    modifier = Modifier.testTag("room_queue_upvote_$idx")
+                                ) {
+                                    Row(
+                                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp),
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.spacedBy(4.dp)
+                                    ) {
+                                        Icon(
+                                            imageVector = Icons.Rounded.LocalFireDepartment,
+                                            contentDescription = "Upvote",
+                                            tint = if (isUpvoted) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
+                                            modifier = Modifier.size(15.dp)
+                                        )
+                                        Text(
+                                            text = if (qTrack.upvoterUids.isEmpty()) "Vote" else "${qTrack.upvoterUids.size}",
+                                            style = MaterialTheme.typography.labelSmall,
+                                            fontWeight = FontWeight.Bold,
+                                            color = if (isUpvoted) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant
+                                        )
+                                    }
+                                }
+
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    if (idx > 0) {
+                                        IconButton(
+                                            onClick = { onMoveSharedQueueItem(idx, idx - 1) },
+                                            modifier = Modifier.size(34.dp)
+                                        ) {
+                                            Icon(Icons.Rounded.ArrowUpward, contentDescription = "Naikkan urutan", modifier = Modifier.size(16.dp))
+                                        }
+                                    }
+                                    if (idx < sharedQueue.lastIndex) {
+                                        IconButton(
+                                            onClick = { onMoveSharedQueueItem(idx, idx + 1) },
+                                            modifier = Modifier.size(34.dp)
+                                        ) {
+                                            Icon(Icons.Rounded.ArrowDownward, contentDescription = "Turunkan urutan", modifier = Modifier.size(16.dp))
+                                        }
+                                    }
+                                    if (canRemoveItem) {
+                                        IconButton(
+                                            onClick = { onRemoveSharedQueueIndex(idx) },
+                                            modifier = Modifier.size(34.dp).testTag("room_queue_remove_$idx")
+                                        ) {
+                                            Icon(
+                                                imageVector = Icons.Rounded.Close,
+                                                contentDescription = "Hapus dari antrian bersama",
+                                                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                                                modifier = Modifier.size(16.dp)
+                                            )
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // ---- Live Chat Card ----
+        item {
+            Surface(
+                shape = RoundedCornerShape(22.dp),
+                color = MaterialTheme.colorScheme.surfaceContainer,
+                border = BorderStroke(0.8.dp, MaterialTheme.colorScheme.outlineVariant),
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Column(
+                    modifier = Modifier.padding(16.dp),
+                    verticalArrangement = Arrangement.spacedBy(12.dp)
+                ) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Rounded.ChatBubbleOutline,
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.primary,
+                            modifier = Modifier.size(18.dp)
+                        )
+                        Text(
+                            text = "Obrolan Langsung (${chatMessages.size})",
+                            style = MaterialTheme.typography.titleSmall,
+                            fontWeight = FontWeight.Bold
+                        )
+                    }
+
+                    if (chatMessages.isEmpty()) {
+                        Text(
+                            text = "Belum ada pesan. Sapa temanmu atau request lagu di sini!",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    } else {
+                        Column(
+                            modifier = Modifier.fillMaxWidth(),
+                            verticalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            chatMessages.takeLast(8).forEach { msg ->
+                                val isMine = msg.uid == currentUserId
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = if (isMine) Arrangement.End else Arrangement.Start
+                                ) {
+                                    Surface(
+                                        shape = RoundedCornerShape(
+                                            topStart = 14.dp,
+                                            topEnd = 14.dp,
+                                            bottomStart = if (isMine) 14.dp else 4.dp,
+                                            bottomEnd = if (isMine) 4.dp else 14.dp
+                                        ),
+                                        color = if (isMine) {
+                                            MaterialTheme.colorScheme.primary.copy(alpha = 0.2f)
+                                        } else {
+                                            MaterialTheme.colorScheme.surfaceContainerHigh
+                                        },
+                                        modifier = Modifier.fillMaxWidth(0.84f)
+                                    ) {
+                                        Column(modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp)) {
+                                            if (!isMine) {
+                                                Text(
+                                                    text = msg.senderName,
+                                                    style = MaterialTheme.typography.labelSmall,
+                                                    fontWeight = FontWeight.Bold,
+                                                    color = MaterialTheme.colorScheme.primary
+                                                )
+                                            }
+                                            Text(
+                                                text = msg.text,
+                                                style = MaterialTheme.typography.bodySmall,
+                                                color = MaterialTheme.colorScheme.onSurface
+                                            )
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    if (isJoinedMember) {
+                        val sendNow = {
+                            val trimmed = chatDraft.trim()
+                            if (trimmed.isNotEmpty()) {
+                                onSendChatMessage(trimmed)
+                                chatDraft = ""
+                            }
+                        }
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            OutlinedTextField(
+                                value = chatDraft,
+                                onValueChange = { chatDraft = it.take(240) },
+                                placeholder = { Text("Tulis pesan…", style = MaterialTheme.typography.bodySmall) },
+                                singleLine = true,
+                                shape = RoundedCornerShape(16.dp),
+                                keyboardOptions = KeyboardOptions(imeAction = ImeAction.Send),
+                                keyboardActions = KeyboardActions(onSend = { sendNow() }),
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .testTag("room_chat_input")
                             )
+                            Surface(
+                                onClick = sendNow,
+                                shape = CircleShape,
+                                color = if (chatDraft.isNotBlank()) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.surfaceContainerHigh,
+                                modifier = Modifier
+                                    .size(48.dp)
+                                    .testTag("room_chat_send_button")
+                            ) {
+                                Box(contentAlignment = Alignment.Center) {
+                                    Icon(
+                                        imageVector = Icons.AutoMirrored.Rounded.Send,
+                                        contentDescription = "Kirim pesan",
+                                        tint = if (chatDraft.isNotBlank()) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurfaceVariant,
+                                        modifier = Modifier.size(20.dp)
+                                    )
+                                }
+                            }
                         }
                     }
                 }
@@ -631,7 +954,7 @@ fun ListenTogetherActiveRoomContent(
                                 fontWeight = FontWeight.SemiBold
                             )
                             Text(
-                                text = "Peserta dapat play/pause, ganti lagu, & tambah antrean",
+                                text = "Peserta dapat play/pause & lompat lagu langsung",
                                 style = MaterialTheme.typography.bodySmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant
                             )
@@ -692,6 +1015,16 @@ fun ListenTogetherActiveRoomContent(
         }
     }
 
+    if (showAddQueueSearchSheet) {
+        AddToSharedQueueSearchSheet(
+            onDismiss = { showAddQueueSearchSheet = false },
+            onSearch = onQuickSearchTracks,
+            onAddTrack = { track, playNext ->
+                onAddTrackToRoomQueue(track, playNext)
+            }
+        )
+    }
+
     if (showQrModal) {
         RoomQrPassDialog(
             roomCode = room.roomCode,
@@ -708,6 +1041,185 @@ fun ListenTogetherActiveRoomContent(
                 }
             }
         )
+    }
+}
+
+/**
+ * In-room quick search modal so any joined member can search YouTube Music
+ * and add tracks directly to the collaborative Antrian Bersama.
+ */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun AddToSharedQueueSearchSheet(
+    onDismiss: () -> Unit,
+    onSearch: suspend (String) -> List<Track>,
+    onAddTrack: (Track, Boolean) -> Unit
+) {
+    val scope = rememberCoroutineScope()
+    var query by rememberSaveable { mutableStateOf("") }
+    var results by remember { mutableStateOf<List<Track>>(emptyList()) }
+    var isSearching by remember { mutableStateOf(false) }
+    var hasSearched by remember { mutableStateOf(false) }
+
+    val triggerSearch = {
+        val trimmed = query.trim()
+        if (trimmed.isNotEmpty()) {
+            scope.launch {
+                isSearching = true
+                hasSearched = true
+                results = onSearch(trimmed)
+                isSearching = false
+            }
+        }
+    }
+
+    ModalBottomSheet(
+        onDismissRequest = onDismiss,
+        containerColor = MaterialTheme.colorScheme.surface,
+        shape = RoundedCornerShape(topStart = 28.dp, topEnd = 28.dp)
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 20.dp)
+                .padding(bottom = 28.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp)
+        ) {
+            Text(
+                text = "Tambah ke Antrian Bersama",
+                style = MaterialTheme.typography.titleLarge,
+                fontWeight = FontWeight.Bold
+            )
+            Text(
+                text = "Cari lagu YouTube Music lalu tambahkan ke antrian ruang secara langsung.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                OutlinedTextField(
+                    value = query,
+                    onValueChange = { query = it },
+                    placeholder = { Text("Judul lagu atau artis…") },
+                    singleLine = true,
+                    shape = RoundedCornerShape(16.dp),
+                    keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
+                    keyboardActions = KeyboardActions(onSearch = { triggerSearch() }),
+                    modifier = Modifier
+                        .weight(1f)
+                        .testTag("shared_queue_search_input")
+                )
+                Button(
+                    onClick = triggerSearch,
+                    enabled = query.isNotBlank() && !isSearching,
+                    shape = RoundedCornerShape(14.dp),
+                    modifier = Modifier
+                        .height(54.dp)
+                        .testTag("shared_queue_search_submit")
+                ) {
+                    Icon(Icons.Rounded.Search, contentDescription = "Cari")
+                }
+            }
+
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .heightIn(min = 200.dp, max = 380.dp)
+            ) {
+                when {
+                    isSearching -> {
+                        Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                            CircularProgressIndicator(color = MaterialTheme.colorScheme.primary)
+                        }
+                    }
+                    results.isEmpty() && hasSearched -> {
+                        Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                            Text(
+                                text = "Tidak ada lagu ditemukan untuk \"$query\"",
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                    }
+                    results.isEmpty() -> {
+                        Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                            Text(
+                                text = "Ketik judul lagu atau artis untuk mulai mencari.",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                    }
+                    else -> {
+                        LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                            items(results, key = { it.id }) { track ->
+                                Surface(
+                                    shape = RoundedCornerShape(14.dp),
+                                    color = MaterialTheme.colorScheme.surfaceContainerHigh,
+                                    modifier = Modifier.fillMaxWidth()
+                                ) {
+                                    Row(
+                                        modifier = Modifier.padding(10.dp),
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.spacedBy(10.dp)
+                                    ) {
+                                        AsyncImage(
+                                            model = track.artworkUrl,
+                                            contentDescription = track.title,
+                                            contentScale = ContentScale.Crop,
+                                            modifier = Modifier
+                                                .size(44.dp)
+                                                .clip(RoundedCornerShape(10.dp))
+                                                .background(MaterialTheme.colorScheme.surfaceVariant)
+                                        )
+                                        Column(modifier = Modifier.weight(1f)) {
+                                            Text(
+                                                text = track.title,
+                                                style = MaterialTheme.typography.bodyMedium,
+                                                fontWeight = FontWeight.SemiBold,
+                                                maxLines = 1,
+                                                overflow = TextOverflow.Ellipsis
+                                            )
+                                            Text(
+                                                text = track.artist,
+                                                style = MaterialTheme.typography.bodySmall,
+                                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                                maxLines = 1,
+                                                overflow = TextOverflow.Ellipsis
+                                            )
+                                        }
+                                        IconButton(
+                                            onClick = { onAddTrack(track, true) },
+                                            modifier = Modifier.size(38.dp)
+                                        ) {
+                                            Icon(
+                                                imageVector = Icons.Rounded.QueuePlayNext,
+                                                contentDescription = "Putar Berikutnya",
+                                                tint = MaterialTheme.colorScheme.secondary
+                                            )
+                                        }
+                                        IconButton(
+                                            onClick = { onAddTrack(track, false) },
+                                            modifier = Modifier.size(38.dp)
+                                        ) {
+                                            Icon(
+                                                imageVector = Icons.Rounded.Add,
+                                                contentDescription = "Tambah ke Antrian",
+                                                tint = MaterialTheme.colorScheme.primary
+                                            )
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
     }
 }
 

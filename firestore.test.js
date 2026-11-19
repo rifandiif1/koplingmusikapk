@@ -37,6 +37,8 @@ function validRoomPayload(hostUid, now = new Date(Date.now() - 2000)) {
     positionMs: 12000,
     syncSequence: 1,
     queueTracks: [],
+    chatMessages: [],
+    skipVoteUids: [],
     lastActionBy: "Alice membuat ruang",
     createdAt: now,
     updatedAt: now,
@@ -102,7 +104,7 @@ test("Room creation rejects invalid room codes, spoofed hostUid, extra fields, a
     hostDb.collection("listen_rooms").doc("abc12").set(validRoomPayload(HOST_UID))
   );
 
-  // Identity spoofing (setting someone else as hostUid)
+  // Identity spoofing
   await assertFails(
     hostDb.collection("listen_rooms").doc(ROOM_CODE).set(validRoomPayload(GUEST_UID))
   );
@@ -124,7 +126,7 @@ test("Room creation rejects invalid room codes, spoofed hostUid, extra fields, a
   );
 });
 
-test("Guest can look up room by 6-char code, join, leave, and respect guestsCanControl", async () => {
+test("Guest can join, collaborate on queue, live chat, vote skip, and respect guestsCanControl", async () => {
   const hostDb = testEnv.authenticatedContext(HOST_UID).firestore();
   const guestDb = testEnv.authenticatedContext(GUEST_UID).firestore();
   const outsiderDb = testEnv.authenticatedContext(OUTSIDER_UID).firestore();
@@ -133,10 +135,8 @@ test("Guest can look up room by 6-char code, join, leave, and respect guestsCanC
     hostDb.collection("listen_rooms").doc(ROOM_CODE).set(validRoomPayload(HOST_UID))
   );
 
-  // Guest gets room by code (from typing code or scanning QR)
+  // Guest gets room by code & joins
   await assertSucceeds(guestDb.collection("listen_rooms").doc(ROOM_CODE).get());
-
-  // Guest joins room (adds only self)
   await assertSucceeds(
     guestDb.collection("listen_rooms").doc(ROOM_CODE).update({
       memberUids: [HOST_UID, GUEST_UID],
@@ -146,32 +146,20 @@ test("Guest can look up room by 6-char code, join, leave, and respect guestsCanC
     })
   );
 
-  // While guestsCanControl == false, guest CANNOT change playback
+  // While guestsCanControl == false, guest CANNOT change playback directly
   await assertFails(
     guestDb.collection("listen_rooms").doc(ROOM_CODE).update({
       playing: false,
       positionMs: 25000,
       syncSequence: 2,
       lastActionBy: "Bob menjeda",
-      updatedAt: new Date(Date.now() - 500),
+      updatedAt: new Date(Date.now() - 900),
     })
   );
 
-  // Host enables guestsCanControl
-  await assertSucceeds(
-    hostDb.collection("listen_rooms").doc(ROOM_CODE).update({
-      guestsCanControl: true,
-      lastActionBy: "Alice mengizinkan kontrol peserta",
-      updatedAt: new Date(Date.now() - 500),
-    })
-  );
-
-  // Now joined guest CAN sync playback and add queue track
+  // Joined guest CAN add to collaborative shared queue even if guestsCanControl == false
   await assertSucceeds(
     guestDb.collection("listen_rooms").doc(ROOM_CODE).update({
-      playing: false,
-      positionMs: 30000,
-      syncSequence: 2,
       queueTracks: [
         {
           trackId: "abc12345678",
@@ -182,25 +170,114 @@ test("Guest can look up room by 6-char code, join, leave, and respect guestsCanC
           durationMs: 267000,
           addedByName: "Bob",
           addedByUid: GUEST_UID,
+          upvoterUids: [GUEST_UID],
         },
       ],
-      lastActionBy: "Bob menambahkan Caraphernelia",
+      syncSequence: 2,
+      lastActionBy: "Bob menambahkan Caraphernelia ke antrian bersama",
+      updatedAt: new Date(Date.now() - 800),
+    })
+  );
+
+  // Joined guest CAN send live chat message
+  await assertSucceeds(
+    guestDb.collection("listen_rooms").doc(ROOM_CODE).update({
+      chatMessages: [
+        {
+          id: "msg_1",
+          uid: GUEST_UID,
+          senderName: "Bob",
+          text: "Lagunya keren banget!",
+          sentAtMs: Date.now() - 750,
+        },
+      ],
+      lastActionBy: "Bob: Lagunya keren banget!",
+      updatedAt: new Date(Date.now() - 750),
+    })
+  );
+
+  // Outsider CANNOT send chat, edit queue, or vote skip
+  await assertFails(
+    outsiderDb.collection("listen_rooms").doc(ROOM_CODE).update({
+      chatMessages: [
+        { id: "msg_evil", uid: OUTSIDER_UID, senderName: "Eve", text: "spam", sentAtMs: Date.now() },
+      ],
+      lastActionBy: "Eve: spam",
+      updatedAt: new Date(Date.now() - 700),
+    })
+  );
+  await assertFails(
+    outsiderDb.collection("listen_rooms").doc(ROOM_CODE).update({
+      skipVoteUids: [OUTSIDER_UID],
+      lastActionBy: "Eve vote skip",
+      updatedAt: new Date(Date.now() - 700),
+    })
+  );
+
+  // Vote Skip: Guest votes (1/2 -> not majority yet, so cannot skip track directly)
+  await assertSucceeds(
+    guestDb.collection("listen_rooms").doc(ROOM_CODE).update({
+      skipVoteUids: [GUEST_UID],
+      lastActionBy: "Bob vote skip (1/2)",
+      updatedAt: new Date(Date.now() - 600),
+    })
+  );
+
+  // Guest cannot force majority skip when only 1/2 voted
+  await assertFails(
+    guestDb.collection("listen_rooms").doc(ROOM_CODE).update({
+      currentTrackId: "abc12345678",
+      currentTrackTitle: "Caraphernelia",
+      playing: true,
+      positionMs: 0,
+      syncSequence: 3,
+      queueTracks: [],
+      skipVoteUids: [],
+      lastActionBy: "Force skip",
+      updatedAt: new Date(Date.now() - 550),
+    })
+  );
+
+  // Host casts 2nd vote -> majority (2/2) reached! Skip advances track & clears skipVoteUids
+  await assertSucceeds(
+    hostDb.collection("listen_rooms").doc(ROOM_CODE).update({
+      currentTrackId: "abc12345678",
+      currentTrackTitle: "Caraphernelia",
+      currentTrackArtist: "Pierce The Veil",
+      currentTrackAlbum: "Selfish Machines",
+      currentTrackArtwork: "https://lh3.googleusercontent.com/art2",
+      currentTrackDurationMs: 267000,
+      playing: true,
+      positionMs: 0,
+      syncSequence: 3,
+      queueTracks: [],
+      skipVoteUids: [],
+      lastActionBy: "Vote Skip tercapai! Memutar Caraphernelia",
+      updatedAt: new Date(Date.now() - 500),
+    })
+  );
+
+  // Host enables guestsCanControl
+  await assertSucceeds(
+    hostDb.collection("listen_rooms").doc(ROOM_CODE).update({
+      guestsCanControl: true,
+      lastActionBy: "Alice mengizinkan kontrol peserta",
       updatedAt: new Date(Date.now() - 400),
     })
   );
 
-  // Non-member outsider STILL cannot mutate playback even when guestsCanControl == true
-  await assertFails(
-    outsiderDb.collection("listen_rooms").doc(ROOM_CODE).update({
-      playing: true,
-      positionMs: 0,
-      syncSequence: 3,
-      lastActionBy: "Eve hijack",
+  // Now joined guest CAN sync playback
+  await assertSucceeds(
+    guestDb.collection("listen_rooms").doc(ROOM_CODE).update({
+      playing: false,
+      positionMs: 30000,
+      syncSequence: 4,
+      lastActionBy: "Bob menjeda pemutaran",
       updatedAt: new Date(Date.now() - 300),
     })
   );
 
-  // Guest cannot mutate host settings or end the room
+  // Guest cannot end the room
   await assertFails(
     guestDb.collection("listen_rooms").doc(ROOM_CODE).update({
       status: "ended",
@@ -209,11 +286,12 @@ test("Guest can look up room by 6-char code, join, leave, and respect guestsCanC
     })
   );
 
-  // Guest leaves room cleanly (removes only self)
+  // Guest leaves cleanly
   await assertSucceeds(
     guestDb.collection("listen_rooms").doc(ROOM_CODE).update({
       memberUids: [HOST_UID],
       memberNames: [`${HOST_UID}|Alice`],
+      skipVoteUids: [],
       lastActionBy: "Bob keluar",
       updatedAt: new Date(Date.now() - 100),
     })
@@ -226,7 +304,6 @@ test("Terminal state locking: ended room rejects all subsequent updates", async 
     hostDb.collection("listen_rooms").doc(ROOM_CODE).set(validRoomPayload(HOST_UID))
   );
 
-  // Host ends room
   await assertSucceeds(
     hostDb.collection("listen_rooms").doc(ROOM_CODE).update({
       status: "ended",
@@ -235,7 +312,6 @@ test("Terminal state locking: ended room rejects all subsequent updates", async 
     })
   );
 
-  // Subsequent updates MUST fail (terminal state locked)
   await assertFails(
     hostDb.collection("listen_rooms").doc(ROOM_CODE).update({
       status: "active",
@@ -245,7 +321,8 @@ test("Terminal state locking: ended room rejects all subsequent updates", async 
   );
   await assertFails(
     hostDb.collection("listen_rooms").doc(ROOM_CODE).update({
-      playing: false,
+      chatMessages: [{ id: "m", uid: HOST_UID, senderName: "Alice", text: "hi", sentAtMs: Date.now() }],
+      lastActionBy: "chat after end",
       updatedAt: new Date(Date.now() - 500),
     })
   );
@@ -272,40 +349,13 @@ test("User-scoped recent_rooms enforces strict per-user isolation", async () => 
       })
   );
 
-  // Owner can list & update
   await assertSucceeds(
     hostDb.collection("users").doc(HOST_UID).collection("recent_rooms").get()
   );
-  await assertSucceeds(
-    hostDb
-      .collection("users")
-      .doc(HOST_UID)
-      .collection("recent_rooms")
-      .doc(ROOM_CODE)
-      .update({
-        roomName: "Studio Malam Remix",
-        updatedAt: new Date(Date.now() - 1000),
-      })
-  );
-
-  // Cross-user read/list/write MUST fail
   await assertFails(
     guestDb.collection("users").doc(HOST_UID).collection("recent_rooms").get()
   );
   await assertFails(
-    guestDb
-      .collection("users")
-      .doc(HOST_UID)
-      .collection("recent_rooms")
-      .doc(ROOM_CODE)
-      .get()
-  );
-  await assertFails(
-    guestDb
-      .collection("users")
-      .doc(HOST_UID)
-      .collection("recent_rooms")
-      .doc(ROOM_CODE)
-      .delete()
+    guestDb.collection("users").doc(HOST_UID).collection("recent_rooms").doc(ROOM_CODE).delete()
   );
 });

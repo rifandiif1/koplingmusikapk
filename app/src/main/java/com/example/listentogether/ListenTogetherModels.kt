@@ -28,6 +28,8 @@ data class ListenRoom(
     val positionMs: Long = 0L,
     val syncSequence: Long = 0L,
     val queueTracks: List<Map<String, Any>> = emptyList(),
+    val chatMessages: List<Map<String, Any>> = emptyList(),
+    val skipVoteUids: List<String> = emptyList(),
     val lastActionBy: String = "",
     @ServerTimestamp val createdAt: Timestamp? = null,
     @ServerTimestamp val updatedAt: Timestamp? = null
@@ -43,6 +45,10 @@ data class ListenRoom(
             streamUrl = null,
             durationMs = currentTrackDurationMs
         )
+    }
+
+    fun votesNeededToSkip(): Int {
+        return (memberUids.size / 2) + 1
     }
 
     fun parsedParticipants(): List<RoomParticipant> {
@@ -68,6 +74,10 @@ data class ListenRoom(
         return queueTracks.mapNotNull { raw ->
             val trackId = raw["trackId"] as? String ?: return@mapNotNull null
             val title = raw["title"] as? String ?: return@mapNotNull null
+            val rawUpvoters = (raw["upvoterUids"] as? List<*>)
+                ?.mapNotNull { it as? String }
+                ?.distinct()
+                ?: emptyList()
             RoomQueueTrack(
                 trackId = trackId,
                 title = title,
@@ -76,7 +86,24 @@ data class ListenRoom(
                 artworkUrl = (raw["artworkUrl"] as? String).orEmpty(),
                 durationMs = (raw["durationMs"] as? Number)?.toLong() ?: 0L,
                 addedByName = (raw["addedByName"] as? String).orEmpty(),
-                addedByUid = (raw["addedByUid"] as? String).orEmpty()
+                addedByUid = (raw["addedByUid"] as? String).orEmpty(),
+                upvoterUids = rawUpvoters
+            )
+        }
+    }
+
+    fun parsedChatMessages(): List<RoomChatMessage> {
+        return chatMessages.mapNotNull { raw ->
+            val text = raw["text"] as? String ?: return@mapNotNull null
+            if (text.isBlank()) return@mapNotNull null
+            val uid = (raw["uid"] as? String).orEmpty()
+            val sentAtMs = (raw["sentAtMs"] as? Number)?.toLong() ?: 0L
+            RoomChatMessage(
+                id = (raw["id"] as? String)?.takeIf { it.isNotBlank() } ?: "${uid}_${sentAtMs}",
+                uid = uid,
+                senderName = (raw["senderName"] as? String)?.ifBlank { "Pendengar" } ?: "Pendengar",
+                text = text,
+                sentAtMs = sentAtMs
             )
         }
     }
@@ -96,7 +123,8 @@ data class RoomQueueTrack(
     val artworkUrl: String = "",
     val durationMs: Long = 0L,
     val addedByName: String = "",
-    val addedByUid: String = ""
+    val addedByUid: String = "",
+    val upvoterUids: List<String> = emptyList()
 ) {
     fun toFirestoreMap(): Map<String, Any> = mapOf(
         "trackId" to trackId.take(128),
@@ -106,7 +134,8 @@ data class RoomQueueTrack(
         "artworkUrl" to artworkUrl.take(600),
         "durationMs" to durationMs.coerceIn(0L, 86_400_000L),
         "addedByName" to addedByName.take(60),
-        "addedByUid" to addedByUid.take(128)
+        "addedByUid" to addedByUid.take(128),
+        "upvoterUids" to upvoterUids.distinct().take(25)
     )
 
     fun toTrack(): Track = Track(
@@ -117,6 +146,22 @@ data class RoomQueueTrack(
         artworkUrl = artworkUrl.ifBlank { null },
         streamUrl = null,
         durationMs = durationMs
+    )
+}
+
+data class RoomChatMessage(
+    val id: String,
+    val uid: String,
+    val senderName: String,
+    val text: String,
+    val sentAtMs: Long
+) {
+    fun toFirestoreMap(): Map<String, Any> = mapOf(
+        "id" to id.take(64),
+        "uid" to uid.take(128),
+        "senderName" to senderName.take(60),
+        "text" to text.take(240),
+        "sentAtMs" to sentAtMs
     )
 }
 

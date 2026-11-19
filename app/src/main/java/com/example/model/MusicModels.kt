@@ -157,7 +157,9 @@ data class AudioSettings(
     val playbackSpeed: Float = 1.0f,
     val playbackPitch: Float = 1.0f,
     val highQualityStream: Boolean = true,
-    val gaplessPlayback: Boolean = true
+    val gaplessPlayback: Boolean = true,
+    val dynamicArtworkColor: Boolean = true,
+    val crossfadeSeconds: Int = 0
 )
 
 @Immutable

@@ -26,4 +26,7 @@
     <string name="cd_like_track">Sukai lagu</string>
     <string name="cd_close">Tutup</string>
     <string name="cd_back">Kembali</string>
+    <string name="widget_label">Pemutar Mini Koplingfy</string>
+    <string name="widget_description">Kontrol musik Koplingfy langsung dari Layar Utama</string>
+    <string name="widget_idle_subtitle">Ketuk untuk mulai memutar musik</string>
 </resources>

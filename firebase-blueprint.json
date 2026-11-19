@@ -2,7 +2,7 @@
   "entities": {
     "ListenRoom": {
       "title": "ListenRoom",
-      "description": "Real-time Play Bersama (Listen Together) synchronized playback room identified by a 6-character room code.",
+      "description": "Real-time Play Bersama (Listen Together) synchronized playback room with collaborative queue, live chat, and vote skip, identified by a 6-character room code.",
       "type": "object",
       "properties": {
         "hostUid": {
@@ -24,7 +24,7 @@
         },
         "guestsCanControl": {
           "type": "boolean",
-          "description": "Whether joined participants can control playback and add songs to the shared queue."
+          "description": "Whether joined participants can control playback directly."
         },
         "memberUids": {
           "type": "array",
@@ -72,7 +72,15 @@
         },
         "queueTracks": {
           "type": "array",
-          "description": "Bounded list (0..30) of shared upcoming track maps in the room."
+          "description": "Bounded list (0..30) of collaborative upcoming track maps in the room, including upvote UIDs."
+        },
+        "chatMessages": {
+          "type": "array",
+          "description": "Optional bounded list (0..40) of live chat message maps in the room."
+        },
+        "skipVoteUids": {
+          "type": "array",
+          "description": "Optional bounded list (0..25) of member UIDs currently voting to skip the active track."
         },
         "lastActionBy": {
           "type": "string",
