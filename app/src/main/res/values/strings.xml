@@ -1,0 +1,29 @@
+<resources>
+    <string name="app_name">Koplingfy</string>
+    <string name="nav_home">Beranda</string>
+    <string name="nav_explore">Jelajah</string>
+    <string name="nav_search">Cari</string>
+    <string name="nav_library">Koleksi</string>
+    <string name="action_settings">Pengaturan</string>
+    <string name="action_play_all">Putar Semua</string>
+    <string name="action_shuffle">Acak</string>
+    <string name="action_import_local">Impor Audio Lokal</string>
+    <string name="action_create_playlist">Buat Playlist</string>
+    <string name="player_now_playing">Sedang Diputar</string>
+    <string name="player_lyrics">Lirik</string>
+    <string name="player_queue">Antrean</string>
+    <string name="player_sleep_timer">Timer Tidur</string>
+    <string name="player_audio_fx">Audio &amp; EQ</string>
+    <string name="search_placeholder">Cari lagu, artis, atau album…</string>
+    <string name="library_liked_songs">Lagu Disukai</string>
+    <string name="library_history">Riwayat Putar</string>
+    <string name="library_local_audio">Audio Perangkat</string>
+    <string name="library_stats">Statistik Dengar</string>
+    <string name="cd_album_art">Sampul album</string>
+    <string name="cd_play_pause">Putar atau jeda</string>
+    <string name="cd_next_track">Lagu berikutnya</string>
+    <string name="cd_previous_track">Lagu sebelumnya</string>
+    <string name="cd_like_track">Sukai lagu</string>
+    <string name="cd_close">Tutup</string>
+    <string name="cd_back">Kembali</string>
+</resources>

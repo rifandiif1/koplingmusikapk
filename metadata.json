@@ -1,0 +1,6 @@
+{
+  "name": "Koplingfy",
+  "description": "Premium Material 3 music streaming, discovery, synced lyrics, and local audio player.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
