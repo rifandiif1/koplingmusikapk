@@ -562,7 +562,7 @@ fun SettingsScreen(
             SubScreenTopBar(title = "Pengaturan", subtitle = "Akun YouTube Music, visual, audio & cadangan", onBack = onBack)
         }
 
-        // ---- YouTube Music Account (Metrolist InnerTube Login & Sync) ----
+        // ---- YouTube Music Account (Google Sign-In & Optional Cookie Sync) ----
         item {
             SettingsSectionCard(title = "Akun YouTube Music", icon = Icons.Rounded.AccountCircle) {
                 if (youtubeAccount.isLoggedIn) {
@@ -585,7 +585,9 @@ fun SettingsScreen(
                                 overflow = TextOverflow.Ellipsis
                             )
                             Text(
-                                text = youtubeAccount.email.ifBlank { "Sesi InnerTube Aktif" },
+                                text = youtubeAccount.email.ifBlank {
+                                    if (youtubeAccount.hasCookieSession) "Sesi Cookie YTM Aktif" else "Akun Google Terhubung"
+                                },
                                 style = MaterialTheme.typography.bodySmall,
                                 color = MaterialTheme.colorScheme.primary,
                                 maxLines = 1,
@@ -599,8 +601,9 @@ fun SettingsScreen(
                         horizontalArrangement = Arrangement.spacedBy(10.dp)
                     ) {
                         Button(
-                            onClick = onSyncYouTubeLibrary,
+                            onClick = if (youtubeAccount.hasCookieSession) onSyncYouTubeLibrary else onOpenYouTubeLogin,
                             enabled = !isSyncingAccount,
+                            shape = RoundedCornerShape(14.dp),
                             modifier = Modifier.weight(1f).testTag("settings_sync_ytm_button")
                         ) {
                             if (isSyncingAccount) {
@@ -613,10 +616,15 @@ fun SettingsScreen(
                                 Icon(Icons.Rounded.Sync, contentDescription = null, modifier = Modifier.size(18.dp))
                             }
                             Spacer(modifier = Modifier.width(6.dp))
-                            Text("Sinkronkan")
+                            Text(
+                                text = if (youtubeAccount.hasCookieSession) "Sinkronkan" else "Sinkron Cookie",
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
                         }
                         OutlinedButton(
                             onClick = onLogoutYouTube,
+                            shape = RoundedCornerShape(14.dp),
                             modifier = Modifier.weight(1f).testTag("settings_logout_ytm_button")
                         ) {
                             Icon(Icons.Rounded.Logout, contentDescription = null, modifier = Modifier.size(18.dp))
@@ -626,18 +634,19 @@ fun SettingsScreen(
                     }
                 } else {
                     Text(
-                        text = "Masuk ke akun YouTube Music untuk memutar penuh lagu Explicit, sinkronisasi Lagu Disukai & Playlist, serta kualitas audio optimal.",
+                        text = "Masuk cepat 1-ketuk menggunakan akun Google (sama seperti Play Bersama) untuk profil, personalisasi, dan opsi sinkronisasi koleksi YouTube Music.",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
                     Spacer(modifier = Modifier.height(12.dp))
                     Button(
                         onClick = onOpenYouTubeLogin,
-                        modifier = Modifier.fillMaxWidth().testTag("settings_login_ytm_button")
+                        shape = RoundedCornerShape(14.dp),
+                        modifier = Modifier.fillMaxWidth().height(48.dp).testTag("settings_login_ytm_button")
                     ) {
                         Icon(Icons.Rounded.Login, contentDescription = null, modifier = Modifier.size(18.dp))
                         Spacer(modifier = Modifier.width(8.dp))
-                        Text("Masuk Akun YouTube Music")
+                        Text("Masuk dengan Google")
                     }
                 }
             }

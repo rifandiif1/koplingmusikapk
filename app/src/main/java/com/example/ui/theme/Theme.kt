@@ -61,7 +61,7 @@ private fun buildDarkColorScheme(
         surfaceContainer = surfaceVariant,
         surfaceContainerHigh = ObsidianSurfaceHigh,
         outline = ObsidianOutline,
-        outlineVariant = Color.White.copy(alpha = 0.08f),
+        outlineVariant = Color.White.copy(alpha = 0.07f),
         error = ErrorRed,
         onError = Color.White
     )

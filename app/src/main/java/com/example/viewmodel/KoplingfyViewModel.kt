@@ -852,14 +852,44 @@ class KoplingfyViewModel(application: Application) : AndroidViewModel(applicatio
     }
 
     // ---- YouTube Music Account Login & Library Sync ----
+    fun completeGoogleYouTubeLogin(
+        name: String,
+        email: String,
+        avatarUrl: String?,
+        onFinished: () -> Unit = {}
+    ) {
+        viewModelScope.launch {
+            _isSyncingAccount.value = true
+            val existing = youtubeAccount.value
+            val displayName = name.takeIf { it.isNotBlank() }
+                ?: email.substringBefore("@").takeIf { it.isNotBlank() }
+                ?: "Pengguna Google"
+            val updated = existing.copy(
+                name = displayName,
+                email = email,
+                avatarUrl = avatarUrl ?: existing.avatarUrl
+            )
+            preferences.saveYouTubeAccount(updated)
+            showMessage("Terhubung ke YouTube Music sebagai $displayName!")
+            _isSyncingAccount.value = false
+            onFinished()
+        }
+    }
+
     fun completeYouTubeLogin(cookie: String, onFinished: () -> Unit = {}) {
         viewModelScope.launch {
             _isSyncingAccount.value = true
+            val existing = youtubeAccount.value
             val account = repository.verifyAndFetchAccount(cookie)
-            if (account != null && account.isLoggedIn) {
-                preferences.saveYouTubeAccount(account)
-                InnerTubeClient.updateAuth(account.cookie, account.visitorData)
-                showMessage("Berhasil masuk sebagai ${account.name}!")
+            if (account != null && account.hasCookieSession) {
+                val merged = account.copy(
+                    name = account.name.ifBlank { existing.name },
+                    email = account.email.ifBlank { existing.email },
+                    avatarUrl = account.avatarUrl ?: existing.avatarUrl
+                )
+                preferences.saveYouTubeAccount(merged)
+                InnerTubeClient.updateAuth(merged.cookie, merged.visitorData)
+                showMessage("Sesi YouTube Music aktif untuk ${merged.name.ifBlank { "akunmu" }}!")
                 // Retry current track immediately if it was waiting for login
                 val current = _playerState.value.currentTrack
                 if (current != null && _playerState.value.requiresYouTubeLogin) {
@@ -875,8 +905,13 @@ class KoplingfyViewModel(application: Application) : AndroidViewModel(applicatio
 
     fun syncYouTubeAccountLibrary() {
         viewModelScope.launch {
-            if (!youtubeAccount.value.isLoggedIn) {
+            val acc = youtubeAccount.value
+            if (!acc.isLoggedIn) {
                 showMessage("Masuk ke akun YouTube Music terlebih dahulu")
+                return@launch
+            }
+            if (!acc.hasCookieSession) {
+                showMessage("Akun Google aktif. Buka Login YTM > Mode Lanjutan (Cookie) untuk tarik playlist pribadi.")
                 return@launch
             }
             _isSyncingAccount.value = true

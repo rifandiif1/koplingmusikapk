@@ -210,10 +210,10 @@ fun FloatingMiniPlayer(
                 )
             }
             .testTag("mini_player_bar"),
-        shape = RoundedCornerShape(22.dp),
+        shape = RoundedCornerShape(18.dp),
         color = MaterialTheme.colorScheme.surfaceContainerHigh,
-        border = BorderStroke(1.dp, accent.copy(alpha = 0.45f)),
-        shadowElevation = 16.dp
+        border = BorderStroke(0.9.dp, accent.copy(alpha = 0.35f)),
+        shadowElevation = 18.dp
     ) {
         Column {
             Row(
@@ -222,12 +222,12 @@ fun FloatingMiniPlayer(
                     .background(
                         Brush.horizontalGradient(
                             colors = listOf(
-                                dynamicPalette.deepAmbient.copy(alpha = 0.24f),
+                                dynamicPalette.deepAmbient.copy(alpha = 0.34f),
                                 Color.Transparent
                             )
                         )
                     )
-                    .padding(horizontal = 12.dp, vertical = 10.dp),
+                    .padding(start = 10.dp, end = 6.dp, top = 8.dp, bottom = 8.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 Box(modifier = Modifier.size(46.dp)) {
@@ -235,7 +235,7 @@ fun FloatingMiniPlayer(
                         url = track.artworkUrl,
                         contentDescription = track.title,
                         modifier = Modifier.fillMaxSize(),
-                        shape = RoundedCornerShape(12.dp)
+                        shape = RoundedCornerShape(11.dp)
                     )
                     if (playerState.isPlaying) {
                         Box(
@@ -243,7 +243,7 @@ fun FloatingMiniPlayer(
                                 .align(Alignment.BottomEnd)
                                 .padding(3.dp)
                                 .clip(RoundedCornerShape(6.dp))
-                                .background(Color(0xD90A0B0F))
+                                .background(Color(0xD908090D))
                                 .padding(horizontal = 4.dp, vertical = 2.dp)
                         ) {
                             AudioVisualizerBars(
@@ -266,8 +266,9 @@ fun FloatingMiniPlayer(
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis
                     )
+                    Spacer(modifier = Modifier.height(1.dp))
                     Text(
-                        text = if (playerState.isBuffering) "Memuat audio penuh…" else track.artist,
+                        text = if (playerState.isBuffering) "Memuat audio…" else track.artist,
                         style = MaterialTheme.typography.bodySmall,
                         color = if (playerState.isBuffering) accent else MaterialTheme.colorScheme.onSurfaceVariant,
                         maxLines = 1,
@@ -275,29 +276,33 @@ fun FloatingMiniPlayer(
                     )
                 }
 
-                IconButton(
+                Surface(
                     onClick = onTogglePlayPause,
-                    modifier = Modifier.size(44.dp).testTag("mini_play_pause")
+                    shape = CircleShape,
+                    color = accent.copy(alpha = 0.16f),
+                    modifier = Modifier.size(42.dp).testTag("mini_play_pause")
                 ) {
-                    if (playerState.isBuffering) {
-                        CircularProgressIndicator(
-                            modifier = Modifier.size(20.dp),
-                            strokeWidth = 2.dp,
-                            color = accent
-                        )
-                    } else {
-                        Icon(
-                            imageVector = if (playerState.isPlaying) Icons.Rounded.Pause else Icons.Rounded.PlayArrow,
-                            contentDescription = stringResource(R.string.cd_play_pause),
-                            tint = accent,
-                            modifier = Modifier.size(28.dp)
-                        )
+                    Box(contentAlignment = Alignment.Center) {
+                        if (playerState.isBuffering) {
+                            CircularProgressIndicator(
+                                modifier = Modifier.size(18.dp),
+                                strokeWidth = 2.dp,
+                                color = accent
+                            )
+                        } else {
+                            Icon(
+                                imageVector = if (playerState.isPlaying) Icons.Rounded.Pause else Icons.Rounded.PlayArrow,
+                                contentDescription = stringResource(R.string.cd_play_pause),
+                                tint = accent,
+                                modifier = Modifier.size(24.dp)
+                            )
+                        }
                     }
                 }
 
                 IconButton(
                     onClick = onNext,
-                    modifier = Modifier.size(40.dp).testTag("mini_next_button")
+                    modifier = Modifier.size(48.dp).testTag("mini_next_button")
                 ) {
                     Icon(
                         imageVector = Icons.Rounded.SkipNext,
@@ -314,7 +319,7 @@ fun FloatingMiniPlayer(
                     .fillMaxWidth()
                     .height(2.5.dp),
                 color = accent,
-                trackColor = MaterialTheme.colorScheme.outlineVariant
+                trackColor = Color.White.copy(alpha = 0.08f)
             )
         }
     }

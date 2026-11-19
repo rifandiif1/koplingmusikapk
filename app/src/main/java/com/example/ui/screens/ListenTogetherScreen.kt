@@ -19,10 +19,12 @@ import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.ArrowBack
 import androidx.compose.material.icons.automirrored.rounded.Login
@@ -101,7 +103,8 @@ fun ListenTogetherScreenHost(
     onForceResyncFromRoom: (ListenRoom) -> Unit,
     onPlayRoomTrackLocally: (Track, List<Track>) -> Unit,
     onQuickSearchTracks: suspend (String) -> List<Track>,
-    onSaveRoomAsPlaylist: (name: String, tracks: List<Track>) -> Unit = { _, _ -> }
+    onSaveRoomAsPlaylist: (name: String, tracks: List<Track>) -> Unit = { _, _ -> },
+    onAuthStateChanged: () -> Unit = {}
 ) {
     BackHandler(onBack = onBack)
 
@@ -113,8 +116,13 @@ fun ListenTogetherScreenHost(
     ) {
         if (currentUser == null || listenViewModel == null) {
             ListenTogetherAuthScreen(
+                bottomContentPadding = bottomContentPadding,
                 onBack = onBack,
-                onAuthSuccess = { onShowSnackbar("Berhasil masuk dengan Google untuk Play Bersama!") }
+                onShowSnackbar = onShowSnackbar,
+                onAuthSuccess = {
+                    onAuthStateChanged()
+                    onShowSnackbar("Berhasil masuk dengan Google untuk Play Bersama!")
+                }
             )
         } else {
             key(currentUser.uid) {
@@ -142,7 +150,9 @@ fun ListenTogetherScreenHost(
 
 @Composable
 private fun ListenTogetherAuthScreen(
+    bottomContentPadding: Dp,
     onBack: () -> Unit,
+    onShowSnackbar: (String) -> Unit,
     onAuthSuccess: () -> Unit
 ) {
     val context = LocalContext.current
@@ -151,15 +161,23 @@ private fun ListenTogetherAuthScreen(
 
     var isLoading by remember { mutableStateOf(false) }
     var authError by remember { mutableStateOf<String?>(null) }
+    var attemptedAutoSignIn by rememberSaveable { mutableStateOf(false) }
 
     LaunchedEffect(Unit) {
-        attemptAutoSignIn(
-            context = context,
-            credentialManager = credentialManager,
-            onAuthSuccess = onAuthSuccess,
-            onUnauthenticated = { /* Keep visible interactive Google Sign-In button */ },
-            scope = scope
-        )
+        if (!attemptedAutoSignIn && !isLoading) {
+            attemptedAutoSignIn = true
+            attemptAutoSignIn(
+                context = context,
+                credentialManager = credentialManager,
+                onAuthSuccess = onAuthSuccess,
+                onUnauthenticated = { /* Keep visible interactive Google Sign-In button */ },
+                onAuthError = { msg ->
+                    authError = msg
+                    onShowSnackbar(msg.lineSequence().firstOrNull() ?: msg)
+                },
+                scope = scope
+            )
+        }
     }
 
     Column(
@@ -175,7 +193,9 @@ private fun ListenTogetherAuthScreen(
                 )
             )
             .statusBarsPadding()
+            .verticalScroll(rememberScrollState())
             .padding(horizontal = 24.dp)
+            .padding(bottom = bottomContentPadding + 24.dp)
     ) {
         Row(
             modifier = Modifier
@@ -199,12 +219,11 @@ private fun ListenTogetherAuthScreen(
             )
         }
 
+        Spacer(modifier = Modifier.height(16.dp))
+
         Column(
-            modifier = Modifier
-                .fillMaxWidth()
-                .weight(1f),
-            horizontalAlignment = Alignment.CenterHorizontally,
-            verticalArrangement = Arrangement.Center
+            modifier = Modifier.fillMaxWidth(),
+            horizontalAlignment = Alignment.CenterHorizontally
         ) {
             Surface(
                 shape = RoundedCornerShape(28.dp),
@@ -290,10 +309,14 @@ private fun ListenTogetherAuthScreen(
                         onAuthError = { msg ->
                             isLoading = false
                             authError = msg
+                            onShowSnackbar(msg.lineSequence().firstOrNull() ?: msg)
                         },
                         scope = scope,
-                        onAuthCancelled = {
+                        onAuthCancelled = { hint ->
                             isLoading = false
+                            if (!hint.isNullOrBlank()) {
+                                authError = hint
+                            }
                         }
                     )
                 },

@@ -214,6 +214,7 @@ fun SectionHeader(
                 overflow = TextOverflow.Ellipsis
             )
             if (!subtitle.isNullOrBlank()) {
+                Spacer(modifier = Modifier.height(2.dp))
                 Text(
                     text = subtitle,
                     style = MaterialTheme.typography.bodySmall,
@@ -224,11 +225,18 @@ fun SectionHeader(
             }
         }
         if (actionLabel != null && onActionClick != null) {
-            TextButton(onClick = onActionClick) {
+            Spacer(modifier = Modifier.width(10.dp))
+            Surface(
+                onClick = onActionClick,
+                shape = RoundedCornerShape(50),
+                color = MaterialTheme.colorScheme.primary.copy(alpha = 0.12f),
+                border = BorderStroke(0.8.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.28f))
+            ) {
                 Text(
                     text = actionLabel,
-                    style = MaterialTheme.typography.labelLarge,
-                    color = MaterialTheme.colorScheme.primary
+                    style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.SemiBold),
+                    color = MaterialTheme.colorScheme.primary,
+                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 7.dp)
                 )
             }
         }
@@ -251,12 +259,12 @@ fun TrackRowItem(
     swipeLeftLabel: String = "Antrean"
 ) {
     val activeBg = if (isCurrent) {
-        MaterialTheme.colorScheme.primary.copy(alpha = 0.11f)
+        MaterialTheme.colorScheme.primary.copy(alpha = 0.12f)
     } else {
-        MaterialTheme.colorScheme.background
+        Color.Transparent
     }
     val borderStroke = if (isCurrent) {
-        BorderStroke(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.35f))
+        BorderStroke(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.32f))
     } else null
 
     val haptic = LocalHapticFeedback.current
@@ -362,12 +370,12 @@ fun TrackRowItem(
                 )
             }
 
-            Box(modifier = Modifier.size(52.dp)) {
+            Box(modifier = Modifier.size(54.dp)) {
                 AlbumArtImage(
                     url = track.artworkUrl,
                     contentDescription = stringResource(R.string.cd_album_art),
                     modifier = Modifier.fillMaxSize(),
-                    shape = RoundedCornerShape(12.dp)
+                    shape = RoundedCornerShape(13.dp)
                 )
                 if (isCurrent) {
                     Box(
@@ -453,7 +461,7 @@ fun TrackRowItem(
 
             IconButton(
                 onClick = onLikeClick,
-                modifier = Modifier.size(44.dp)
+                modifier = Modifier.size(48.dp)
             ) {
                 Icon(
                     imageVector = if (isLiked) Icons.Rounded.Favorite else Icons.Rounded.FavoriteBorder,
@@ -465,7 +473,7 @@ fun TrackRowItem(
 
             IconButton(
                 onClick = onMoreClick,
-                modifier = Modifier.size(44.dp)
+                modifier = Modifier.size(48.dp)
             ) {
                 Icon(
                     imageVector = Icons.Rounded.MoreVert,
@@ -491,8 +499,8 @@ fun GlassActionPill(
         onClick = onClick,
         modifier = modifier,
         shape = RoundedCornerShape(50),
-        color = if (highlighted) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.85f),
-        border = if (highlighted) null else BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant)
+        color = if (highlighted) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.78f),
+        border = if (highlighted) null else BorderStroke(0.9.dp, MaterialTheme.colorScheme.outlineVariant)
     ) {
         Row(
             modifier = Modifier.padding(horizontal = 16.dp, vertical = 10.dp),
@@ -508,8 +516,9 @@ fun GlassActionPill(
             Spacer(modifier = Modifier.width(6.dp))
             Text(
                 text = label,
-                style = MaterialTheme.typography.labelLarge,
-                color = if (highlighted) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurface
+                style = MaterialTheme.typography.labelLarge.copy(fontWeight = FontWeight.SemiBold),
+                color = if (highlighted) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurface,
+                maxLines = 1
             )
         }
     }

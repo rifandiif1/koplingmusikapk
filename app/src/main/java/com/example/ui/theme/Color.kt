@@ -3,25 +3,25 @@ package com.example.ui.theme
 import androidx.compose.ui.graphics.Color
 
 // Obsidian Studio Dark Palette
-val ObsidianBackground = Color(0xFF0A0B0F)
-val ObsidianSurface = Color(0xFF12151E)
-val ObsidianSurfaceVariant = Color(0xFF1A1F2D)
-val ObsidianSurfaceHigh = Color(0xFF23293B)
-val ObsidianOutline = Color(0xFF2D3548)
+val ObsidianBackground = Color(0xFF08090D)
+val ObsidianSurface = Color(0xFF11141C)
+val ObsidianSurfaceVariant = Color(0xFF181D2A)
+val ObsidianSurfaceHigh = Color(0xFF212738)
+val ObsidianOutline = Color(0xFF2C3448)
 
 val PureBlackBackground = Color(0xFF000000)
-val PureBlackSurface = Color(0xFF0A0C10)
-val PureBlackSurfaceVariant = Color(0xFF131620)
+val PureBlackSurface = Color(0xFF090B0F)
+val PureBlackSurfaceVariant = Color(0xFF121620)
 
-val TextPrimaryDark = Color(0xFFF4F6FA)
-val TextSecondaryDark = Color(0xFF9AA4BA)
-val TextMutedDark = Color(0xFF6B748B)
+val TextPrimaryDark = Color(0xFFF6F8FC)
+val TextSecondaryDark = Color(0xFF9EA8BE)
+val TextMutedDark = Color(0xFF6B758C)
 
 // Alabaster Studio Light Palette
-val AlabasterBackground = Color(0xFFF5F6FA)
+val AlabasterBackground = Color(0xFFF6F7FB)
 val AlabasterSurface = Color(0xFFFFFFFF)
-val AlabasterSurfaceVariant = Color(0xFFECEFF6)
-val AlabasterOutline = Color(0xFFD5DCE8)
+val AlabasterSurfaceVariant = Color(0xFFEDF0F7)
+val AlabasterOutline = Color(0xFFD4DBE8)
 
 val TextPrimaryLight = Color(0xFF10131C)
 val TextSecondaryLight = Color(0xFF525C72)

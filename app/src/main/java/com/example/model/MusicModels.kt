@@ -68,7 +68,8 @@ data class YouTubeAccount(
     val email: String = "",
     val avatarUrl: String? = null
 ) {
-    val isLoggedIn: Boolean get() = cookie.contains("SAPISID=") || cookie.contains("__Secure-3PAPISID=")
+    val hasCookieSession: Boolean get() = cookie.contains("SAPISID=") || cookie.contains("__Secure-3PAPISID=")
+    val isLoggedIn: Boolean get() = hasCookieSession || email.isNotBlank() || name.isNotBlank()
 }
 
 @Immutable

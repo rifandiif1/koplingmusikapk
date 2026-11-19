@@ -240,7 +240,10 @@ fun ExploreScreen(
                         horizontalArrangement = Arrangement.SpaceBetween,
                         verticalAlignment = Alignment.CenterVertically
                     ) {
-                        Row(verticalAlignment = Alignment.CenterVertically) {
+                        Row(
+                            modifier = Modifier.weight(1f),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
                             Icon(
                                 imageVector = Icons.Rounded.TrendingUp,
                                 contentDescription = null,
@@ -248,25 +251,34 @@ fun ExploreScreen(
                                 modifier = Modifier.size(22.dp)
                             )
                             Spacer(modifier = Modifier.width(8.dp))
-                            Text(
-                                text = "Top 15 Global",
-                                style = MaterialTheme.typography.titleLarge
-                            )
+                            Column {
+                                Text(
+                                    text = "Top 15 Global",
+                                    style = MaterialTheme.typography.titleLarge,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+                                Text(
+                                    text = "Lagu paling populer hari ini",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
                         }
-                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                            GlassActionPill(
-                                label = "Putar",
-                                icon = Icons.Rounded.PlayArrow,
-                                highlighted = true,
-                                onClick = { onPlayAll(homeState.chartTracks, false) }
-                            )
-                            GlassActionPill(
-                                label = "Acak",
-                                icon = Icons.Rounded.Shuffle,
-                                highlighted = false,
-                                onClick = { onPlayAll(homeState.chartTracks, true) }
-                            )
-                        }
+                    }
+                    Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                        GlassActionPill(
+                            label = "Putar Semua",
+                            icon = Icons.Rounded.PlayArrow,
+                            highlighted = true,
+                            onClick = { onPlayAll(homeState.chartTracks, false) }
+                        )
+                        GlassActionPill(
+                            label = "Acak",
+                            icon = Icons.Rounded.Shuffle,
+                            highlighted = false,
+                            onClick = { onPlayAll(homeState.chartTracks, true) }
+                        )
                     }
                 }
             }
@@ -297,37 +309,48 @@ private fun MoodGradientTile(
     onClick: () -> Unit,
     modifier: Modifier = Modifier
 ) {
-    Box(
+    Surface(
+        onClick = onClick,
+        shape = RoundedCornerShape(20.dp),
+        border = BorderStroke(0.9.dp, Color.White.copy(alpha = 0.14f)),
         modifier = modifier
-            .height(92.dp)
-            .clip(RoundedCornerShape(20.dp))
-            .background(
-                Brush.linearGradient(
-                    colors = listOf(Color(mood.startColor), Color(mood.endColor))
-                )
-            )
-            .clickable(onClick = onClick)
-            .padding(14.dp)
+            .height(96.dp)
             .testTag("explore_mood_${mood.id}")
     ) {
-        Column(
-            modifier = Modifier.fillMaxSize(),
-            verticalArrangement = Arrangement.SpaceBetween
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .background(
+                    Brush.linearGradient(
+                        colors = listOf(Color(mood.startColor), Color(mood.endColor))
+                    )
+                )
+                .background(
+                    Brush.verticalGradient(
+                        colors = listOf(Color.White.copy(alpha = 0.08f), Color.Black.copy(alpha = 0.22f))
+                    )
+                )
+                .padding(14.dp)
         ) {
-            Text(
-                text = mood.label,
-                style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold),
-                color = Color.White,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis
-            )
-            Text(
-                text = mood.subtitle,
-                style = MaterialTheme.typography.bodySmall,
-                color = Color.White.copy(alpha = 0.82f),
-                maxLines = 2,
-                overflow = TextOverflow.Ellipsis
-            )
+            Column(
+                modifier = Modifier.fillMaxSize(),
+                verticalArrangement = Arrangement.SpaceBetween
+            ) {
+                Text(
+                    text = mood.label,
+                    style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold),
+                    color = Color.White,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+                Text(
+                    text = mood.subtitle,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = Color.White.copy(alpha = 0.85f),
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis
+                )
+            }
         }
     }
 }

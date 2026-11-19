@@ -145,22 +145,22 @@ fun HomeScreen(
             item {
                 LazyRow(
                     contentPadding = PaddingValues(horizontal = 20.dp),
-                    horizontalArrangement = Arrangement.spacedBy(10.dp)
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
                     items(KoplingfyMoods.allMoods, key = { it.id }) { mood ->
                         val selected = homeState.selectedMood.id == mood.id
                         Surface(
                             onClick = { onSelectMood(mood) },
                             shape = RoundedCornerShape(50),
-                            color = if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.72f),
-                            border = if (selected) null else BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
+                            color = if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.surface,
+                            border = if (selected) null else BorderStroke(0.9.dp, MaterialTheme.colorScheme.outlineVariant),
                             modifier = Modifier.testTag("mood_chip_${mood.id}")
                         ) {
                             Text(
                                 text = mood.label,
                                 style = MaterialTheme.typography.labelLarge,
                                 color = if (selected) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurface,
-                                modifier = Modifier.padding(horizontal = 18.dp, vertical = 10.dp)
+                                modifier = Modifier.padding(horizontal = 16.dp, vertical = 9.dp)
                             )
                         }
                     }
@@ -404,24 +404,27 @@ private fun HomeTopHeader(
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.SpaceBetween
     ) {
-        Row(verticalAlignment = Alignment.CenterVertically) {
+        Row(
+            modifier = Modifier.weight(1f),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
             Surface(
-                shape = RoundedCornerShape(14.dp),
-                color = MaterialTheme.colorScheme.primary.copy(alpha = 0.16f),
-                border = BorderStroke(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.4f)),
-                modifier = Modifier.size(44.dp)
+                shape = RoundedCornerShape(13.dp),
+                color = MaterialTheme.colorScheme.primary.copy(alpha = 0.14f),
+                border = BorderStroke(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.35f)),
+                modifier = Modifier.size(42.dp)
             ) {
                 Box(contentAlignment = Alignment.Center) {
                     Icon(
                         imageVector = Icons.Rounded.GraphicEq,
                         contentDescription = "Koplingfy",
                         tint = MaterialTheme.colorScheme.primary,
-                        modifier = Modifier.size(24.dp)
+                        modifier = Modifier.size(22.dp)
                     )
                 }
             }
             Spacer(modifier = Modifier.width(12.dp))
-            Column {
+            Column(modifier = Modifier.weight(1f)) {
                 Text(
                     text = if (youtubeAccount.isLoggedIn) "$greeting, ${youtubeAccount.name.substringBefore(" ")}" else greeting,
                     style = MaterialTheme.typography.bodySmall,
@@ -429,34 +432,55 @@ private fun HomeTopHeader(
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis
                 )
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Text(
-                        text = "Koplingfy",
-                        style = MaterialTheme.typography.headlineMedium,
-                        color = MaterialTheme.colorScheme.onBackground
-                    )
-                    Spacer(modifier = Modifier.width(8.dp))
-                    Surface(
-                        color = MaterialTheme.colorScheme.secondary.copy(alpha = 0.18f),
-                        shape = RoundedCornerShape(6.dp)
+                Text(
+                    text = "Koplingfy",
+                    style = MaterialTheme.typography.headlineSmall.copy(fontWeight = FontWeight.Bold),
+                    color = MaterialTheme.colorScheme.onBackground,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+            }
+        }
+
+        Spacer(modifier = Modifier.width(8.dp))
+
+        Row(
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            // Show compact live room indicator only when actively inside a Play Bersama room
+            if (activeRoomCode != null) {
+                Surface(
+                    onClick = onOpenListenTogether,
+                    shape = RoundedCornerShape(50),
+                    color = MaterialTheme.colorScheme.primary,
+                    modifier = Modifier.testTag("open_listen_together_button")
+                ) {
+                    Row(
+                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 7.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(4.dp)
                     ) {
+                        Icon(
+                            imageVector = Icons.Rounded.Groups,
+                            contentDescription = "Play Bersama Aktif",
+                            tint = MaterialTheme.colorScheme.onPrimary,
+                            modifier = Modifier.size(15.dp)
+                        )
                         Text(
-                            text = "HI-FI",
+                            text = activeRoomCode,
                             style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold),
-                            color = MaterialTheme.colorScheme.secondary,
-                            modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                            color = MaterialTheme.colorScheme.onPrimary
                         )
                     }
                 }
             }
-        }
 
-        Row(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.CenterVertically) {
             if (youtubeAccount.isLoggedIn) {
                 Surface(
                     onClick = onOpenSettings,
                     shape = CircleShape,
-                    border = BorderStroke(1.5.dp, MaterialTheme.colorScheme.primary),
+                    border = BorderStroke(1.5.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.8f)),
                     modifier = Modifier.size(40.dp).testTag("home_account_avatar")
                 ) {
                     AlbumArtImage(
@@ -470,83 +494,48 @@ private fun HomeTopHeader(
                 Surface(
                     onClick = onOpenYouTubeLogin,
                     shape = RoundedCornerShape(50),
-                    color = MaterialTheme.colorScheme.primary.copy(alpha = 0.16f),
-                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.45f)),
+                    color = MaterialTheme.colorScheme.primary.copy(alpha = 0.14f),
+                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.4f)),
                     modifier = Modifier.testTag("home_login_ytm_pill")
                 ) {
                     Text(
-                        text = "Login YTM",
-                        style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold),
+                        text = "Masuk",
+                        style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Bold),
                         color = MaterialTheme.colorScheme.primary,
-                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 7.dp)
+                        modifier = Modifier.padding(horizontal = 13.dp, vertical = 9.dp)
                     )
                 }
             }
-            Surface(
-                onClick = onOpenListenTogether,
-                shape = if (activeRoomCode != null) RoundedCornerShape(50) else CircleShape,
-                color = if (activeRoomCode != null) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.primary.copy(alpha = 0.16f),
-                border = BorderStroke(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.55f)),
-                modifier = if (activeRoomCode != null) Modifier.testTag("open_listen_together_button") else Modifier.size(42.dp).testTag("open_listen_together_button")
-            ) {
-                if (activeRoomCode != null) {
-                    Row(
-                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 8.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(4.dp)
-                    ) {
-                        Icon(
-                            imageVector = Icons.Rounded.Groups,
-                            contentDescription = "Play Bersama Aktif",
-                            tint = MaterialTheme.colorScheme.onPrimary,
-                            modifier = Modifier.size(16.dp)
-                        )
-                        Text(
-                            text = activeRoomCode,
-                            style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold),
-                            color = MaterialTheme.colorScheme.onPrimary
-                        )
-                    }
-                } else {
-                    Box(contentAlignment = Alignment.Center) {
-                        Icon(
-                            imageVector = Icons.Rounded.Groups,
-                            contentDescription = "Play Bersama",
-                            tint = MaterialTheme.colorScheme.primary,
-                            modifier = Modifier.size(20.dp)
-                        )
-                    }
-                }
-            }
+
             Surface(
                 onClick = onOpenStats,
                 shape = CircleShape,
-                color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.8f),
-                border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
-                modifier = Modifier.size(42.dp).testTag("open_stats_button")
+                color = MaterialTheme.colorScheme.surface,
+                border = BorderStroke(0.9.dp, MaterialTheme.colorScheme.outlineVariant),
+                modifier = Modifier.size(40.dp).testTag("open_stats_button")
             ) {
                 Box(contentAlignment = Alignment.Center) {
                     Icon(
                         imageVector = Icons.Rounded.AutoGraph,
                         contentDescription = "Statistik",
                         tint = MaterialTheme.colorScheme.onSurface,
-                        modifier = Modifier.size(20.dp)
+                        modifier = Modifier.size(19.dp)
                     )
                 }
             }
             Surface(
                 onClick = onOpenSettings,
                 shape = CircleShape,
-                color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.8f),
-                border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
-                modifier = Modifier.size(42.dp).testTag("open_settings_button")
+                color = MaterialTheme.colorScheme.surface,
+                border = BorderStroke(0.9.dp, MaterialTheme.colorScheme.outlineVariant),
+                modifier = Modifier.size(40.dp).testTag("open_settings_button")
             ) {
                 Box(contentAlignment = Alignment.Center) {
                     Icon(
                         imageVector = Icons.Rounded.Settings,
                         contentDescription = "Pengaturan",
                         tint = MaterialTheme.colorScheme.onSurface,
-                        modifier = Modifier.size(20.dp)
+                        modifier = Modifier.size(19.dp)
                     )
                 }
             }
@@ -565,10 +554,10 @@ private fun HeroSpotlightCard(
         modifier = Modifier
             .fillMaxWidth()
             .padding(horizontal = 20.dp)
-            .height(210.dp),
-        shape = RoundedCornerShape(28.dp),
-        border = BorderStroke(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.3f)),
-        shadowElevation = 10.dp
+            .height(206.dp),
+        shape = RoundedCornerShape(26.dp),
+        border = BorderStroke(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.28f)),
+        shadowElevation = 12.dp
     ) {
         Box(modifier = Modifier.fillMaxSize()) {
             Image(
@@ -581,11 +570,11 @@ private fun HeroSpotlightCard(
                 modifier = Modifier
                     .fillMaxSize()
                     .background(
-                        Brush.horizontalGradient(
+                        Brush.linearGradient(
                             colors = listOf(
-                                Color(0xE80A0B0F),
-                                Color(0xB30A0B0F),
-                                Color(0x450A0B0F)
+                                Color(0xF008090D),
+                                Color(0xC808090D),
+                                Color(mood.startColor).copy(alpha = 0.28f)
                             )
                         )
                     )
@@ -599,38 +588,46 @@ private fun HeroSpotlightCard(
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
+                    verticalAlignment = Alignment.Top
                 ) {
                     Surface(
-                        color = MaterialTheme.colorScheme.primary.copy(alpha = 0.22f),
+                        color = Color.Black.copy(alpha = 0.45f),
                         shape = RoundedCornerShape(50),
-                        border = BorderStroke(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.45f))
+                        border = BorderStroke(0.9.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.5f))
                     ) {
                         Text(
                             text = "SPOTLIGHT • ${mood.label.uppercase()}",
                             style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold),
                             color = MaterialTheme.colorScheme.primary,
-                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp)
+                            modifier = Modifier.padding(horizontal = 11.dp, vertical = 5.dp)
                         )
                     }
                     if (featuredTrack?.artworkUrl != null) {
-                        AlbumArtImage(
-                            url = featuredTrack.artworkUrl,
-                            contentDescription = featuredTrack.title,
-                            modifier = Modifier.size(48.dp),
-                            shape = RoundedCornerShape(12.dp)
-                        )
+                        Surface(
+                            shape = RoundedCornerShape(14.dp),
+                            border = BorderStroke(1.dp, Color.White.copy(alpha = 0.22f)),
+                            shadowElevation = 8.dp,
+                            modifier = Modifier.size(62.dp)
+                        ) {
+                            AlbumArtImage(
+                                url = featuredTrack.artworkUrl,
+                                contentDescription = featuredTrack.title,
+                                modifier = Modifier.fillMaxSize(),
+                                shape = RoundedCornerShape(14.dp)
+                            )
+                        }
                     }
                 }
 
                 Column {
                     Text(
                         text = featuredTrack?.title ?: "Audio Tanpa Batas",
-                        style = MaterialTheme.typography.headlineSmall,
+                        style = MaterialTheme.typography.headlineSmall.copy(fontWeight = FontWeight.Bold),
                         color = Color.White,
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis
                     )
+                    Spacer(modifier = Modifier.height(2.dp))
                     Text(
                         text = featuredTrack?.let { "${it.artist} • ${it.album}" } ?: mood.subtitle,
                         style = MaterialTheme.typography.bodySmall,

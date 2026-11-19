@@ -193,7 +193,7 @@ fun LibraryScreen(
                     onClick = onCreatePlaylistClick,
                     shape = CircleShape,
                     color = MaterialTheme.colorScheme.primary,
-                    modifier = Modifier.size(46.dp).testTag("library_add_playlist_button")
+                    modifier = Modifier.size(48.dp).testTag("library_add_playlist_button")
                 ) {
                     Box(contentAlignment = Alignment.Center) {
                         Icon(
@@ -206,7 +206,7 @@ fun LibraryScreen(
             }
         }
 
-        // ---- YouTube Music Account Sync / Login Banner ----
+        // ---- YouTube Music Account (Google Sign-In & Optional Sync) Banner ----
         item {
             Surface(
                 modifier = Modifier
@@ -214,7 +214,7 @@ fun LibraryScreen(
                     .padding(horizontal = 20.dp),
                 shape = RoundedCornerShape(22.dp),
                 color = MaterialTheme.colorScheme.surface,
-                border = BorderStroke(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.35f))
+                border = BorderStroke(0.9.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.3f))
             ) {
                 Row(
                     modifier = Modifier
@@ -234,7 +234,7 @@ fun LibraryScreen(
                             modifier = Modifier
                                 .size(44.dp)
                                 .clip(CircleShape)
-                                .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.16f)),
+                                .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.15f)),
                             contentAlignment = Alignment.Center
                         ) {
                             Icon(
@@ -247,14 +247,17 @@ fun LibraryScreen(
                     Spacer(modifier = Modifier.width(12.dp))
                     Column(modifier = Modifier.weight(1f)) {
                         Text(
-                            text = if (youtubeAccount.isLoggedIn) youtubeAccount.name else "Sinkron YouTube Music",
+                            text = if (youtubeAccount.isLoggedIn) youtubeAccount.name.ifBlank { "Akun Google" } else "Akun YouTube Music",
                             style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold),
                             maxLines = 1,
                             overflow = TextOverflow.Ellipsis
                         )
                         Text(
-                            text = if (youtubeAccount.isLoggedIn) "Tarik Lagu Disukai & Playlist akunmu"
-                            else "Login untuk buka lagu Explicit & sinkronisasi",
+                            text = when {
+                                youtubeAccount.hasCookieSession -> "Tarik Lagu Disukai & Playlist akunmu"
+                                youtubeAccount.isLoggedIn -> youtubeAccount.email.ifBlank { "Terhubung dengan Google" }
+                                else -> "Masuk 1-ketuk dengan akun Google"
+                            },
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                             maxLines = 1,
@@ -263,76 +266,82 @@ fun LibraryScreen(
                     }
                     Spacer(modifier = Modifier.width(8.dp))
                     GlassActionPill(
-                        label = if (youtubeAccount.isLoggedIn) "Sync" else "Masuk",
+                        label = when {
+                            youtubeAccount.hasCookieSession -> "Sync"
+                            youtubeAccount.isLoggedIn -> "Cookie"
+                            else -> "Masuk"
+                        },
                         icon = if (youtubeAccount.isLoggedIn) Icons.Rounded.Sync else Icons.Rounded.Login,
-                        highlighted = true,
-                        onClick = if (youtubeAccount.isLoggedIn) onSyncYouTubeLibrary else onOpenYouTubeLogin,
+                        highlighted = !youtubeAccount.isLoggedIn || youtubeAccount.hasCookieSession,
+                        onClick = if (youtubeAccount.hasCookieSession) onSyncYouTubeLibrary else onOpenYouTubeLogin,
                         modifier = Modifier.testTag("library_ytm_action")
                     )
                 }
             }
         }
 
-        // ---- Play Bersama (Kode Ruang & Scan QR) Banner ----
-        item {
-            Surface(
-                onClick = onOpenListenTogether,
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 20.dp)
-                    .testTag("library_play_together_card"),
-                shape = RoundedCornerShape(22.dp),
-                color = MaterialTheme.colorScheme.surface,
-                border = BorderStroke(1.dp, MaterialTheme.colorScheme.secondary.copy(alpha = 0.45f))
-            ) {
-                Row(
+        // ---- Live Play Bersama Banner (Only shown when actively joined in a room) ----
+        if (activeRoomCode != null) {
+            item {
+                Surface(
+                    onClick = onOpenListenTogether,
                     modifier = Modifier
                         .fillMaxWidth()
-                        .background(
-                            Brush.horizontalGradient(
-                                listOf(
-                                    MaterialTheme.colorScheme.secondary.copy(alpha = 0.16f),
-                                    Color.Transparent
+                        .padding(horizontal = 20.dp)
+                        .testTag("library_play_together_card"),
+                    shape = RoundedCornerShape(22.dp),
+                    color = MaterialTheme.colorScheme.surface,
+                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.secondary.copy(alpha = 0.45f))
+                ) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .background(
+                                Brush.horizontalGradient(
+                                    listOf(
+                                        MaterialTheme.colorScheme.secondary.copy(alpha = 0.16f),
+                                        Color.Transparent
+                                    )
                                 )
                             )
-                        )
-                        .padding(14.dp),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Box(
-                        modifier = Modifier
-                            .size(44.dp)
-                            .clip(RoundedCornerShape(14.dp))
-                            .background(MaterialTheme.colorScheme.secondary.copy(alpha = 0.2f)),
-                        contentAlignment = Alignment.Center
+                            .padding(14.dp),
+                        verticalAlignment = Alignment.CenterVertically
                     ) {
+                        Box(
+                            modifier = Modifier
+                                .size(44.dp)
+                                .clip(RoundedCornerShape(14.dp))
+                                .background(MaterialTheme.colorScheme.secondary.copy(alpha = 0.2f)),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Icon(
+                                imageVector = Icons.Rounded.Groups,
+                                contentDescription = null,
+                                tint = MaterialTheme.colorScheme.secondary
+                            )
+                        }
+                        Spacer(modifier = Modifier.width(12.dp))
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                text = "Play Bersama Aktif • $activeRoomCode",
+                                style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold),
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                            Text(
+                                text = "Ketuk untuk kembali ke ruang dengar bersama",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                        }
                         Icon(
-                            imageVector = Icons.Rounded.Groups,
-                            contentDescription = null,
+                            imageVector = Icons.Rounded.QrCode2,
+                            contentDescription = "Buka Play Bersama",
                             tint = MaterialTheme.colorScheme.secondary
                         )
                     }
-                    Spacer(modifier = Modifier.width(12.dp))
-                    Column(modifier = Modifier.weight(1f)) {
-                        Text(
-                            text = if (activeRoomCode != null) "Play Bersama Aktif • $activeRoomCode" else "Play Bersama (Listen Together)",
-                            style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold),
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis
-                        )
-                        Text(
-                            text = "Dengarkan musik real-time via Kode Ruang & Scan QR",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis
-                        )
-                    }
-                    Icon(
-                        imageVector = Icons.Rounded.QrCode2,
-                        contentDescription = "Buka Play Bersama",
-                        tint = MaterialTheme.colorScheme.secondary
-                    )
                 }
             }
         }

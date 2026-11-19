@@ -88,7 +88,6 @@ import com.example.listentogether.ListenTogetherRepository
 import com.example.listentogether.ListenTogetherViewModel
 import com.example.listentogether.ListenUiState
 import com.example.listentogether.RecentRoomEntry
-import com.example.listentogether.authStateFlow
 import com.example.listentogether.signOutGoogle
 import com.example.model.ArtistSummary
 import com.example.model.CollectionDetailType
@@ -111,6 +110,7 @@ import com.example.ui.theme.KoplingfyTheme
 import com.example.viewmodel.KoplingfyViewModel
 import com.google.firebase.Firebase
 import com.google.firebase.FirebaseApp
+import com.google.firebase.auth.FirebaseAuth
 import com.google.firebase.auth.FirebaseUser
 import com.google.firebase.auth.auth
 import com.google.firebase.firestore.FirebaseFirestore
@@ -154,6 +154,10 @@ class MainActivity : ComponentActivity() {
 private fun KoplingfyAuthScopedRoot(viewModel: KoplingfyViewModel) {
     val context = LocalContext.current
     val isFirebaseReady = remember(context) { FirebaseApp.getApps(context).isNotEmpty() }
+    // Hoisted above auth branches so signing in or out never resets the active tab (e.g. Bersama tab!)
+    var selectedTab by rememberSaveable { mutableIntStateOf(0) }
+    var overlayPage by rememberSaveable { mutableStateOf(OverlayPage.NONE) }
+
     if (!isFirebaseReady) {
         KoplingfyAppRoot(
             viewModel = viewModel,
@@ -161,13 +165,25 @@ private fun KoplingfyAuthScopedRoot(viewModel: KoplingfyViewModel) {
             listenViewModel = null,
             listenSessionState = ListenSessionUiState(),
             myActiveRoomsState = ListenUiState.Success(emptyList()),
-            recentRoomsState = ListenUiState.Success(emptyList())
+            recentRoomsState = ListenUiState.Success(emptyList()),
+            selectedTab = selectedTab,
+            onSelectedTabChange = { selectedTab = it },
+            overlayPage = overlayPage,
+            onOverlayPageChange = { overlayPage = it },
+            onAuthStateChanged = {}
         )
         return
     }
 
     val auth = remember { Firebase.auth }
-    val currentGoogleUser by auth.authStateFlow().collectAsStateWithLifecycle(initialValue = auth.currentUser)
+    var currentGoogleUser by remember { mutableStateOf(auth.currentUser) }
+    DisposableEffect(auth) {
+        val listener = FirebaseAuth.AuthStateListener { firebaseAuth ->
+            currentGoogleUser = firebaseAuth.currentUser
+        }
+        auth.addAuthStateListener(listener)
+        onDispose { auth.removeAuthStateListener(listener) }
+    }
 
     val user = currentGoogleUser
     if (user == null) {
@@ -177,7 +193,12 @@ private fun KoplingfyAuthScopedRoot(viewModel: KoplingfyViewModel) {
             listenViewModel = null,
             listenSessionState = ListenSessionUiState(),
             myActiveRoomsState = ListenUiState.Success(emptyList()),
-            recentRoomsState = ListenUiState.Success(emptyList())
+            recentRoomsState = ListenUiState.Success(emptyList()),
+            selectedTab = selectedTab,
+            onSelectedTabChange = { selectedTab = it },
+            overlayPage = overlayPage,
+            onOverlayPageChange = { overlayPage = it },
+            onAuthStateChanged = { currentGoogleUser = auth.currentUser }
         )
     } else {
         key(user.uid) {
@@ -240,20 +261,30 @@ private fun KoplingfyAuthScopedRoot(viewModel: KoplingfyViewModel) {
                 listenViewModel = listenViewModel,
                 listenSessionState = sessionState,
                 myActiveRoomsState = myActiveRoomsState,
-                recentRoomsState = recentRoomsState
+                recentRoomsState = recentRoomsState,
+                selectedTab = selectedTab,
+                onSelectedTabChange = { selectedTab = it },
+                overlayPage = overlayPage,
+                onOverlayPageChange = { overlayPage = it },
+                onAuthStateChanged = { currentGoogleUser = auth.currentUser }
             )
         }
     }
 }
 
 @Composable
-fun KoplingfyAppRoot(
+private fun KoplingfyAppRoot(
     viewModel: KoplingfyViewModel,
     currentGoogleUser: FirebaseUser?,
     listenViewModel: ListenTogetherViewModel?,
     listenSessionState: ListenSessionUiState,
     myActiveRoomsState: ListenUiState<List<ListenRoom>>,
-    recentRoomsState: ListenUiState<List<RecentRoomEntry>>
+    recentRoomsState: ListenUiState<List<RecentRoomEntry>>,
+    selectedTab: Int,
+    onSelectedTabChange: (Int) -> Unit,
+    overlayPage: OverlayPage,
+    onOverlayPageChange: (OverlayPage) -> Unit,
+    onAuthStateChanged: () -> Unit
 ) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
@@ -281,8 +312,6 @@ fun KoplingfyAppRoot(
     val searchHistory by viewModel.searchHistory.collectAsStateWithLifecycle()
     val snackbarMsg by viewModel.snackbarMessage.collectAsStateWithLifecycle()
 
-    var selectedTab by rememberSaveable { mutableIntStateOf(0) }
-    var overlayPage by rememberSaveable { mutableStateOf(OverlayPage.NONE) }
     var optionsTrack by remember { mutableStateOf<Track?>(null) }
     var addToPlaylistTrack by remember { mutableStateOf<Track?>(null) }
     var showCreatePlaylistDialog by remember { mutableStateOf(false) }
@@ -513,18 +542,18 @@ fun KoplingfyAppRoot(
 
     val openCollection: (CollectionDetailType) -> Unit = { type ->
         viewModel.openCollectionDetail(type)
-        overlayPage = OverlayPage.COLLECTION_DETAIL
+        onOverlayPageChange(OverlayPage.COLLECTION_DETAIL)
     }
 
     val openYouTubeLogin: () -> Unit = {
         viewModel.setPlayerExpanded(false)
-        overlayPage = OverlayPage.YOUTUBE_LOGIN
+        onOverlayPageChange(OverlayPage.YOUTUBE_LOGIN)
     }
 
     val openListenTogether: () -> Unit = {
         viewModel.setPlayerExpanded(false)
-        overlayPage = OverlayPage.NONE
-        selectedTab = 3
+        onOverlayPageChange(OverlayPage.NONE)
+        onSelectedTabChange(3)
     }
 
     KoplingfyTheme(
@@ -577,8 +606,8 @@ fun KoplingfyAppRoot(
                                     NavigationRailItem(
                                         selected = selected,
                                         onClick = {
-                                            selectedTab = index
-                                            overlayPage = OverlayPage.NONE
+                                            onSelectedTabChange(index)
+                                            onOverlayPageChange(OverlayPage.NONE)
                                         },
                                         icon = {
                                             if (tab.route == "listen_together" && activeRoomCode != null) {
@@ -601,9 +630,11 @@ fun KoplingfyAppRoot(
                                         },
                                         label = { Text(tab.label, maxLines = 1, overflow = TextOverflow.Ellipsis) },
                                         colors = NavigationRailItemDefaults.colors(
-                                            selectedIconColor = MaterialTheme.colorScheme.onPrimary,
+                                            selectedIconColor = MaterialTheme.colorScheme.primary,
                                             selectedTextColor = MaterialTheme.colorScheme.primary,
-                                            indicatorColor = MaterialTheme.colorScheme.primary
+                                            indicatorColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.16f),
+                                            unselectedIconColor = MaterialTheme.colorScheme.onSurfaceVariant,
+                                            unselectedTextColor = MaterialTheme.colorScheme.onSurfaceVariant
                                         ),
                                         modifier = Modifier.testTag("nav_rail_${tab.route}")
                                     )
@@ -617,10 +648,19 @@ fun KoplingfyAppRoot(
                                 OverlayPage.YOUTUBE_LOGIN -> {
                                     YouTubeLoginScreen(
                                         isVerifying = isSyncingAccount,
-                                        onBack = { overlayPage = OverlayPage.NONE },
+                                        currentGoogleUser = currentGoogleUser,
+                                        isFirebaseReady = isFirebaseReady,
+                                        onBack = { onOverlayPageChange(OverlayPage.NONE) },
+                                        onGoogleAccountConnected = { name, email, avatarUrl ->
+                                            viewModel.completeGoogleYouTubeLogin(name, email, avatarUrl) {
+                                                onOverlayPageChange(OverlayPage.NONE)
+                                            }
+                                        },
+                                        onAuthStateChanged = onAuthStateChanged,
+                                        onShowSnackbar = viewModel::showMessage,
                                         onCookieCaptured = { cookie ->
                                             viewModel.completeYouTubeLogin(cookie) {
-                                                overlayPage = OverlayPage.NONE
+                                                onOverlayPageChange(OverlayPage.NONE)
                                             }
                                         }
                                     )
@@ -634,7 +674,7 @@ fun KoplingfyAppRoot(
                                         bottomContentPadding = bottomListPadding,
                                         onBack = {
                                             viewModel.closeCollectionDetail()
-                                            overlayPage = OverlayPage.NONE
+                                            onOverlayPageChange(OverlayPage.NONE)
                                         },
                                         onPlayTrack = { track, list -> playTrackWithRoomSync(track, list, false) },
                                         onPlayAll = playAllWithRoomSync,
@@ -655,7 +695,7 @@ fun KoplingfyAppRoot(
                                         isSyncingAccount = isSyncingAccount,
                                         storageStats = storageStats,
                                         bottomContentPadding = bottomListPadding,
-                                        onBack = { overlayPage = OverlayPage.NONE },
+                                        onBack = { onOverlayPageChange(OverlayPage.NONE) },
                                         onOpenYouTubeLogin = openYouTubeLogin,
                                         onSyncYouTubeLibrary = viewModel::syncYouTubeAccountLibrary,
                                         onLogoutYouTube = viewModel::logoutYouTubeAccount,
@@ -689,6 +729,7 @@ fun KoplingfyAppRoot(
                                                 scope = scope,
                                                 onBeforeSignOut = { listenViewModel?.detachBeforeSignOut() },
                                                 onSignOutComplete = {
+                                                    onAuthStateChanged()
                                                     viewModel.showMessage("Keluar dari akun Google Play Bersama")
                                                 }
                                             )
@@ -699,7 +740,7 @@ fun KoplingfyAppRoot(
                                     StatsScreen(
                                         stats = listeningStats,
                                         bottomContentPadding = bottomListPadding,
-                                        onBack = { overlayPage = OverlayPage.NONE },
+                                        onBack = { onOverlayPageChange(OverlayPage.NONE) },
                                         onPlayTrack = { track, list -> playTrackWithRoomSync(track, list, false) },
                                         onShowSnackbar = viewModel::showMessage
                                     )
@@ -726,8 +767,8 @@ fun KoplingfyAppRoot(
                                             onOpenYouTubeLogin = openYouTubeLogin,
                                             onOpenListenTogether = openListenTogether,
                                             activeRoomCode = activeRoomCode,
-                                            onOpenSettings = { overlayPage = OverlayPage.SETTINGS },
-                                            onOpenStats = { overlayPage = OverlayPage.STATS },
+                                            onOpenSettings = { onOverlayPageChange(OverlayPage.SETTINGS) },
+                                            onOpenStats = { onOverlayPageChange(OverlayPage.STATS) },
                                             onPlayNext = swipePlayNext,
                                             onAddToQueue = swipeAddToQueue,
                                             swipeQueueLabel = swipeQueueLabel
@@ -780,7 +821,7 @@ fun KoplingfyAppRoot(
                                             recentRoomsState = recentRoomsState,
                                             playerState = playerState,
                                             bottomContentPadding = bottomListPadding,
-                                            onBack = { selectedTab = 0 },
+                                            onBack = { onSelectedTabChange(0) },
                                             onShowSnackbar = viewModel::showMessage,
                                             onSyncPlayerTogglePlayPause = togglePlayPauseWithRoomSync,
                                             onSyncPlayerNext = skipNextWithRoomSync,
@@ -806,7 +847,8 @@ fun KoplingfyAppRoot(
                                                     description = "Disimpan dari sesi Play Bersama",
                                                     tracks = tracks
                                                 )
-                                            }
+                                            },
+                                            onAuthStateChanged = onAuthStateChanged
                                         )
                                         else -> LibraryScreen(
                                             likedCount = likedTracks.size,
@@ -818,7 +860,7 @@ fun KoplingfyAppRoot(
                                             playlists = playlists,
                                             bottomContentPadding = bottomListPadding,
                                             onOpenCollection = openCollection,
-                                            onOpenStats = { overlayPage = OverlayPage.STATS },
+                                            onOpenStats = { onOverlayPageChange(OverlayPage.STATS) },
                                             onOpenListenTogether = openListenTogether,
                                             activeRoomCode = activeRoomCode,
                                             onOpenYouTubeLogin = openYouTubeLogin,
@@ -871,9 +913,9 @@ fun KoplingfyAppRoot(
 
                             if (!isExpandedWidth) {
                                 Surface(
-                                    color = MaterialTheme.colorScheme.surface,
-                                    border = BorderStroke(0.5.dp, MaterialTheme.colorScheme.outlineVariant),
-                                    shadowElevation = 12.dp
+                                    color = MaterialTheme.colorScheme.surface.copy(alpha = 0.97f),
+                                    border = BorderStroke(0.6.dp, MaterialTheme.colorScheme.outlineVariant),
+                                    shadowElevation = 16.dp
                                 ) {
                                     NavigationBar(
                                         containerColor = Color.Transparent,
@@ -884,8 +926,8 @@ fun KoplingfyAppRoot(
                                             NavigationBarItem(
                                                 selected = selected,
                                                 onClick = {
-                                                    selectedTab = index
-                                                    overlayPage = OverlayPage.NONE
+                                                    onSelectedTabChange(index)
+                                                    onOverlayPageChange(OverlayPage.NONE)
                                                 },
                                                 icon = {
                                                     if (tab.route == "listen_together" && activeRoomCode != null) {
@@ -916,9 +958,9 @@ fun KoplingfyAppRoot(
                                                     )
                                                 },
                                                 colors = NavigationBarItemDefaults.colors(
-                                                    selectedIconColor = MaterialTheme.colorScheme.onPrimary,
+                                                    selectedIconColor = MaterialTheme.colorScheme.primary,
                                                     selectedTextColor = MaterialTheme.colorScheme.primary,
-                                                    indicatorColor = MaterialTheme.colorScheme.primary,
+                                                    indicatorColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.16f),
                                                     unselectedIconColor = MaterialTheme.colorScheme.onSurfaceVariant,
                                                     unselectedTextColor = MaterialTheme.colorScheme.onSurfaceVariant
                                                 ),
