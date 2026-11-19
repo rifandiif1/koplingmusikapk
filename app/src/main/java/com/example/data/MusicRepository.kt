@@ -219,10 +219,11 @@ class MusicRepository(
         runCatching { InnerTubeClient.searchSongs("${track.artist} mix") }.getOrDefault(emptyList())
     }
 
-    // ---- FULL-LENGTH ONLY Stream Resolution (ZERO 30s Previews!) ----
+    // ---- FULL-LENGTH ONLY Stream Resolution (Metrolist Cache + Parallel InnerTube Racing) ----
     suspend fun resolveFullAudioStream(
         track: Track,
-        quality: AudioQuality = AudioQuality.HIGH
+        quality: AudioQuality = AudioQuality.HIGH,
+        forceRefresh: Boolean = false
     ): StreamResolveResult = withContext(Dispatchers.IO) {
         // 1. Local SAF audio file
         if (track.isLocal && !track.streamUrl.isNullOrBlank()) {
@@ -253,7 +254,7 @@ class MusicRepository(
             .replace(Regex("""\s*\[[^\]]*]"""), "")
             .trim()
 
-        // 3. Resolve direct YouTube videoId via Metrolist InnerTube player profiles
+        // 3. Resolve direct YouTube videoId via Metrolist InnerTube parallel player racing + cache
         var primaryResult: StreamResolveResult? = null
         val videoId = if (track.id.startsWith("yt_")) {
             track.id.removePrefix("yt_")
@@ -264,23 +265,22 @@ class MusicRepository(
         }
 
         if (!videoId.isNullOrBlank()) {
-            val direct = InnerTubeClient.resolveAudioStream(videoId, quality)
+            val direct = InnerTubeClient.resolveAudioStream(videoId, quality, forceRefresh = forceRefresh)
             if (direct is StreamResolveResult.Success) return@withContext direct
             primaryResult = direct
 
-            // 4. If primary explicit/official videoId was blocked when signed out, try up to 3 alternate YouTube Music audio/lyric uploads
+            // 4. If primary explicit/official videoId was blocked when signed out, try up to 2 alternate YouTube Music uploads
             val altCandidates = runCatching {
                 val audioSearch = InnerTubeClient.searchSongs("$cleanTitle ${track.artist} audio")
-                val videoSearch = InnerTubeClient.searchVideos("$cleanTitle ${track.artist} lyrics")
-                (audioSearch + videoSearch)
+                audioSearch
                     .map { it.id.removePrefix("yt_") }
                     .filter { it.isNotBlank() && it != videoId }
                     .distinct()
-                    .take(3)
+                    .take(2)
             }.getOrDefault(emptyList())
 
             for (altId in altCandidates) {
-                val alt = InnerTubeClient.resolveAudioStream(altId, quality)
+                val alt = InnerTubeClient.resolveAudioStream(altId, quality, forceRefresh = forceRefresh)
                 if (alt is StreamResolveResult.Success) return@withContext alt
             }
         }
@@ -289,6 +289,21 @@ class MusicRepository(
         primaryResult ?: StreamResolveResult.Unavailable(
             "Stream penuh YouTube Music tidak tersedia untuk lagu ini. Coba Login YouTube Music di Pengaturan."
         )
+    }
+
+    /**
+     * Silently resolves & caches the next track's InnerTube stream URL in the background
+     * so skipping or auto-advancing begins playback immediately like Metrolist.
+     */
+    suspend fun prefetchTrackStream(track: Track, quality: AudioQuality = AudioQuality.HIGH) = withContext(Dispatchers.IO) {
+        if (track.isLocal || track.isDownloaded) return@withContext
+        if (!track.id.startsWith("yt_")) return@withContext
+        val videoId = track.id.removePrefix("yt_")
+        if (videoId.isBlank()) return@withContext
+        if (InnerTubeClient.getCachedStream(videoId, quality) != null) return@withContext
+        runCatching {
+            InnerTubeClient.resolveAudioStream(videoId, quality, forceRefresh = false)
+        }
     }
 
     // ---- Search: Online YouTube Music OR Local Library ----

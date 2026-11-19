@@ -47,6 +47,19 @@ data class ListenRoom(
         )
     }
 
+    /**
+     * Compensates for elapsed wall-clock time since updatedAt when playing == true,
+     * so guests joining mid-song or tapping Resync jump to the exact live playback position.
+     */
+    fun effectivePositionMs(nowMs: Long = System.currentTimeMillis()): Long {
+        val base = positionMs.coerceAtLeast(0L)
+        if (!playing) return base
+        val updatedMs = updatedAt?.toDate()?.time ?: return base
+        val elapsed = (nowMs - updatedMs).coerceAtLeast(0L)
+        val maxPos = if (currentTrackDurationMs > 0L) currentTrackDurationMs else (base + elapsed)
+        return (base + elapsed).coerceIn(0L, maxPos)
+    }
+
     fun votesNeededToSkip(): Int {
         return (memberUids.size / 2) + 1
     }

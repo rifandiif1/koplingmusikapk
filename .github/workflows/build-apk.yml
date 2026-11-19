@@ -79,6 +79,17 @@ jobs:
           if [ ! -f app/google-services.json ] && [ -n "$GOOGLE_SERVICES_JSON_BASE64" ]; then
             echo "$GOOGLE_SERVICES_JSON_BASE64" | tr -d '\r\n' | base64 --decode > app/google-services.json
           fi
+          if [ -f app/google-services.json ]; then
+            rm -f app/src/main/res/values/ci_google_services_fallback.xml
+          else
+            echo "Note: app/google-services.json not found; generating CI compile fallback for default_web_client_id."
+            cat <<'EOF' > app/src/main/res/values/ci_google_services_fallback.xml
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="default_web_client_id" translatable="false"></string>
+</resources>
+EOF
+          fi
           if [ ! -f .env ] && [ -f .env.example ]; then
             cp .env.example .env
           fi

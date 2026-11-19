@@ -7,21 +7,22 @@ import com.example.data.local.PlayHistoryEntity
 import com.example.data.local.PlaylistEntity
 import com.example.data.local.PlaylistTrackCrossRef
 import com.example.data.local.SavedTrackEntity
+import com.example.data.remote.InnerTubeClient
 import com.example.data.remote.ResolvedStream
 import com.example.model.Track
+import com.example.player.KoplingfyAudioEngine
+import com.example.player.YouTubeChunkedDataSource
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.withContext
-import okhttp3.OkHttpClient
 import okhttp3.Request
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
 import java.io.FileOutputStream
-import java.util.concurrent.TimeUnit
 
 /**
  * Manages Metrolist-style offline audio downloads (app-private storage, zero broad storage permissions)
@@ -31,10 +32,7 @@ class OfflineDownloadManager(
     private val context: Context,
     private val dao: KoplingfyDao
 ) {
-    private val httpClient = OkHttpClient.Builder()
-        .connectTimeout(15, TimeUnit.SECONDS)
-        .readTimeout(45, TimeUnit.SECONDS)
-        .build()
+    private val httpClient = InnerTubeClient.streamHttpClient
 
     // trackId -> download progress 0f..1f
     private val _activeDownloads = MutableStateFlow<Map<String, Float>>(emptyMap())
@@ -47,41 +45,85 @@ class OfflineDownloadManager(
     }
 
     suspend fun downloadTrack(track: Track, stream: ResolvedStream): Result<File> = withContext(Dispatchers.IO) {
-        val safeName = track.id.replace(Regex("""[^a-zA-Z0-9_\-]"""), "_") + ".m4a"
+        val ext = if (stream.mimeType?.contains("webm", ignoreCase = true) == true) "webm" else "m4a"
+        val safeName = track.id.replace(Regex("""[^a-zA-Z0-9_\-]"""), "_") + ".$ext"
         val targetFile = File(downloadsDir(), safeName)
         val tempFile = File(downloadsDir(), "$safeName.part")
 
         _activeDownloads.update { it + (track.id to 0.05f) }
         try {
-            val reqBuilder = Request.Builder().url(stream.url)
-            if (!stream.userAgent.isNullOrBlank()) {
-                reqBuilder.header("User-Agent", stream.userAgent)
-            }
-            if (!stream.cookie.isNullOrBlank()) {
-                reqBuilder.header("Cookie", stream.cookie)
-            }
-            httpClient.newCall(reqBuilder.build()).execute().use { resp ->
-                if (!resp.isSuccessful) {
-                    throw IllegalStateException("HTTP ${resp.code}")
-                }
-                val body = resp.body ?: throw IllegalStateException("Empty stream body")
-                val totalBytes = body.contentLength()
-                var downloaded = 0L
-                val buffer = ByteArray(16 * 1024)
+            val isGoogleVideo = Uri.parse(stream.url).host?.contains("googlevideo.com", ignoreCase = true) == true
+            val chunkSize = YouTubeChunkedDataSource.DEFAULT_CHUNK_SIZE
+            val buffer = ByteArray(16 * 1024)
 
-                FileOutputStream(tempFile).use { out ->
-                    body.byteStream().use { input ->
-                        var read = input.read(buffer)
-                        while (read >= 0) {
-                            out.write(buffer, 0, read)
-                            downloaded += read
-                            if (totalBytes > 0L) {
-                                val progress = (downloaded.toFloat() / totalBytes.toFloat()).coerceIn(0.05f, 0.99f)
-                                _activeDownloads.update { it + (track.id to progress) }
+            FileOutputStream(tempFile).use { out ->
+                if (isGoogleVideo) {
+                    var offset = 0L
+                    var totalBytes = stream.contentLength ?: -1L
+                    while (totalBytes < 0L || offset < totalBytes) {
+                        val end = if (totalBytes > 0L) minOf(offset + chunkSize - 1, totalBytes - 1) else offset + chunkSize - 1
+                        val reqBuilder = Request.Builder()
+                            .url(stream.url)
+                            .header("Range", "bytes=$offset-$end")
+                        if (!stream.userAgent.isNullOrBlank()) reqBuilder.header("User-Agent", stream.userAgent)
+                        if (!stream.cookie.isNullOrBlank()) reqBuilder.header("Cookie", stream.cookie)
+
+                        var chunkReadTotal = 0L
+                        httpClient.newCall(reqBuilder.build()).execute().use { resp ->
+                            if (resp.code == 416) {
+                                totalBytes = offset
+                                return@use
                             }
-                            read = input.read(buffer)
+                            if (!resp.isSuccessful) throw IllegalStateException("HTTP ${resp.code}")
+                            if (totalBytes < 0L) {
+                                resp.header("Content-Range")?.substringAfterLast('/')?.toLongOrNull()?.let {
+                                    totalBytes = it
+                                }
+                            }
+                            val body = resp.body ?: throw IllegalStateException("Empty stream body")
+                            body.byteStream().use { input ->
+                                var read = input.read(buffer)
+                                while (read >= 0) {
+                                    out.write(buffer, 0, read)
+                                    chunkReadTotal += read
+                                    offset += read
+                                    if (totalBytes > 0L) {
+                                        val progress = (offset.toFloat() / totalBytes.toFloat()).coerceIn(0.05f, 0.99f)
+                                        _activeDownloads.update { it + (track.id to progress) }
+                                    }
+                                    read = input.read(buffer)
+                                }
+                            }
+                            // If server ignored Range (200 OK instead of 206), download is already complete
+                            if (resp.code == 200) {
+                                totalBytes = offset
+                            }
                         }
-                        out.flush()
+                        if (chunkReadTotal == 0L) break
+                    }
+                    out.flush()
+                } else {
+                    val reqBuilder = Request.Builder().url(stream.url)
+                    if (!stream.userAgent.isNullOrBlank()) reqBuilder.header("User-Agent", stream.userAgent)
+                    if (!stream.cookie.isNullOrBlank()) reqBuilder.header("Cookie", stream.cookie)
+                    httpClient.newCall(reqBuilder.build()).execute().use { resp ->
+                        if (!resp.isSuccessful) throw IllegalStateException("HTTP ${resp.code}")
+                        val body = resp.body ?: throw IllegalStateException("Empty stream body")
+                        val totalBytes = body.contentLength()
+                        var downloaded = 0L
+                        body.byteStream().use { input ->
+                            var read = input.read(buffer)
+                            while (read >= 0) {
+                                out.write(buffer, 0, read)
+                                downloaded += read
+                                if (totalBytes > 0L) {
+                                    val progress = (downloaded.toFloat() / totalBytes.toFloat()).coerceIn(0.05f, 0.99f)
+                                    _activeDownloads.update { it + (track.id to progress) }
+                                }
+                                read = input.read(buffer)
+                            }
+                            out.flush()
+                        }
                     }
                 }
             }
@@ -130,9 +172,15 @@ class OfflineDownloadManager(
     }
 
     suspend fun clearAppCache(): Long = withContext(Dispatchers.IO) {
-        val before = dirSizeBytes(context.cacheDir)
-        context.cacheDir.listFiles()?.forEach { it.deleteRecursively() }
-        before
+        var freed = 0L
+        context.cacheDir.listFiles()?.forEach { child ->
+            if (child.name == KoplingfyAudioEngine.STREAM_CACHE_DIR_NAME) {
+                return@forEach
+            }
+            freed += dirSizeBytes(child)
+            child.deleteRecursively()
+        }
+        freed
     }
 
     suspend fun getStorageStatsBytes(): Pair<Long, Long> = withContext(Dispatchers.IO) {

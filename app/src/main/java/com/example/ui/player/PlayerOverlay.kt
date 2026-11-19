@@ -3,6 +3,7 @@ package com.example.ui.player
 import android.view.WindowManager
 import androidx.activity.compose.BackHandler
 import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.LinearEasing
 import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.Spring
@@ -12,6 +13,7 @@ import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
+import androidx.compose.ui.graphics.lerp
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -1215,20 +1217,24 @@ private fun SyncedLyricsStage(
         }
     }
 
+    val spotifyCardBase = remember(accentPrimary) {
+        lerp(Color(0xFF141824), accentPrimary, 0.28f)
+    }
+
     Surface(
         modifier = Modifier
             .fillMaxSize()
             .padding(vertical = 6.dp),
         shape = RoundedCornerShape(26.dp),
-        color = MaterialTheme.colorScheme.surface,
-        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant)
+        color = spotifyCardBase,
+        border = BorderStroke(1.dp, Color.White.copy(alpha = 0.14f))
     ) {
         Column(modifier = Modifier.fillMaxSize()) {
-            // Lyrics toolbar (Karaoke badge, Provider badge, font scale -/+, Share)
+            // Compact Spotify-inspired Lyrics Header
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(horizontal = 14.dp, vertical = 8.dp),
+                    .padding(horizontal = 16.dp, vertical = 10.dp),
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically
             ) {
@@ -1237,19 +1243,19 @@ private fun SyncedLyricsStage(
                     horizontalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
                     Text(
-                        text = if (lyrics.providerName.isNotBlank()) "Lirik • ${lyrics.providerName}" else "Lirik",
-                        style = MaterialTheme.typography.labelMedium,
-                        color = accentPrimary
+                        text = "Lirik",
+                        style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.ExtraBold),
+                        color = Color.White
                     )
-                    if (lyrics.syncedLines.isNotEmpty()) {
+                    if (lyrics.providerName.isNotBlank()) {
                         Surface(
                             shape = RoundedCornerShape(50),
-                            color = accentPrimary.copy(alpha = 0.16f)
+                            color = Color.Black.copy(alpha = 0.24f)
                         ) {
                             Text(
-                                text = "KARAOKE",
-                                style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold),
-                                color = accentPrimary,
+                                text = lyrics.providerName,
+                                style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.SemiBold),
+                                color = Color.White.copy(alpha = 0.82f),
                                 modifier = Modifier.padding(horizontal = 8.dp, vertical = 2.dp)
                             )
                         }
@@ -1260,13 +1266,23 @@ private fun SyncedLyricsStage(
                         onClick = { onFontScaleChange((fontScale - 0.1f).coerceAtLeast(0.8f)) },
                         modifier = Modifier.size(34.dp)
                     ) {
-                        Icon(Icons.Rounded.TextDecrease, contentDescription = "Perkecil huruf", modifier = Modifier.size(18.dp))
+                        Icon(
+                            Icons.Rounded.TextDecrease,
+                            contentDescription = "Perkecil huruf",
+                            tint = Color.White.copy(alpha = 0.85f),
+                            modifier = Modifier.size(18.dp)
+                        )
                     }
                     IconButton(
                         onClick = { onFontScaleChange((fontScale + 0.1f).coerceAtMost(1.4f)) },
                         modifier = Modifier.size(34.dp)
                     ) {
-                        Icon(Icons.Rounded.TextIncrease, contentDescription = "Perbesar huruf", modifier = Modifier.size(18.dp))
+                        Icon(
+                            Icons.Rounded.TextIncrease,
+                            contentDescription = "Perbesar huruf",
+                            tint = Color.White.copy(alpha = 0.85f),
+                            modifier = Modifier.size(18.dp)
+                        )
                     }
                     val shareableText = when {
                         lyrics.syncedLines.isNotEmpty() -> lyrics.syncedLines.joinToString("\n") { it.text }
@@ -1278,7 +1294,12 @@ private fun SyncedLyricsStage(
                             onClick = { onShareLyrics(shareableText) },
                             modifier = Modifier.size(34.dp)
                         ) {
-                            Icon(Icons.Rounded.Share, contentDescription = "Bagikan lirik", modifier = Modifier.size(18.dp))
+                            Icon(
+                                Icons.Rounded.Share,
+                                contentDescription = "Bagikan lirik",
+                                tint = Color.White.copy(alpha = 0.85f),
+                                modifier = Modifier.size(18.dp)
+                            )
                         }
                     }
                 }
@@ -1289,8 +1310,8 @@ private fun SyncedLyricsStage(
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .padding(horizontal = 14.dp)
-                        .padding(bottom = 6.dp),
+                        .padding(horizontal = 16.dp)
+                        .padding(bottom = 8.dp),
                     horizontalArrangement = Arrangement.SpaceBetween,
                     verticalAlignment = Alignment.CenterVertically
                 ) {
@@ -1302,39 +1323,41 @@ private fun SyncedLyricsStage(
                             Surface(
                                 onClick = { onNudgeOffset(-500L) },
                                 shape = RoundedCornerShape(8.dp),
-                                color = MaterialTheme.colorScheme.surfaceContainerHigh,
+                                color = Color.Black.copy(alpha = 0.24f),
                                 modifier = Modifier.testTag("lyrics_offset_minus")
                             ) {
                                 Text(
                                     text = "-0.5s",
                                     style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold),
+                                    color = Color.White.copy(alpha = 0.9f),
                                     modifier = Modifier.padding(horizontal = 8.dp, vertical = 5.dp)
                                 )
                             }
                             Surface(
                                 onClick = onResetOffset,
                                 shape = RoundedCornerShape(8.dp),
-                                color = if (playerState.lyricsOffsetMs != 0L) accentPrimary.copy(alpha = 0.18f)
-                                else MaterialTheme.colorScheme.surfaceContainerLow,
+                                color = if (playerState.lyricsOffsetMs != 0L) Color.White.copy(alpha = 0.22f)
+                                else Color.Black.copy(alpha = 0.18f),
                                 modifier = Modifier.testTag("lyrics_offset_reset")
                             ) {
                                 val sec = playerState.lyricsOffsetMs / 1000f
                                 Text(
                                     text = if (playerState.lyricsOffsetMs == 0L) "Sync 0s" else "%+.1fs".format(sec),
                                     style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.SemiBold),
-                                    color = if (playerState.lyricsOffsetMs != 0L) accentPrimary else MaterialTheme.colorScheme.onSurfaceVariant,
+                                    color = Color.White,
                                     modifier = Modifier.padding(horizontal = 8.dp, vertical = 5.dp)
                                 )
                             }
                             Surface(
                                 onClick = { onNudgeOffset(500L) },
                                 shape = RoundedCornerShape(8.dp),
-                                color = MaterialTheme.colorScheme.surfaceContainerHigh,
+                                color = Color.Black.copy(alpha = 0.24f),
                                 modifier = Modifier.testTag("lyrics_offset_plus")
                             ) {
                                 Text(
                                     text = "+0.5s",
                                     style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold),
+                                    color = Color.White.copy(alpha = 0.9f),
                                     modifier = Modifier.padding(horizontal = 8.dp, vertical = 5.dp)
                                 )
                             }
@@ -1349,7 +1372,7 @@ private fun SyncedLyricsStage(
                             if (!isSelectingCard) selectedLineIndices.clear()
                         },
                         shape = RoundedCornerShape(50),
-                        color = if (isSelectingCard) accentPrimary else accentPrimary.copy(alpha = 0.16f),
+                        color = if (isSelectingCard) Color.White else Color.Black.copy(alpha = 0.26f),
                         modifier = Modifier.testTag("toggle_lyric_card_mode")
                     ) {
                         Row(
@@ -1360,13 +1383,13 @@ private fun SyncedLyricsStage(
                             Icon(
                                 imageVector = Icons.Rounded.AutoAwesome,
                                 contentDescription = null,
-                                tint = if (isSelectingCard) Color(0xFF0A0B0F) else accentPrimary,
+                                tint = if (isSelectingCard) Color(0xFF0A0B0F) else Color.White,
                                 modifier = Modifier.size(14.dp)
                             )
                             Text(
                                 text = if (isSelectingCard) "Pilih (1–4)" else "Kartu Lirik",
                                 style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold),
-                                color = if (isSelectingCard) Color(0xFF0A0B0F) else accentPrimary
+                                color = if (isSelectingCard) Color(0xFF0A0B0F) else Color.White
                             )
                         }
                     }
@@ -1378,9 +1401,13 @@ private fun SyncedLyricsStage(
                     lyrics.isLoading -> {
                         Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                             Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                                CircularProgressIndicator(color = accentPrimary)
+                                CircularProgressIndicator(color = Color.White)
                                 Spacer(Modifier.height(10.dp))
-                                Text("Mencari lirik LRCLIB & YouTube Music…", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                Text(
+                                    "Mencari lirik LRCLIB & YouTube Music…",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = Color.White.copy(alpha = 0.8f)
+                                )
                             }
                         }
                     }
@@ -1390,15 +1417,15 @@ private fun SyncedLyricsStage(
                                 text = "♪ Lagu Instrumental ♪\nNikmati alunan musiknya.",
                                 style = MaterialTheme.typography.titleMedium,
                                 textAlign = TextAlign.Center,
-                                color = accentPrimary
+                                color = Color.White
                             )
                         }
                     }
                     lyrics.syncedLines.isNotEmpty() -> {
                         LazyColumn(
                             state = listState,
-                            contentPadding = PaddingValues(horizontal = 20.dp, vertical = 14.dp),
-                            verticalArrangement = Arrangement.spacedBy(14.dp)
+                            contentPadding = PaddingValues(start = 20.dp, end = 20.dp, top = 12.dp, bottom = 56.dp),
+                            verticalArrangement = Arrangement.spacedBy(18.dp)
                         ) {
                             itemsIndexed(lyrics.syncedLines) { idx, line ->
                                 val isActive = idx == activeLineIndex
@@ -1408,151 +1435,117 @@ private fun SyncedLyricsStage(
                                 if (isSelectingCard) {
                                     Surface(
                                         onClick = { toggleLineSelection(idx) },
-                                        shape = RoundedCornerShape(12.dp),
-                                        color = if (isSelected) accentPrimary.copy(alpha = 0.2f) else MaterialTheme.colorScheme.surfaceContainerLow,
+                                        shape = RoundedCornerShape(14.dp),
+                                        color = if (isSelected) Color.White.copy(alpha = 0.22f) else Color.Black.copy(alpha = 0.20f),
                                         border = BorderStroke(
                                             1.dp,
-                                            if (isSelected) accentPrimary else MaterialTheme.colorScheme.outlineVariant
+                                            if (isSelected) Color.White else Color.White.copy(alpha = 0.16f)
                                         ),
                                         modifier = Modifier.fillMaxWidth()
                                     ) {
                                         Row(
-                                            modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
+                                            modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp),
                                             verticalAlignment = Alignment.CenterVertically,
                                             horizontalArrangement = Arrangement.spacedBy(10.dp)
                                         ) {
                                             Text(
                                                 text = line.text,
                                                 style = MaterialTheme.typography.titleMedium.copy(
-                                                    fontSize = (16f * fontScale).sp,
-                                                    fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal
+                                                    fontSize = (18f * fontScale).sp,
+                                                    lineHeight = (25f * fontScale).sp,
+                                                    fontWeight = if (isSelected) FontWeight.ExtraBold else FontWeight.SemiBold
                                                 ),
-                                                color = if (isSelected) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.onSurfaceVariant,
+                                                color = if (isSelected) Color.White else Color.White.copy(alpha = 0.72f),
                                                 modifier = Modifier.weight(1f)
                                             )
                                             if (isSelected) {
                                                 Icon(
                                                     imageVector = Icons.Rounded.Check,
                                                     contentDescription = "Dipilih",
-                                                    tint = accentPrimary,
+                                                    tint = Color.White,
                                                     modifier = Modifier.size(18.dp)
                                                 )
                                             }
                                         }
                                     }
                                 } else {
-                                    val lineScale by animateFloatAsState(
-                                        targetValue = if (isActive) 1.03f else 1f,
-                                        animationSpec = tween(220),
-                                        label = "lyric_line_scale"
-                                    )
-
-                                    if (isActive) {
-                                        val nextTs = lyrics.syncedLines.getOrNull(idx + 1)?.timestampMs
-                                            ?: (line.timestampMs + 3_500L)
-                                        val lineDuration = (nextTs - line.timestampMs).coerceAtLeast(600L)
-                                        val rawProgress = ((adjustedPosMs - line.timestampMs).toFloat() / lineDuration.toFloat())
-                                            .coerceIn(0.05f, 1f)
-                                        val sweepStop = rawProgress.coerceIn(0.05f, 0.99f)
-                                        val softEdge = (sweepStop + 0.08f).coerceAtMost(1f)
-                                        val karaokeBrush = Brush.horizontalGradient(
-                                            colorStops = arrayOf(
-                                                0f to accentPrimary,
-                                                sweepStop to accentGlow,
-                                                softEdge to MaterialTheme.colorScheme.onSurface.copy(alpha = 0.38f),
-                                                1f to MaterialTheme.colorScheme.onSurface.copy(alpha = 0.34f)
-                                            )
-                                        )
-                                        Column(
-                                            modifier = Modifier
-                                                .fillMaxWidth()
-                                                .scale(lineScale)
-                                                .clip(RoundedCornerShape(12.dp))
-                                                .background(accentPrimary.copy(alpha = 0.09f))
-                                                .clickable { onSeekTo((line.timestampMs - playerState.lyricsOffsetMs).coerceAtLeast(0L)) }
-                                                .padding(horizontal = 12.dp, vertical = 10.dp),
-                                            verticalArrangement = Arrangement.spacedBy(6.dp)
-                                        ) {
-                                            Text(
-                                                text = line.text,
-                                                style = MaterialTheme.typography.headlineSmall.copy(
-                                                    fontSize = (21f * fontScale).sp,
-                                                    fontWeight = FontWeight.ExtraBold,
-                                                    brush = karaokeBrush
-                                                )
-                                            )
-                                            LinearProgressIndicator(
-                                                progress = { rawProgress },
-                                                modifier = Modifier
-                                                    .fillMaxWidth()
-                                                    .height(2.5.dp)
-                                                    .clip(RoundedCornerShape(50)),
-                                                color = accentPrimary,
-                                                trackColor = accentPrimary.copy(alpha = 0.16f)
-                                            )
-                                        }
-                                    } else {
-                                        Text(
-                                            text = line.text,
-                                            style = MaterialTheme.typography.titleMedium.copy(
-                                                fontSize = (16f * fontScale).sp
-                                            ),
-                                            color = if (isPast) {
-                                                MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.42f)
-                                            } else {
-                                                MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.72f)
-                                            },
-                                            modifier = Modifier
-                                                .fillMaxWidth()
-                                                .clip(RoundedCornerShape(10.dp))
-                                                .clickable { onSeekTo((line.timestampMs - playerState.lyricsOffsetMs).coerceAtLeast(0L)) }
-                                                .padding(horizontal = 6.dp, vertical = 4.dp)
-                                        )
+                                    // Authentic Spotify-style line-by-line synced lyrics:
+                                    // Pure crisp white for the active line, translucent white for past & upcoming lines.
+                                    val targetColor = when {
+                                        isActive -> Color.White
+                                        isPast -> Color.White.copy(alpha = 0.42f)
+                                        else -> Color.White.copy(alpha = 0.58f)
                                     }
+                                    val animatedColor by animateColorAsState(
+                                        targetValue = targetColor,
+                                        animationSpec = tween(durationMillis = 240),
+                                        label = "spotify_lyric_color"
+                                    )
+                                    Text(
+                                        text = line.text,
+                                        style = MaterialTheme.typography.headlineSmall.copy(
+                                            fontSize = ((if (isActive) 23f else 20f) * fontScale).sp,
+                                            lineHeight = ((if (isActive) 31f else 28f) * fontScale).sp,
+                                            fontWeight = if (isActive) FontWeight.ExtraBold else FontWeight.Bold
+                                        ),
+                                        color = animatedColor,
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .clip(RoundedCornerShape(10.dp))
+                                            .clickable {
+                                                onSeekTo((line.timestampMs - playerState.lyricsOffsetMs).coerceAtLeast(0L))
+                                            }
+                                            .padding(vertical = 2.dp)
+                                    )
                                 }
                             }
                         }
                     }
                     plainLines.isNotEmpty() -> {
                         LazyColumn(
-                            contentPadding = PaddingValues(horizontal = 20.dp, vertical = 12.dp),
-                            verticalArrangement = Arrangement.spacedBy(10.dp)
+                            contentPadding = PaddingValues(start = 20.dp, end = 20.dp, top = 12.dp, bottom = 48.dp),
+                            verticalArrangement = Arrangement.spacedBy(14.dp)
                         ) {
                             itemsIndexed(plainLines) { idx, textLine ->
                                 val isSelected = idx in selectedLineIndices
                                 if (isSelectingCard) {
                                     Surface(
                                         onClick = { toggleLineSelection(idx) },
-                                        shape = RoundedCornerShape(12.dp),
-                                        color = if (isSelected) accentPrimary.copy(alpha = 0.2f) else MaterialTheme.colorScheme.surfaceContainerLow,
+                                        shape = RoundedCornerShape(14.dp),
+                                        color = if (isSelected) Color.White.copy(alpha = 0.22f) else Color.Black.copy(alpha = 0.20f),
                                         border = BorderStroke(
                                             1.dp,
-                                            if (isSelected) accentPrimary else MaterialTheme.colorScheme.outlineVariant
+                                            if (isSelected) Color.White else Color.White.copy(alpha = 0.16f)
                                         ),
                                         modifier = Modifier.fillMaxWidth()
                                     ) {
                                         Row(
-                                            modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
+                                            modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp),
                                             verticalAlignment = Alignment.CenterVertically
                                         ) {
                                             Text(
                                                 text = textLine,
-                                                style = MaterialTheme.typography.bodyLarge.copy(fontSize = (15f * fontScale).sp),
+                                                style = MaterialTheme.typography.titleMedium.copy(
+                                                    fontSize = (18f * fontScale).sp,
+                                                    fontWeight = if (isSelected) FontWeight.ExtraBold else FontWeight.SemiBold
+                                                ),
+                                                color = if (isSelected) Color.White else Color.White.copy(alpha = 0.72f),
                                                 modifier = Modifier.weight(1f)
                                             )
                                             if (isSelected) {
-                                                Icon(Icons.Rounded.Check, contentDescription = null, tint = accentPrimary, modifier = Modifier.size(18.dp))
+                                                Icon(Icons.Rounded.Check, contentDescription = null, tint = Color.White, modifier = Modifier.size(18.dp))
                                             }
                                         }
                                     }
                                 } else {
                                     Text(
                                         text = textLine,
-                                        style = MaterialTheme.typography.bodyLarge.copy(
-                                            fontSize = (16f * fontScale).sp,
-                                            lineHeight = (24f * fontScale).sp
+                                        style = MaterialTheme.typography.titleMedium.copy(
+                                            fontSize = (19f * fontScale).sp,
+                                            lineHeight = (27f * fontScale).sp,
+                                            fontWeight = FontWeight.Bold
                                         ),
-                                        color = MaterialTheme.colorScheme.onSurface
+                                        color = Color.White.copy(alpha = 0.92f)
                                     )
                                 }
                             }
@@ -1563,7 +1556,7 @@ private fun SyncedLyricsStage(
                             Text(
                                 text = lyrics.error ?: "Lirik belum tersedia untuk lagu ini.",
                                 style = MaterialTheme.typography.bodyMedium,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                color = Color.White.copy(alpha = 0.78f),
                                 textAlign = TextAlign.Center
                             )
                         }

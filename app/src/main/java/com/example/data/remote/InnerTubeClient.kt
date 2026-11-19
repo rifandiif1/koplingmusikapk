@@ -6,6 +6,8 @@ import com.example.model.AudioQuality
 import com.example.model.RemotePlaylistSummary
 import com.example.model.Track
 import com.example.model.YouTubeAccount
+import okhttp3.Call
+import okhttp3.ConnectionPool
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.Request
@@ -13,6 +15,10 @@ import okhttp3.RequestBody.Companion.toRequestBody
 import org.json.JSONArray
 import org.json.JSONObject
 import java.security.MessageDigest
+import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.ExecutorCompletionService
+import java.util.concurrent.Executors
+import java.util.concurrent.Future
 import java.util.concurrent.TimeUnit
 
 data class InnerTubeSearchBundle(
@@ -29,7 +35,10 @@ data class ResolvedStream(
     val cookie: String? = null,
     val durationMs: Long? = null,
     val bitrateKbps: Int? = null,
-    val sourceLabel: String = "YouTube Music • FULL"
+    val sourceLabel: String = "YouTube Music • FULL",
+    val mimeType: String? = null,
+    val contentLength: Long? = null,
+    val cacheKey: String? = null
 )
 
 sealed interface StreamResolveResult {
@@ -70,14 +79,94 @@ object InnerTubeClient {
     @Volatile
     private var authCookie: String = ""
 
+    private val sharedConnectionPool = ConnectionPool(12, 5, TimeUnit.MINUTES)
+
     private val client: OkHttpClient = OkHttpClient.Builder()
-        .connectTimeout(12, TimeUnit.SECONDS)
-        .readTimeout(16, TimeUnit.SECONDS)
-        .writeTimeout(12, TimeUnit.SECONDS)
+        .connectionPool(sharedConnectionPool)
+        .connectTimeout(10, TimeUnit.SECONDS)
+        .readTimeout(14, TimeUnit.SECONDS)
+        .writeTimeout(10, TimeUnit.SECONDS)
         .build()
 
+    // Tight timeout client for fast parallel /player profile racing (prevents 15s stalls)
+    private val playerClient: OkHttpClient = client.newBuilder()
+        .connectTimeout(5, TimeUnit.SECONDS)
+        .readTimeout(6, TimeUnit.SECONDS)
+        .writeTimeout(5, TimeUnit.SECONDS)
+        .build()
+
+    // Shared pooled HTTP/2 client exposed for ExoPlayer OkHttpDataSource & fast chunked downloads
+    val streamHttpClient: OkHttpClient = client.newBuilder()
+        .connectTimeout(8, TimeUnit.SECONDS)
+        .readTimeout(15, TimeUnit.SECONDS)
+        .writeTimeout(10, TimeUnit.SECONDS)
+        .build()
+
+    private val raceExecutor = Executors.newCachedThreadPool { r ->
+        Thread(r, "koplingfy-innertube-race").apply { isDaemon = true }
+    }
+
+    private data class CachedStreamEntry(
+        val stream: ResolvedStream,
+        val expiresAtMs: Long
+    )
+
+    private val streamUrlCache = ConcurrentHashMap<String, CachedStreamEntry>()
+
+    @Volatile
+    private var lastWinningUnauthProfile: String? = null
+
+    @Volatile
+    private var lastWinningAuthProfile: String? = null
+
+    private val expireParamRegex = Regex("""[?&]expire=(\d+)""")
+
+    fun warmupAsync() {
+        if (!cachedVisitorData.isNullOrBlank()) return
+        raceExecutor.execute {
+            runCatching { getOrFetchVisitorData(forceRefresh = false) }
+        }
+    }
+
+    fun getCachedStream(videoId: String, quality: AudioQuality): ResolvedStream? {
+        val key = streamCacheKey(videoId, quality)
+        val entry = streamUrlCache[key] ?: return null
+        if (System.currentTimeMillis() < entry.expiresAtMs) {
+            return entry.stream
+        }
+        streamUrlCache.remove(key)
+        return null
+    }
+
+    fun invalidateStreamCache(videoId: String) {
+        val prefix = "$videoId|"
+        streamUrlCache.keys.removeIf { it.startsWith(prefix) }
+    }
+
+    fun clearStreamCache() {
+        streamUrlCache.clear()
+    }
+
+    private fun streamCacheKey(videoId: String, quality: AudioQuality): String =
+        "$videoId|${quality.name}|${isAuthenticated()}"
+
+    private fun computeStreamExpiryMs(url: String): Long {
+        val now = System.currentTimeMillis()
+        val parsedSec = expireParamRegex.find(url)?.groupValues?.getOrNull(1)?.toLongOrNull()
+        return if (parsedSec != null && parsedSec * 1000L > now + 60_000L) {
+            // 5-minute safety margin before YouTube's signed URL expires
+            (parsedSec * 1000L - 5 * 60_000L).coerceAtLeast(now + 60_000L)
+        } else {
+            now + 25 * 60_000L
+        }
+    }
+
     fun updateAuth(cookie: String, visitorData: String? = null) {
-        authCookie = cookie.trim()
+        val trimmed = cookie.trim()
+        if (trimmed != authCookie) {
+            authCookie = trimmed
+            streamUrlCache.clear()
+        }
         if (!visitorData.isNullOrBlank()) {
             cachedVisitorData = visitorData.trim()
             visitorFetchedAtMs = System.currentTimeMillis()
@@ -144,19 +233,8 @@ object InnerTubeClient {
         )
     )
 
-    // Metrolist's full unauthenticated playback client rotation
+    // Metrolist's fastest unauthenticated direct-URL playback clients ordered by reliability & speed
     private val unauthPlaybackProfiles = listOf(
-        PlayerClientProfile(
-            friendlyName = "visionOS",
-            clientName = "VISIONOS",
-            clientVersion = "1.02",
-            clientId = "101",
-            userAgent = "Mozilla/5.0 (Macintosh; Intel Mac OS X 15_7_3) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/26.0 Safari/605.1.15",
-            osName = "visionOS",
-            osVersion = "26.5.23O471",
-            deviceMake = "Apple",
-            deviceModel = "RealityDevice17,1"
-        ),
         PlayerClientProfile(
             friendlyName = "Android VR 1.65",
             clientName = "ANDROID_VR",
@@ -165,32 +243,6 @@ object InnerTubeClient {
             userAgent = "com.google.android.apps.youtube.vr.oculus/1.65.10 (Linux; U; Android 12L; eureka-user Build/SQ3A.220605.009.A1) gzip",
             osName = "Android",
             osVersion = "12L",
-            deviceMake = "Oculus",
-            deviceModel = "Quest 3",
-            androidSdkVersion = 32,
-            includeUserAgentInContext = true
-        ),
-        PlayerClientProfile(
-            friendlyName = "Android VR 1.61",
-            clientName = "ANDROID_VR",
-            clientVersion = "1.61.48",
-            clientId = "28",
-            userAgent = "com.google.android.apps.youtube.vr.oculus/1.61.48 (Linux; U; Android 12; en_US; Quest 3; Build/SQ3A.220605.009.A1; Cronet/132.0.6808.3)",
-            osName = "Android",
-            osVersion = "12",
-            deviceMake = "Oculus",
-            deviceModel = "Quest 3",
-            androidSdkVersion = 32,
-            includeUserAgentInContext = true
-        ),
-        PlayerClientProfile(
-            friendlyName = "Android VR 1.43",
-            clientName = "ANDROID_VR",
-            clientVersion = "1.43.32",
-            clientId = "28",
-            userAgent = "com.google.android.apps.youtube.vr.oculus/1.43.32 (Linux; U; Android 12; en_US; Quest 3; Build/SQ3A.220605.009.A1; Cronet/107.0.5284.2)",
-            osName = "Android",
-            osVersion = "12",
             deviceMake = "Oculus",
             deviceModel = "Quest 3",
             androidSdkVersion = 32,
@@ -208,12 +260,49 @@ object InnerTubeClient {
             deviceModel = "iPhone16,2"
         ),
         PlayerClientProfile(
+            friendlyName = "visionOS",
+            clientName = "VISIONOS",
+            clientVersion = "1.02",
+            clientId = "101",
+            userAgent = "Mozilla/5.0 (Macintosh; Intel Mac OS X 15_7_3) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/26.0 Safari/605.1.15",
+            osName = "visionOS",
+            osVersion = "26.5.23O471",
+            deviceMake = "Apple",
+            deviceModel = "RealityDevice17,1"
+        ),
+        PlayerClientProfile(
+            friendlyName = "Android VR 1.61",
+            clientName = "ANDROID_VR",
+            clientVersion = "1.61.48",
+            clientId = "28",
+            userAgent = "com.google.android.apps.youtube.vr.oculus/1.61.48 (Linux; U; Android 12; en_US; Quest 3; Build/SQ3A.220605.009.A1; Cronet/132.0.6808.3)",
+            osName = "Android",
+            osVersion = "12",
+            deviceMake = "Oculus",
+            deviceModel = "Quest 3",
+            androidSdkVersion = 32,
+            includeUserAgentInContext = true
+        ),
+        PlayerClientProfile(
             friendlyName = "TV Embedded",
             clientName = "TVHTML5_SIMPLY_EMBEDDED_PLAYER",
             clientVersion = "2.0",
             clientId = "85",
             userAgent = "Mozilla/5.0 (ChromiumStylePlatform) Cobalt/Version",
             thirdPartyEmbedUrl = "https://music.youtube.com"
+        ),
+        PlayerClientProfile(
+            friendlyName = "Android VR 1.43",
+            clientName = "ANDROID_VR",
+            clientVersion = "1.43.32",
+            clientId = "28",
+            userAgent = "com.google.android.apps.youtube.vr.oculus/1.43.32 (Linux; U; Android 12; en_US; Quest 3; Build/SQ3A.220605.009.A1; Cronet/107.0.5284.2)",
+            osName = "Android",
+            osVersion = "12",
+            deviceMake = "Oculus",
+            deviceModel = "Quest 3",
+            androidSdkVersion = 32,
+            includeUserAgentInContext = true
         ),
         PlayerClientProfile(
             friendlyName = "visionOS 0.1",
@@ -300,7 +389,9 @@ object InnerTubeClient {
         visitorData: String? = null,
         origin: String? = YTM_ORIGIN,
         cookieOverride: String? = null,
-        includeAuth: Boolean = true
+        includeAuth: Boolean = true,
+        httpClient: OkHttpClient = client,
+        callTracker: MutableList<Call>? = null
     ): JSONObject? {
         val reqBuilder = Request.Builder()
             .url(url)
@@ -324,7 +415,11 @@ object InnerTubeClient {
                 reqBuilder.header("Authorization", hash)
             }
         }
-        client.newCall(reqBuilder.build()).execute().use { resp ->
+        val call = httpClient.newCall(reqBuilder.build())
+        if (callTracker != null) {
+            synchronized(callTracker) { callTracker.add(call) }
+        }
+        call.execute().use { resp ->
             if (!resp.isSuccessful) return null
             val text = resp.body?.string() ?: return null
             return JSONObject(text)
@@ -496,36 +591,45 @@ object InnerTubeClient {
         val artists = mutableListOf<ArtistSummary>()
         val playlists = mutableListOf<RemotePlaylistSummary>()
 
-        runCatching {
-            val songPayload = JSONObject().apply {
-                put("context", webRemixContext(vd))
-                put("query", trimmed)
-                put("params", PARAMS_SONGS)
-            }
-            postJson("$YTM_ORIGIN/youtubei/v1/search?prettyPrint=false", songPayload, visitorData = vd)?.let { root ->
-                walkRenderers(root, tracks, mutableListOf(), mutableListOf(), mutableListOf(), null, null)
-            }
+        // Run songs, general, and videos queries in parallel for snappy Metrolist-speed search
+        val songsFuture = raceExecutor.submit<JSONObject?> {
+            runCatching {
+                val songPayload = JSONObject().apply {
+                    put("context", webRemixContext(vd))
+                    put("query", trimmed)
+                    put("params", PARAMS_SONGS)
+                }
+                postJson("$YTM_ORIGIN/youtubei/v1/search?prettyPrint=false", songPayload, visitorData = vd)
+            }.getOrNull()
+        }
+        val generalFuture = raceExecutor.submit<JSONObject?> {
+            runCatching {
+                val generalPayload = JSONObject().apply {
+                    put("context", webRemixContext(vd))
+                    put("query", trimmed)
+                }
+                postJson("$YTM_ORIGIN/youtubei/v1/search?prettyPrint=false", generalPayload, visitorData = vd)
+            }.getOrNull()
+        }
+        val videosFuture = raceExecutor.submit<JSONObject?> {
+            runCatching {
+                val videoPayload = JSONObject().apply {
+                    put("context", webRemixContext(vd))
+                    put("query", trimmed)
+                    put("params", PARAMS_VIDEOS)
+                }
+                postJson("$YTM_ORIGIN/youtubei/v1/search?prettyPrint=false", videoPayload, visitorData = vd)
+            }.getOrNull()
         }
 
-        runCatching {
-            val generalPayload = JSONObject().apply {
-                put("context", webRemixContext(vd))
-                put("query", trimmed)
-            }
-            postJson("$YTM_ORIGIN/youtubei/v1/search?prettyPrint=false", generalPayload, visitorData = vd)?.let { root ->
-                walkRenderers(root, tracks, albums, artists, playlists, null, null)
-            }
+        runCatching { songsFuture.get(12, TimeUnit.SECONDS) }.getOrNull()?.let { root ->
+            walkRenderers(root, tracks, mutableListOf(), mutableListOf(), mutableListOf(), null, null)
         }
-
-        runCatching {
-            val videoPayload = JSONObject().apply {
-                put("context", webRemixContext(vd))
-                put("query", trimmed)
-                put("params", PARAMS_VIDEOS)
-            }
-            postJson("$YTM_ORIGIN/youtubei/v1/search?prettyPrint=false", videoPayload, visitorData = vd)?.let { root ->
-                walkRenderers(root, videos, mutableListOf(), mutableListOf(), mutableListOf(), "Video Musik", null)
-            }
+        runCatching { generalFuture.get(12, TimeUnit.SECONDS) }.getOrNull()?.let { root ->
+            walkRenderers(root, tracks, albums, artists, playlists, null, null)
+        }
+        runCatching { videosFuture.get(12, TimeUnit.SECONDS) }.getOrNull()?.let { root ->
+            walkRenderers(root, videos, mutableListOf(), mutableListOf(), mutableListOf(), "Video Musik", null)
         }
 
         if (playlists.size < 4) {
@@ -620,22 +724,70 @@ object InnerTubeClient {
         return text.takeIf { it.length > 20 }
     }
 
-    // ---- Full-Length Audio Stream Resolution (ZERO Preview) ----
+    // ---- Metrolist-Speed Full-Length Audio Stream Resolution (Cache + Sticky Profile + Parallel Racing) ----
     fun resolveAudioStream(
         videoId: String,
-        quality: AudioQuality = AudioQuality.HIGH
+        quality: AudioQuality = AudioQuality.HIGH,
+        forceRefresh: Boolean = false
     ): StreamResolveResult {
-        val vd = getOrFetchVisitorData()
+        if (!forceRefresh) {
+            getCachedStream(videoId, quality)?.let { cached ->
+                return StreamResolveResult.Success(cached)
+            }
+        } else {
+            invalidateStreamCache(videoId)
+        }
+
+        // Don't stall playback waiting on sw.js_data if visitorData isn't warmed yet; kick off async warmup
+        val vd = cachedVisitorData ?: run {
+            warmupAsync()
+            null
+        }
+
         val firstAttempt = tryProfilesForVideoId(videoId, vd, quality)
-        if (firstAttempt is StreamResolveResult.Success) return firstAttempt
+        if (firstAttempt is StreamResolveResult.Success) {
+            cacheResolvedStream(videoId, quality, firstAttempt.stream)
+            return firstAttempt
+        }
 
         val freshVd = getOrFetchVisitorData(forceRefresh = true)
         if (freshVd != null && freshVd != vd) {
             val secondAttempt = tryProfilesForVideoId(videoId, freshVd, quality)
-            if (secondAttempt is StreamResolveResult.Success) return secondAttempt
+            if (secondAttempt is StreamResolveResult.Success) {
+                cacheResolvedStream(videoId, quality, secondAttempt.stream)
+                return secondAttempt
+            }
             return secondAttempt
         }
         return firstAttempt
+    }
+
+    private fun cacheResolvedStream(videoId: String, quality: AudioQuality, stream: ResolvedStream) {
+        val key = streamCacheKey(videoId, quality)
+        streamUrlCache[key] = CachedStreamEntry(
+            stream = stream,
+            expiresAtMs = computeStreamExpiryMs(stream.url)
+        )
+    }
+
+    private data class ProfileAttemptOutcome(
+        val profile: PlayerClientProfile,
+        val stream: ResolvedStream? = null,
+        val loginRequired: Boolean = false,
+        val reason: String = ""
+    )
+
+    private fun orderedProfilesForCurrentAuth(): List<PlayerClientProfile> {
+        val isAuth = isAuthenticated()
+        val base = if (isAuth) {
+            authPlaybackProfiles + unauthPlaybackProfiles
+        } else {
+            unauthPlaybackProfiles
+        }
+        val winnerName = if (isAuth) lastWinningAuthProfile else lastWinningUnauthProfile
+        if (winnerName.isNullOrBlank()) return base
+        val winner = base.firstOrNull { it.friendlyName == winnerName } ?: return base
+        return listOf(winner) + base.filterNot { it.friendlyName == winnerName }
     }
 
     private fun tryProfilesForVideoId(
@@ -643,131 +795,29 @@ object InnerTubeClient {
         visitorData: String?,
         quality: AudioQuality
     ): StreamResolveResult {
-        val profiles = if (isAuthenticated()) {
-            authPlaybackProfiles + unauthPlaybackProfiles
-        } else {
-            unauthPlaybackProfiles
-        }
+        val ordered = orderedProfilesForCurrentAuth()
+        val primaryBatch = ordered.take(3)
+        val fallbackBatch = ordered.drop(3)
 
         var sawLoginRequired = false
         var lastReason = ""
 
-        for (profile in profiles) {
-            val attempt = runCatching {
-                val clientObj = JSONObject().apply {
-                    put("clientName", profile.clientName)
-                    put("clientVersion", profile.clientVersion)
-                    put("hl", "id")
-                    put("gl", "ID")
-                    if (!visitorData.isNullOrBlank()) put("visitorData", visitorData)
-                    if (profile.includeUserAgentInContext) put("userAgent", profile.userAgent)
-                    profile.osName?.let { put("osName", it) }
-                    profile.osVersion?.let { put("osVersion", it) }
-                    profile.deviceMake?.let { put("deviceMake", it) }
-                    profile.deviceModel?.let { put("deviceModel", it) }
-                    profile.androidSdkVersion?.let { put("androidSdkVersion", it) }
-                    profile.platform?.let { put("platform", it) }
-                }
+        val primaryResult = raceProfileBatch(primaryBatch, videoId, visitorData, quality)
+        if (primaryResult.stream != null) {
+            recordWinningProfile(primaryResult.profile)
+            return StreamResolveResult.Success(primaryResult.stream)
+        }
+        sawLoginRequired = sawLoginRequired || primaryResult.loginRequired
+        if (primaryResult.reason.isNotBlank()) lastReason = primaryResult.reason
 
-                val contextObj = JSONObject().put("client", clientObj)
-                if (profile.thirdPartyEmbedUrl != null) {
-                    contextObj.put("thirdParty", JSONObject().put("embedUrl", profile.thirdPartyEmbedUrl))
-                }
-
-                val payload = JSONObject().apply {
-                    put("context", contextObj)
-                    put("videoId", videoId)
-                    put("contentCheckOk", true)
-                    put("racyCheckOk", true)
-                }
-
-                val root = postJson(
-                    url = "$YTM_ORIGIN/youtubei/v1/player?prettyPrint=false",
-                    body = payload,
-                    userAgent = profile.userAgent,
-                    clientId = profile.clientId,
-                    clientVersion = profile.clientVersion,
-                    visitorData = visitorData,
-                    origin = YTM_ORIGIN,
-                    includeAuth = profile.useAuth
-                ) ?: return@runCatching null
-
-                val playability = root.optJSONObject("playabilityStatus")
-                val status = playability?.optString("status").orEmpty()
-                val reason = playability?.optString("reason").orEmpty()
-                if (status != "OK") {
-                    if (status == "LOGIN_REQUIRED" || reason.contains("Sign in", ignoreCase = true) || reason.contains("age", ignoreCase = true)) {
-                        sawLoginRequired = true
-                    }
-                    if (reason.isNotBlank()) lastReason = reason
-                    return@runCatching null
-                }
-
-                val streamingData = root.optJSONObject("streamingData") ?: return@runCatching null
-                val adaptive = streamingData.optJSONArray("adaptiveFormats") ?: JSONArray()
-
-                val audioCandidates = mutableListOf<AudioFmtCandidate>()
-
-                for (i in 0 until adaptive.length()) {
-                    val fmt = adaptive.optJSONObject(i) ?: continue
-                    val mime = fmt.optString("mimeType")
-                    val directUrl = fmt.optString("url")
-                    if (directUrl.isBlank() || !mime.startsWith("audio/")) continue
-                    audioCandidates.add(
-                        AudioFmtCandidate(
-                            url = directUrl,
-                            mime = mime,
-                            itag = fmt.optInt("itag", 0),
-                            bitrate = fmt.optInt("bitrate", 0),
-                            durationMs = fmt.optString("approxDurationMs").toLongOrNull()
-                        )
-                    )
-                }
-
-                val chosen = selectBestCandidate(audioCandidates, quality)
-
-                var finalUrl = chosen?.url
-                var finalDur = chosen?.durationMs
-                val finalBitrateKbps = chosen?.bitrate?.div(1000)?.takeIf { it > 0 }
-
-                if (finalUrl == null) {
-                    val formats = streamingData.optJSONArray("formats") ?: JSONArray()
-                    for (i in 0 until formats.length()) {
-                        val fmt = formats.optJSONObject(i) ?: continue
-                        val directUrl = fmt.optString("url")
-                        if (directUrl.isNotBlank()) {
-                            finalUrl = directUrl
-                            finalDur = fmt.optString("approxDurationMs").toLongOrNull()
-                            break
-                        }
-                    }
-                }
-
-                val fallbackVideoDur = root.optJSONObject("videoDetails")
-                    ?.optString("lengthSeconds")
-                    ?.toLongOrNull()
-                    ?.times(1000L)
-
-                finalUrl?.let { url ->
-                    val qualityBadge = when {
-                        finalBitrateKbps != null -> "YTM • ${finalBitrateKbps}kbps"
-                        profile.useAuth -> "YOUTUBE MUSIC • AKUN"
-                        else -> "YOUTUBE MUSIC • FULL"
-                    }
-                    ResolvedStream(
-                        url = url,
-                        userAgent = profile.userAgent,
-                        cookie = if (profile.useAuth) authCookie else null,
-                        durationMs = finalDur ?: fallbackVideoDur,
-                        bitrateKbps = finalBitrateKbps,
-                        sourceLabel = qualityBadge
-                    )
-                }
-            }.getOrNull()
-
-            if (attempt != null) {
-                return StreamResolveResult.Success(attempt)
+        if (fallbackBatch.isNotEmpty()) {
+            val fallbackResult = raceProfileBatch(fallbackBatch, videoId, visitorData, quality)
+            if (fallbackResult.stream != null) {
+                recordWinningProfile(fallbackResult.profile)
+                return StreamResolveResult.Success(fallbackResult.stream)
             }
+            sawLoginRequired = sawLoginRequired || fallbackResult.loginRequired
+            if (fallbackResult.reason.isNotBlank()) lastReason = fallbackResult.reason
         }
 
         return if (sawLoginRequired) {
@@ -785,18 +835,234 @@ object InnerTubeClient {
         }
     }
 
+    private fun recordWinningProfile(profile: PlayerClientProfile) {
+        if (isAuthenticated()) {
+            lastWinningAuthProfile = profile.friendlyName
+        } else {
+            lastWinningUnauthProfile = profile.friendlyName
+        }
+    }
+
+    private fun raceProfileBatch(
+        profiles: List<PlayerClientProfile>,
+        videoId: String,
+        visitorData: String?,
+        quality: AudioQuality
+    ): ProfileAttemptOutcome {
+        if (profiles.size == 1) {
+            return executeSingleProfile(profiles.first(), videoId, visitorData, quality, null)
+        }
+
+        val completionService = ExecutorCompletionService<ProfileAttemptOutcome>(raceExecutor)
+        val activeCalls = mutableListOf<Call>()
+        val futures = mutableListOf<Future<ProfileAttemptOutcome>>()
+
+        for (profile in profiles) {
+            futures.add(
+                completionService.submit {
+                    executeSingleProfile(profile, videoId, visitorData, quality, activeCalls)
+                }
+            )
+        }
+
+        var sawLoginRequired = false
+        var lastReason = ""
+        try {
+            for (i in profiles.indices) {
+                val finished = completionService.poll(8, TimeUnit.SECONDS) ?: break
+                val outcome = runCatching { finished.get() }.getOrNull() ?: continue
+                if (outcome.stream != null) {
+                    return outcome
+                }
+                if (outcome.loginRequired) sawLoginRequired = true
+                if (outcome.reason.isNotBlank()) lastReason = outcome.reason
+            }
+        } finally {
+            // Immediately cancel all losing/in-flight HTTP requests to free sockets & bandwidth
+            futures.forEach { it.cancel(true) }
+            synchronized(activeCalls) {
+                activeCalls.forEach { runCatching { it.cancel() } }
+                activeCalls.clear()
+            }
+        }
+
+        return ProfileAttemptOutcome(
+            profile = profiles.first(),
+            stream = null,
+            loginRequired = sawLoginRequired,
+            reason = lastReason
+        )
+    }
+
+    private fun executeSingleProfile(
+        profile: PlayerClientProfile,
+        videoId: String,
+        visitorData: String?,
+        quality: AudioQuality,
+        callTracker: MutableList<Call>?
+    ): ProfileAttemptOutcome {
+        var loginReq = false
+        var reasonText = ""
+        val resolved = runCatching {
+            val clientObj = JSONObject().apply {
+                put("clientName", profile.clientName)
+                put("clientVersion", profile.clientVersion)
+                put("hl", "id")
+                put("gl", "ID")
+                if (!visitorData.isNullOrBlank()) put("visitorData", visitorData)
+                if (profile.includeUserAgentInContext) put("userAgent", profile.userAgent)
+                profile.osName?.let { put("osName", it) }
+                profile.osVersion?.let { put("osVersion", it) }
+                profile.deviceMake?.let { put("deviceMake", it) }
+                profile.deviceModel?.let { put("deviceModel", it) }
+                profile.androidSdkVersion?.let { put("androidSdkVersion", it) }
+                profile.platform?.let { put("platform", it) }
+            }
+
+            val contextObj = JSONObject().put("client", clientObj)
+            if (profile.thirdPartyEmbedUrl != null) {
+                contextObj.put("thirdParty", JSONObject().put("embedUrl", profile.thirdPartyEmbedUrl))
+            }
+
+            val payload = JSONObject().apply {
+                put("context", contextObj)
+                put("videoId", videoId)
+                put("contentCheckOk", true)
+                put("racyCheckOk", true)
+            }
+
+            val root = postJson(
+                url = "$YTM_ORIGIN/youtubei/v1/player?prettyPrint=false",
+                body = payload,
+                userAgent = profile.userAgent,
+                clientId = profile.clientId,
+                clientVersion = profile.clientVersion,
+                visitorData = visitorData,
+                origin = YTM_ORIGIN,
+                includeAuth = profile.useAuth,
+                httpClient = playerClient,
+                callTracker = callTracker
+            ) ?: return@runCatching null
+
+            val playability = root.optJSONObject("playabilityStatus")
+            val status = playability?.optString("status").orEmpty()
+            val reason = playability?.optString("reason").orEmpty()
+            if (status != "OK") {
+                if (status == "LOGIN_REQUIRED" || reason.contains("Sign in", ignoreCase = true) || reason.contains("age", ignoreCase = true)) {
+                    loginReq = true
+                }
+                if (reason.isNotBlank()) reasonText = reason
+                return@runCatching null
+            }
+
+            val streamingData = root.optJSONObject("streamingData") ?: return@runCatching null
+            val adaptive = streamingData.optJSONArray("adaptiveFormats") ?: JSONArray()
+
+            val audioCandidates = mutableListOf<AudioFmtCandidate>()
+
+            for (i in 0 until adaptive.length()) {
+                val fmt = adaptive.optJSONObject(i) ?: continue
+                val mime = fmt.optString("mimeType")
+                val directUrl = fmt.optString("url")
+                if (directUrl.isBlank() || !mime.startsWith("audio/")) continue
+                audioCandidates.add(
+                    AudioFmtCandidate(
+                        url = directUrl,
+                        mime = mime,
+                        itag = fmt.optInt("itag", 0),
+                        bitrate = fmt.optInt("bitrate", 0),
+                        durationMs = fmt.optString("approxDurationMs").toLongOrNull(),
+                        contentLength = fmt.optString("contentLength").toLongOrNull()
+                    )
+                )
+            }
+
+            val chosen = selectBestCandidate(audioCandidates, quality)
+
+            var finalUrl = chosen?.url
+            var finalDur = chosen?.durationMs
+            var finalMime = chosen?.mime
+            var finalLength = chosen?.contentLength
+            val finalBitrateKbps = chosen?.bitrate?.div(1000)?.takeIf { it > 0 }
+
+            if (finalUrl == null) {
+                val formats = streamingData.optJSONArray("formats") ?: JSONArray()
+                for (i in 0 until formats.length()) {
+                    val fmt = formats.optJSONObject(i) ?: continue
+                    val directUrl = fmt.optString("url")
+                    if (directUrl.isNotBlank()) {
+                        finalUrl = directUrl
+                        finalDur = fmt.optString("approxDurationMs").toLongOrNull()
+                        finalMime = fmt.optString("mimeType").takeIf { it.isNotBlank() }
+                        finalLength = fmt.optString("contentLength").toLongOrNull()
+                        break
+                    }
+                }
+            }
+
+            val fallbackVideoDur = root.optJSONObject("videoDetails")
+                ?.optString("lengthSeconds")
+                ?.toLongOrNull()
+                ?.times(1000L)
+
+            finalUrl?.let { url ->
+                val codecTag = when {
+                    finalMime?.contains("webm", ignoreCase = true) == true -> "OPUS"
+                    finalMime?.contains("mp4", ignoreCase = true) == true -> "AAC"
+                    else -> "YTM"
+                }
+                val qualityBadge = when {
+                    finalBitrateKbps != null -> "$codecTag • ${finalBitrateKbps}kbps"
+                    profile.useAuth -> "YOUTUBE MUSIC • AKUN"
+                    else -> "YOUTUBE MUSIC • FULL"
+                }
+                ResolvedStream(
+                    url = url,
+                    userAgent = profile.userAgent,
+                    cookie = if (profile.useAuth) authCookie else null,
+                    durationMs = finalDur ?: fallbackVideoDur,
+                    bitrateKbps = finalBitrateKbps,
+                    sourceLabel = qualityBadge,
+                    mimeType = finalMime,
+                    contentLength = finalLength,
+                    cacheKey = "yt_${videoId}_${quality.name}"
+                )
+            }
+        }.getOrNull()
+
+        return ProfileAttemptOutcome(
+            profile = profile,
+            stream = resolved,
+            loginRequired = loginReq,
+            reason = reasonText
+        )
+    }
+
     private fun selectBestCandidate(
         candidates: List<AudioFmtCandidate>,
         quality: AudioQuality
     ): AudioFmtCandidate? {
         if (candidates.isEmpty()) return null
-        // Prioritize audio/mp4 (AAC M4A, itag 140/141/139) for rock-solid Android MediaPlayer compatibility
-        val mp4Only = candidates.filter { it.mime.contains("audio/mp4") }
-        val pool = if (mp4Only.isNotEmpty()) mp4Only else candidates
+        // Metrolist-style ExoPlayer format selection: supports both Opus (audio/webm) & AAC (audio/mp4).
+        // Opus (itag 251/250/249) has faster initial buffering & superior efficiency at equivalent bitrates.
         return when (quality) {
-            AudioQuality.HIGH -> pool.maxByOrNull { (if (it.itag == 141 || it.itag == 140) 500_000 else 0) + it.bitrate }
-            AudioQuality.NORMAL -> pool.minByOrNull { kotlin.math.abs(it.bitrate - 128_000) }
-            AudioQuality.LOW -> pool.minByOrNull { it.bitrate }
+            AudioQuality.HIGH -> candidates.maxByOrNull { fmt ->
+                val codecBonus = when {
+                    fmt.itag == 141 -> 600_000 // Premium AAC 256kbps
+                    fmt.itag == 251 -> 550_000 // Opus ~160kbps (Metrolist default high)
+                    fmt.itag == 140 -> 500_000 // AAC ~128kbps
+                    fmt.mime.contains("webm", ignoreCase = true) -> 200_000
+                    else -> 100_000
+                }
+                codecBonus + fmt.bitrate
+            }
+            AudioQuality.NORMAL -> candidates.minByOrNull { fmt ->
+                val target = if (fmt.mime.contains("webm", ignoreCase = true)) 120_000 else 128_000
+                kotlin.math.abs(fmt.bitrate - target) - (if (fmt.mime.contains("webm", ignoreCase = true)) 10_000 else 0)
+            }
+            AudioQuality.LOW -> candidates.minByOrNull { fmt ->
+                fmt.bitrate - (if (fmt.itag == 249) 8_000 else 0)
+            }
         }
     }
 
@@ -805,7 +1071,8 @@ object InnerTubeClient {
         val mime: String,
         val itag: Int,
         val bitrate: Int,
-        val durationMs: Long?
+        val durationMs: Long?,
+        val contentLength: Long?
     )
 
     private fun findFirstObjectByKey(node: Any?, targetKey: String): JSONObject? {

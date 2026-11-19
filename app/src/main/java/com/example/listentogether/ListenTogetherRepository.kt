@@ -420,7 +420,6 @@ class ListenTogetherRepository(
                 .update(
                     mapOf(
                         "queueTracks" to updatedList.map { it.toFirestoreMap() },
-                        "syncSequence" to (room.syncSequence + 1L),
                         "lastActionBy" to "$safeActor $verb: \"${track.title}\"".take(140),
                         "updatedAt" to FieldValue.serverTimestamp()
                     )
@@ -467,7 +466,6 @@ class ListenTogetherRepository(
                 .update(
                     mapOf(
                         "queueTracks" to finalQueue.take(30).map { it.toFirestoreMap() },
-                        "syncSequence" to (room.syncSequence + 1L),
                         "lastActionBy" to action.take(140),
                         "updatedAt" to FieldValue.serverTimestamp()
                     )
@@ -496,7 +494,6 @@ class ListenTogetherRepository(
                 .update(
                     mapOf(
                         "queueTracks" to sorted.take(30).map { it.toFirestoreMap() },
-                        "syncSequence" to (room.syncSequence + 1L),
                         "lastActionBy" to "🔥 $safeActor mengurutkan antrian via Mode Jukebox".take(140),
                         "updatedAt" to FieldValue.serverTimestamp()
                     )
@@ -530,7 +527,6 @@ class ListenTogetherRepository(
                 .update(
                     mapOf(
                         "queueTracks" to queue.take(30).map { it.toFirestoreMap() },
-                        "syncSequence" to (room.syncSequence + 1L),
                         "lastActionBy" to "$safeActor mengatur ulang antrian bersama".take(140),
                         "updatedAt" to FieldValue.serverTimestamp()
                     )
@@ -560,7 +556,6 @@ class ListenTogetherRepository(
                 .update(
                     mapOf(
                         "queueTracks" to queue.take(30).map { it.toFirestoreMap() },
-                        "syncSequence" to (room.syncSequence + 1L),
                         "lastActionBy" to "$safeActor menghapus \"${removed.title}\" dari antrian".take(140),
                         "updatedAt" to FieldValue.serverTimestamp()
                     )

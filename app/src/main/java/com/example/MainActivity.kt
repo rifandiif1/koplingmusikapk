@@ -54,14 +54,17 @@ import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
+import androidx.credentials.CredentialManager
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
@@ -81,6 +84,7 @@ import com.example.listentogether.ListenTogetherViewModel
 import com.example.listentogether.ListenUiState
 import com.example.listentogether.RecentRoomEntry
 import com.example.listentogether.authStateFlow
+import com.example.listentogether.signOutGoogle
 import com.example.model.ArtistSummary
 import com.example.model.CollectionDetailType
 import com.example.model.Track
@@ -197,7 +201,7 @@ private fun KoplingfyAuthScopedRoot(viewModel: KoplingfyViewModel) {
             val myActiveRoomsState by listenViewModel.myActiveRoomsState.collectAsStateWithLifecycle()
             val recentRoomsState by listenViewModel.recentRoomsState.collectAsStateWithLifecycle()
 
-            // Inbound Real-Time Sync: Firestore Room -> Local Audio Engine
+            // Inbound Real-Time Playback Sync: Firestore Room -> Local Audio Engine
             val activeRoom = sessionState.activeRoom
             LaunchedEffect(activeRoom?.roomCode, activeRoom?.syncSequence, activeRoom?.status) {
                 val room = activeRoom ?: return@LaunchedEffect
@@ -209,10 +213,18 @@ private fun KoplingfyAuthScopedRoot(viewModel: KoplingfyViewModel) {
                         viewModel.applyRemoteRoomSync(
                             track = track,
                             shouldPlay = room.playing,
-                            targetPositionMs = room.positionMs,
+                            targetPositionMs = room.effectivePositionMs(),
                             roomQueue = queue
                         )
                     }
+                }
+            }
+
+            // Inbound Collaborative Queue Sync (updates upcoming queue WITHOUT resetting current song position)
+            LaunchedEffect(activeRoom?.roomCode, activeRoom?.queueTracks) {
+                val room = activeRoom ?: return@LaunchedEffect
+                if (room.status == "active") {
+                    viewModel.syncRoomUpcomingQueue(room.parsedQueue().map { it.toTrack() })
                 }
             }
 
@@ -238,6 +250,9 @@ fun KoplingfyAppRoot(
     recentRoomsState: ListenUiState<List<RecentRoomEntry>>
 ) {
     val context = LocalContext.current
+    val scope = rememberCoroutineScope()
+    val credentialManager = remember(context) { CredentialManager.create(context) }
+    val isFirebaseReady = remember(context) { FirebaseApp.getApps(context).isNotEmpty() }
     val settings by viewModel.settings.collectAsStateWithLifecycle()
     val youtubeAccount by viewModel.youtubeAccount.collectAsStateWithLifecycle()
     val isSyncingAccount by viewModel.isSyncingAccount.collectAsStateWithLifecycle()
@@ -385,6 +400,51 @@ fun KoplingfyAppRoot(
                 positionMs = 0L,
                 actionLabel = "${listenViewModel.currentUserName} memutar \"${targetTrack.title}\""
             )
+        }
+    }
+
+    val playAllWithRoomSync: (List<Track>, Boolean) -> Unit = { list, shuffle ->
+        val ordered = if (shuffle) list.shuffled() else list
+        viewModel.playAll(ordered, shuffle = false)
+        val first = ordered.firstOrNull { !it.isLocal }
+        if (canControlActiveRoom && first != null && listenViewModel != null) {
+            val uid = listenViewModel.currentUserId
+            val actor = listenViewModel.currentUserName
+            val upcoming = ordered.filter { !it.isLocal && it.id != first.id }.take(25).map { t ->
+                com.example.listentogether.RoomQueueTrack(
+                    trackId = t.id,
+                    title = t.title,
+                    artist = t.artist,
+                    album = t.album,
+                    artworkUrl = t.artworkUrl.orEmpty(),
+                    durationMs = t.durationMs,
+                    addedByName = actor,
+                    addedByUid = uid,
+                    upvoterUids = listOf(uid)
+                )
+            }
+            listenViewModel.pushPlaybackSync(
+                track = first,
+                playing = true,
+                positionMs = 0L,
+                actionLabel = "$actor memutar \"${first.title}\"",
+                updatedQueue = upcoming
+            )
+        }
+    }
+
+    // Auto-advance synchronized room track when current song finishes on Host/Controller device
+    DisposableEffect(canControlActiveRoom, activeRoom?.roomCode, skipNextWithRoomSync) {
+        viewModel.onAutoAdvanceOverride = if (canControlActiveRoom) {
+            {
+                skipNextWithRoomSync()
+                true
+            }
+        } else {
+            null
+        }
+        onDispose {
+            viewModel.onAutoAdvanceOverride = null
         }
     }
 
@@ -553,7 +613,7 @@ fun KoplingfyAppRoot(
                                                 viewModel.applyRemoteRoomSync(
                                                     track = track,
                                                     shouldPlay = room.playing,
-                                                    targetPositionMs = room.positionMs,
+                                                    targetPositionMs = room.effectivePositionMs(),
                                                     roomQueue = room.parsedQueue().map { it.toTrack() }
                                                 )
                                                 viewModel.showMessage("Pemutaran disinkronkan dengan ruang ${room.roomCode}")
@@ -595,18 +655,7 @@ fun KoplingfyAppRoot(
                                             overlayPage = OverlayPage.NONE
                                         },
                                         onPlayTrack = { track, list -> playTrackWithRoomSync(track, list, false) },
-                                        onPlayAll = { list, shuffle ->
-                                            viewModel.playAll(list, shuffle)
-                                            val first = list.firstOrNull()
-                                            if (canControlActiveRoom && first != null && !first.isLocal) {
-                                                listenViewModel?.pushPlaybackSync(
-                                                    track = first,
-                                                    playing = true,
-                                                    positionMs = 0L,
-                                                    actionLabel = "${listenViewModel.currentUserName} memutar \"${first.title}\""
-                                                )
-                                            }
-                                        },
+                                        onPlayAll = playAllWithRoomSync,
                                         onToggleLike = viewModel::toggleLike,
                                         onTrackOptions = { optionsTrack = it },
                                         onImportLocalAudio = { localAudioPicker.launch(arrayOf("audio/*")) },
@@ -645,7 +694,23 @@ fun KoplingfyAppRoot(
                                         onClearCache = viewModel::clearAppCache,
                                         onClearDownloads = viewModel::clearAllDownloads,
                                         onExportBackup = { backupExportLauncher.launch("koplingfy_backup.json") },
-                                        onImportBackup = { backupImportLauncher.launch(arrayOf("application/json", "*/*")) }
+                                        onImportBackup = { backupImportLauncher.launch(arrayOf("application/json", "*/*")) },
+                                        isFirebaseReady = isFirebaseReady,
+                                        firebaseUserName = currentGoogleUser?.displayName?.takeIf { it.isNotBlank() }
+                                            ?: currentGoogleUser?.email?.substringBefore("@"),
+                                        firebaseUserEmail = currentGoogleUser?.email,
+                                        activeRoomCode = activeRoomCode,
+                                        onOpenListenTogether = openListenTogether,
+                                        onSignOutFirebase = {
+                                            signOutGoogle(
+                                                credentialManager = credentialManager,
+                                                scope = scope,
+                                                onBeforeSignOut = { listenViewModel?.detachBeforeSignOut() },
+                                                onSignOutComplete = {
+                                                    viewModel.showMessage("Keluar dari akun Google Play Bersama")
+                                                }
+                                            )
+                                        }
                                     )
                                 }
                                 OverlayPage.STATS -> {
@@ -670,7 +735,7 @@ fun KoplingfyAppRoot(
                                             onSelectMood = { viewModel.loadHomeFeed(it) },
                                             onRetry = { viewModel.loadHomeFeed() },
                                             onPlayTrack = { track, list -> playTrackWithRoomSync(track, list, false) },
-                                            onPlayAll = { list, shuffle -> viewModel.playAll(list, shuffle) },
+                                            onPlayAll = playAllWithRoomSync,
                                             onToggleLike = viewModel::toggleLike,
                                             onTrackOptions = { optionsTrack = it },
                                             onAlbumClick = { openCollection(CollectionDetailType.AlbumCollection(it)) },
@@ -694,7 +759,7 @@ fun KoplingfyAppRoot(
                                             onMoodCardClick = { openCollection(CollectionDetailType.MoodCollection(it)) },
                                             onAlbumClick = { openCollection(CollectionDetailType.AlbumCollection(it)) },
                                             onPlayTrack = { track, list -> playTrackWithRoomSync(track, list, false) },
-                                            onPlayAll = { list, shuffle -> viewModel.playAll(list, shuffle) },
+                                            onPlayAll = playAllWithRoomSync,
                                             onToggleLike = viewModel::toggleLike,
                                             onTrackOptions = { optionsTrack = it },
                                             onPlayNext = swipePlayNext,
@@ -750,7 +815,7 @@ fun KoplingfyAppRoot(
                                             likedTracks = likedTracks,
                                             recentTracks = playHistory,
                                             downloadedTracks = downloadedTracks,
-                                            onPlaySmartMix = { tracks, shuffle -> viewModel.playAll(tracks, shuffle) }
+                                            onPlaySmartMix = playAllWithRoomSync
                                         )
                                     }
                                 }

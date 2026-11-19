@@ -118,7 +118,8 @@ class KoplingfyViewModel(application: Application) : AndroidViewModel(applicatio
 
     private val audioEngine = KoplingfyAudioEngine(
         context = application,
-        onTrackCompleted = { handleTrackCompleted() }
+        onTrackCompleted = { handleTrackCompleted() },
+        onStreamExpiredError = { handleStreamExpiredRetry() }
     )
 
     // ---- Flows from Persistence ----
@@ -182,11 +183,14 @@ class KoplingfyViewModel(application: Application) : AndroidViewModel(applicatio
     private var searchJob: Job? = null
     private var suggestionJob: Job? = null
     private var resolveStreamJob: Job? = null
+    private var prefetchJob: Job? = null
     private var lyricsJob: Job? = null
     private var sleepTimerJob: Job? = null
     private var detailObserveJob: Job? = null
+    private var retriedExpiredTrackId: String? = null
 
     init {
+        InnerTubeClient.warmupAsync()
         registerMediaBridgeCallbacks()
         observeAudioEngine()
         observeSettingsForAudio()
@@ -399,15 +403,27 @@ class KoplingfyViewModel(application: Application) : AndroidViewModel(applicatio
             !caps.hasTransport(NetworkCapabilities.TRANSPORT_WIFI)
     }
 
-    private fun resolveAndPlayTrack(track: Track) {
+    private fun handleStreamExpiredRetry(): Boolean {
+        val current = _playerState.value.currentTrack ?: return false
+        if (current.isLocal || retriedExpiredTrackId == current.id) return false
+        retriedExpiredTrackId = current.id
+        resolveAndPlayTrack(current, forceRefresh = true)
+        return true
+    }
+
+    private fun resolveAndPlayTrack(track: Track, forceRefresh: Boolean = false) {
+        if (!forceRefresh) {
+            retriedExpiredTrackId = null
+        }
         resolveStreamJob?.cancel()
+        prefetchJob?.cancel()
         resolveStreamJob = viewModelScope.launch {
             _playerState.update {
                 it.copy(isBuffering = true, audioError = null, requiresYouTubeLogin = false)
             }
             val useDataSaver = settings.value.dataSaverCellular && isOnCellular()
             val effectiveQuality = if (useDataSaver) AudioQuality.LOW else settings.value.audioQuality
-            when (val result = repository.resolveFullAudioStream(track, effectiveQuality)) {
+            when (val result = repository.resolveFullAudioStream(track, effectiveQuality, forceRefresh = forceRefresh)) {
                 is StreamResolveResult.Success -> {
                     val stream = result.stream
                     val sourceTag = if (useDataSaver && !track.isLocal && !track.isDownloaded) {
@@ -425,8 +441,10 @@ class KoplingfyViewModel(application: Application) : AndroidViewModel(applicatio
                         sourceUrl = stream.url,
                         isLocalUri = track.isLocal || stream.url.startsWith("file://"),
                         userAgent = stream.userAgent,
-                        cookie = stream.cookie
+                        cookie = stream.cookie,
+                        cacheKey = stream.cacheKey
                     )
+                    schedulePrefetchNextTrack(effectiveQuality)
                 }
                 is StreamResolveResult.LoginRequired -> {
                     _playerState.update {
@@ -449,6 +467,21 @@ class KoplingfyViewModel(application: Application) : AndroidViewModel(applicatio
                     }
                 }
             }
+        }
+    }
+
+    private fun schedulePrefetchNextTrack(quality: AudioQuality) {
+        prefetchJob?.cancel()
+        val state = _playerState.value
+        val nextTrack = when {
+            state.currentIndex + 1 in state.queue.indices -> state.queue[state.currentIndex + 1]
+            state.repeatMode == RepeatMode.ALL && state.queue.isNotEmpty() -> state.queue.first()
+            else -> null
+        } ?: return
+        if (nextTrack.id == state.currentTrack?.id || nextTrack.isLocal) return
+        prefetchJob = viewModelScope.launch {
+            delay(1_200L)
+            repository.prefetchTrackStream(nextTrack, quality)
         }
     }
 
@@ -490,6 +523,19 @@ class KoplingfyViewModel(application: Application) : AndroidViewModel(applicatio
         audioEngine.seekTo(positionMs)
     }
 
+    var onAutoAdvanceOverride: (() -> Boolean)? = null
+
+    fun syncRoomUpcomingQueue(roomQueue: List<Track>) {
+        val current = _playerState.value.currentTrack ?: return
+        val combinedQueue = listOf(current) + roomQueue.filter { it.id != current.id }
+        _playerState.update { state ->
+            state.copy(
+                queue = combinedQueue,
+                currentIndex = 0
+            )
+        }
+    }
+
     fun applyRemoteRoomSync(
         track: Track?,
         shouldPlay: Boolean,
@@ -506,6 +552,7 @@ class KoplingfyViewModel(application: Application) : AndroidViewModel(applicatio
             )
             playTrack(track, combinedQueue, expandPlayer = false)
         } else {
+            _playerState.update { it.copy(queue = combinedQueue, currentIndex = 0) }
             if (current.audioError != null && shouldPlay) {
                 audioEngine.setNextTrackStartOptions(startPositionMs = targetPositionMs, autoStart = true)
                 resolveAndPlayTrack(track)
@@ -577,7 +624,12 @@ class KoplingfyViewModel(application: Application) : AndroidViewModel(applicatio
             RepeatMode.ONE -> {
                 state.currentTrack?.let { resolveAndPlayTrack(it) }
             }
-            else -> skipNext()
+            else -> {
+                val handledByRoom = onAutoAdvanceOverride?.invoke() == true
+                if (!handledByRoom) {
+                    skipNext()
+                }
+            }
         }
     }
 
@@ -783,9 +835,11 @@ class KoplingfyViewModel(application: Application) : AndroidViewModel(applicatio
 
     fun clearAppCache() {
         viewModelScope.launch {
-            val freedBytes = downloadManager.clearAppCache()
+            val freedDisk = downloadManager.clearAppCache()
+            val freedStream = audioEngine.clearStreamCache()
+            InnerTubeClient.clearStreamCache()
             refreshStorageStats()
-            val mb = freedBytes / (1024.0 * 1024.0)
+            val mb = (freedDisk + freedStream) / (1024.0 * 1024.0)
             showMessage("Cache dibersihkan (%.1f MB dibebaskan)".format(mb))
         }
     }

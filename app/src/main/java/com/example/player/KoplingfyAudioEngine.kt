@@ -1,29 +1,42 @@
 package com.example.player
 
-import android.content.BroadcastReceiver
 import android.content.Context
-import android.content.Intent
-import android.content.IntentFilter
-import android.media.AudioAttributes
-import android.media.AudioFocusRequest
-import android.media.AudioManager
-import android.media.MediaPlayer
-import android.media.PlaybackParams
 import android.media.audiofx.BassBoost
 import android.media.audiofx.Equalizer
 import android.media.audiofx.LoudnessEnhancer
 import android.net.Uri
-import android.os.Build
+import androidx.annotation.OptIn
+import androidx.media3.common.AudioAttributes
+import androidx.media3.common.C
+import androidx.media3.common.MediaItem
+import androidx.media3.common.PlaybackException
+import androidx.media3.common.PlaybackParameters
+import androidx.media3.common.Player
+import androidx.media3.common.util.UnstableApi
+import androidx.media3.database.StandaloneDatabaseProvider
+import androidx.media3.datasource.DefaultDataSource
+import androidx.media3.datasource.HttpDataSource
+import androidx.media3.datasource.cache.CacheDataSink
+import androidx.media3.datasource.cache.CacheDataSource
+import androidx.media3.datasource.cache.LeastRecentlyUsedCacheEvictor
+import androidx.media3.datasource.cache.SimpleCache
+import androidx.media3.datasource.okhttp.OkHttpDataSource
+import androidx.media3.exoplayer.DefaultLoadControl
+import androidx.media3.exoplayer.ExoPlayer
+import androidx.media3.exoplayer.source.ProgressiveMediaSource
+import com.example.data.remote.InnerTubeClient
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import java.io.File
 
 data class AudioEngineState(
     val isPlaying: Boolean = false,
@@ -34,25 +47,29 @@ data class AudioEngineState(
 )
 
 /**
- * Koplingfy DSP Audio Engine:
- * - Full-length stream, offline file, & local SAF URI playback
+ * Koplingfy Metrolist-Architecture Media3 ExoPlayer Audio Engine:
+ * - Zero-teardown single ExoPlayer instance with aggressive fast-start DefaultLoadControl (600ms)
+ * - 512 KB chunked HTTP Range streaming over pooled HTTP/2 OkHttp (bypasses YouTube CDN throttling)
+ * - 128 MB LRU SimpleCache keyed by trackId+quality so replays & seeks are instant (0ms network)
+ * - Native Opus (audio/webm), AAC (audio/mp4), MP3, FLAC, offline files, & SAF local URIs
  * - 5-Band Equalizer + BassBoost + LoudnessEnhancer (Audio Normalization)
- * - Playback Speed & Pitch control
- * - Android AudioFocus management + automatic pause on headset disconnect (ACTION_AUDIO_BECOMING_NOISY)
+ * - Playback Speed & Pitch, Crossfade, Sleep Fade-out, A-B Loop, AudioFocus & BecomingNoisy handling
  */
+@OptIn(UnstableApi::class)
 class KoplingfyAudioEngine(
     private val context: Context,
-    private val onTrackCompleted: () -> Unit
+    private val onTrackCompleted: () -> Unit,
+    private val onStreamExpiredError: (() -> Boolean)? = null
 ) {
-    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
-    private val audioManager = context.getSystemService(Context.AUDIO_SERVICE) as AudioManager
-    private var mediaPlayer: MediaPlayer? = null
+    private val appContext = context.applicationContext
+    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
+
+    private var exoPlayer: ExoPlayer? = null
     private var equalizer: Equalizer? = null
     private var bassBoost: BassBoost? = null
     private var loudnessEnhancer: LoudnessEnhancer? = null
+    private var attachedAudioSessionId: Int = C.AUDIO_SESSION_ID_UNSET
     private var progressJob: Job? = null
-    private var focusRequest: AudioFocusRequest? = null
-    private var noisyReceiverRegistered = false
 
     private var currentSpeed: Float = 1.0f
     private var currentPitch: Float = 1.0f
@@ -63,44 +80,152 @@ class KoplingfyAudioEngine(
     private var sleepFadeMultiplier: Float = 1.0f
     private var abLoopStartMs: Long? = null
     private var abLoopEndMs: Long? = null
-    private var isDucked: Boolean = false
     private var pendingStartPositionMs: Long = 0L
     private var pendingAutoStart: Boolean = true
 
     private val _state = MutableStateFlow(AudioEngineState())
     val state: StateFlow<AudioEngineState> = _state.asStateFlow()
 
-    private val becomingNoisyReceiver = object : BroadcastReceiver() {
-        override fun onReceive(ctx: Context?, intent: Intent?) {
-            if (intent?.action == AudioManager.ACTION_AUDIO_BECOMING_NOISY) {
-                pause()
+    private val playerListener = object : Player.Listener {
+        override fun onAudioSessionIdChanged(audioSessionId: Int) {
+            if (audioSessionId != C.AUDIO_SESSION_ID_UNSET && audioSessionId != 0) {
+                attachAudioEffects(audioSessionId)
             }
+        }
+
+        override fun onPlaybackStateChanged(playbackState: Int) {
+            val player = exoPlayer ?: return
+            when (playbackState) {
+                Player.STATE_BUFFERING -> {
+                    _state.value = _state.value.copy(
+                        isBuffering = true,
+                        errorMessage = null
+                    )
+                }
+                Player.STATE_READY -> {
+                    val sessionId = player.audioSessionId
+                    if (sessionId != C.AUDIO_SESSION_ID_UNSET && sessionId != 0 && sessionId != attachedAudioSessionId) {
+                        attachAudioEffects(sessionId)
+                    }
+                    val totalDur = player.duration.takeIf { it != C.TIME_UNSET && it > 0L }
+                        ?: _state.value.durationMs
+                    val pos = player.currentPosition.coerceAtLeast(0L)
+                    val playingNow = player.isPlaying || player.playWhenReady
+                    if (playingNow) {
+                        startProgressPolling()
+                    } else {
+                        stopProgressPolling()
+                    }
+                    _state.value = AudioEngineState(
+                        isPlaying = player.isPlaying,
+                        isBuffering = false,
+                        positionMs = pos,
+                        durationMs = totalDur,
+                        errorMessage = null
+                    )
+                }
+                Player.STATE_ENDED -> {
+                    stopProgressPolling()
+                    val dur = player.duration.takeIf { it != C.TIME_UNSET && it > 0L }
+                        ?: _state.value.durationMs
+                    _state.value = _state.value.copy(
+                        isPlaying = false,
+                        isBuffering = false,
+                        positionMs = dur,
+                        durationMs = dur
+                    )
+                    onTrackCompleted()
+                }
+                Player.STATE_IDLE -> {
+                    stopProgressPolling()
+                }
+            }
+        }
+
+        override fun onIsPlayingChanged(isPlaying: Boolean) {
+            val player = exoPlayer ?: return
+            val pos = player.currentPosition.coerceAtLeast(0L)
+            val dur = player.duration.takeIf { it != C.TIME_UNSET && it > 0L } ?: _state.value.durationMs
+            if (isPlaying) {
+                startProgressPolling()
+            } else {
+                stopProgressPolling()
+            }
+            _state.value = _state.value.copy(
+                isPlaying = isPlaying,
+                isBuffering = player.playbackState == Player.STATE_BUFFERING,
+                positionMs = pos,
+                durationMs = dur
+            )
+        }
+
+        override fun onPlayerError(error: PlaybackException) {
+            stopProgressPolling()
+            val cause = error.cause
+            val isExpiredHttp = (cause is HttpDataSource.InvalidResponseCodeException &&
+                (cause.responseCode == 403 || cause.responseCode == 410 || cause.responseCode == 404)) ||
+                error.errorCode == PlaybackException.ERROR_CODE_IO_BAD_HTTP_STATUS
+
+            if (isExpiredHttp && onStreamExpiredError?.invoke() == true) {
+                _state.value = _state.value.copy(
+                    isPlaying = false,
+                    isBuffering = true,
+                    errorMessage = null
+                )
+                return
+            }
+
+            _state.value = AudioEngineState(
+                isPlaying = false,
+                isBuffering = false,
+                positionMs = _state.value.positionMs,
+                durationMs = _state.value.durationMs,
+                errorMessage = "Gagal memutar stream audio. Coba putar ulang atau Login YouTube Music."
+            )
         }
     }
 
-    private val focusChangeListener = AudioManager.OnAudioFocusChangeListener { focusChange ->
-        when (focusChange) {
-            AudioManager.AUDIOFOCUS_LOSS,
-            AudioManager.AUDIOFOCUS_LOSS_TRANSIENT -> pause()
-            AudioManager.AUDIOFOCUS_LOSS_TRANSIENT_CAN_DUCK -> {
-                isDucked = true
-                runCatching { mediaPlayer?.setVolume(0.3f, 0.3f) }
+    private fun getOrCreatePlayer(): ExoPlayer {
+        exoPlayer?.let { return it }
+
+        // Fast-start buffer profile tuned for music streaming (Metrolist-like snappy playback start)
+        val loadControl = DefaultLoadControl.Builder()
+            .setBufferDurationsMs(
+                /* minBufferMs = */ 15_000,
+                /* maxBufferMs = */ 50_000,
+                /* bufferForPlaybackMs = */ 600,
+                /* bufferForPlaybackAfterRebufferMs = */ 1_500
+            )
+            .setPrioritizeTimeOverSizeThresholds(true)
+            .build()
+
+        val audioAttributes = AudioAttributes.Builder()
+            .setUsage(C.USAGE_MEDIA)
+            .setContentType(C.AUDIO_CONTENT_TYPE_MUSIC)
+            .build()
+
+        return ExoPlayer.Builder(appContext)
+            .setLoadControl(loadControl)
+            .setAudioAttributes(audioAttributes, /* handleAudioFocus = */ true)
+            .setHandleAudioBecomingNoisy(true)
+            .build()
+            .apply {
+                addListener(playerListener)
+                playbackParameters = PlaybackParameters(currentSpeed, currentPitch)
+                exoPlayer = this
             }
-            AudioManager.AUDIOFOCUS_GAIN -> {
-                isDucked = false
-                runCatching { mediaPlayer?.setVolume(1.0f, 1.0f) }
-            }
-        }
     }
 
     fun playSource(
         sourceUrl: String?,
         isLocalUri: Boolean,
         userAgent: String? = null,
-        cookie: String? = null
+        cookie: String? = null,
+        cacheKey: String? = null
     ) {
-        releasePlayerOnly()
         if (sourceUrl.isNullOrBlank()) {
+            stopProgressPolling()
+            exoPlayer?.stop()
             _state.value = AudioEngineState(
                 isPlaying = false,
                 isBuffering = false,
@@ -109,77 +234,74 @@ class KoplingfyAudioEngine(
             return
         }
 
-        _state.value = AudioEngineState(isPlaying = false, isBuffering = true, errorMessage = null)
+        val safeStartPos = pendingStartPositionMs.coerceAtLeast(0L)
+        val shouldAutoStart = pendingAutoStart
+        pendingStartPositionMs = 0L
+        pendingAutoStart = true
+
+        _state.value = AudioEngineState(
+            isPlaying = false,
+            isBuffering = true,
+            positionMs = safeStartPos,
+            durationMs = _state.value.durationMs,
+            errorMessage = null
+        )
 
         try {
-            requestAudioFocus()
-            registerNoisyReceiver()
+            val player = getOrCreatePlayer()
+            val uri = Uri.parse(sourceUrl)
+            val isLocalSource = isLocalUri || uri.scheme == "file" || uri.scheme == "content"
 
-            val mp = MediaPlayer().apply {
-                setAudioAttributes(
-                    AudioAttributes.Builder()
-                        .setUsage(AudioAttributes.USAGE_MEDIA)
-                        .setContentType(AudioAttributes.CONTENT_TYPE_MUSIC)
-                        .build()
-                )
-                val uri = Uri.parse(sourceUrl)
-                if (isLocalUri || uri.scheme == "file" || uri.scheme == "content") {
-                    setDataSource(context, uri)
-                } else {
-                    val headers = mutableMapOf<String, String>()
-                    if (!userAgent.isNullOrBlank()) headers["User-Agent"] = userAgent
-                    if (!cookie.isNullOrBlank()) headers["Cookie"] = cookie
-                    if (headers.isNotEmpty()) {
-                        setDataSource(context, uri, headers)
-                    } else {
-                        setDataSource(sourceUrl)
-                    }
-                }
-                setOnPreparedListener { player ->
-                    attachAudioEffects(player.audioSessionId)
-                    applyPlaybackParams(player)
-                    val totalDur = player.duration.toLong().coerceAtLeast(1L)
-                    val safeStartPos = pendingStartPositionMs.coerceIn(0L, totalDur)
-                    if (safeStartPos > 1_000L) {
-                        runCatching { player.seekTo(safeStartPos.toInt()) }
-                    }
-                    val shouldStart = pendingAutoStart
-                    pendingStartPositionMs = 0L
-                    pendingAutoStart = true
-                    if (shouldStart) {
-                        val initVol = ((if (crossfadeSeconds > 0 && safeStartPos < 1_000L && !isDucked) 0.12f else if (isDucked) 0.3f else 1.0f) * sleepFadeMultiplier).coerceIn(0.05f, 1.0f)
-                        runCatching { player.setVolume(initVol, initVol) }
-                        player.start()
-                        startProgressPolling()
-                    }
-                    _state.value = AudioEngineState(
-                        isPlaying = shouldStart,
-                        isBuffering = false,
-                        positionMs = safeStartPos,
-                        durationMs = totalDur,
-                        errorMessage = null
-                    )
-                }
-                setOnCompletionListener {
-                    stopProgressPolling()
-                    _state.value = _state.value.copy(
-                        isPlaying = false,
-                        positionMs = _state.value.durationMs
-                    )
-                    onTrackCompleted()
-                }
-                setOnErrorListener { _, _, _ ->
-                    stopProgressPolling()
-                    _state.value = AudioEngineState(
-                        isPlaying = false,
-                        isBuffering = false,
-                        errorMessage = "Gagal memutar stream audio. Coba putar ulang atau Login YouTube Music."
-                    )
-                    true
-                }
-                prepareAsync()
+            val mediaItemBuilder = MediaItem.Builder().setUri(uri)
+            if (!isLocalSource && !cacheKey.isNullOrBlank()) {
+                mediaItemBuilder.setCustomCacheKey(cacheKey)
             }
-            mediaPlayer = mp
+            val mediaItem = mediaItemBuilder.build()
+
+            val dataSourceFactory = if (isLocalSource) {
+                DefaultDataSource.Factory(appContext)
+            } else {
+                val headers = mutableMapOf<String, String>()
+                if (!cookie.isNullOrBlank()) {
+                    headers["Cookie"] = cookie
+                }
+                val okHttpFactory = OkHttpDataSource.Factory(InnerTubeClient.streamHttpClient).apply {
+                    if (!userAgent.isNullOrBlank()) {
+                        setUserAgent(userAgent)
+                    }
+                    if (headers.isNotEmpty()) {
+                        setDefaultRequestProperties(headers)
+                    }
+                }
+                val chunkedUpstream = YouTubeChunkedDataSource.Factory(
+                    upstreamFactory = okHttpFactory,
+                    chunkSize = YouTubeChunkedDataSource.DEFAULT_CHUNK_SIZE
+                )
+                val cache = getOrCreateStreamCache(appContext)
+                if (cache != null) {
+                    val cacheSinkFactory = CacheDataSink.Factory()
+                        .setCache(cache)
+                        .setFragmentSize(YouTubeChunkedDataSource.DEFAULT_CHUNK_SIZE)
+                    CacheDataSource.Factory()
+                        .setCache(cache)
+                        .setUpstreamDataSourceFactory(chunkedUpstream)
+                        .setCacheWriteDataSinkFactory(cacheSinkFactory)
+                        .setFlags(CacheDataSource.FLAG_IGNORE_CACHE_ON_ERROR)
+                } else {
+                    chunkedUpstream
+                }
+            }
+
+            val mediaSource = ProgressiveMediaSource.Factory(dataSourceFactory)
+                .createMediaSource(mediaItem)
+
+            val initVol = ((if (crossfadeSeconds > 0 && safeStartPos < 1_000L) 0.14f else 1.0f) * sleepFadeMultiplier)
+                .coerceIn(0.05f, 1.0f)
+            player.volume = initVol
+            player.playbackParameters = PlaybackParameters(currentSpeed, currentPitch)
+            player.setMediaSource(mediaSource, safeStartPos)
+            player.playWhenReady = shouldAutoStart
+            player.prepare()
         } catch (e: Exception) {
             _state.value = AudioEngineState(
                 isPlaying = false,
@@ -195,72 +317,51 @@ class KoplingfyAudioEngine(
     }
 
     fun togglePlayPause() {
-        val mp = mediaPlayer ?: return
-        try {
-            if (mp.isPlaying) {
-                mp.pause()
-                stopProgressPolling()
-                _state.value = _state.value.copy(isPlaying = false)
-            } else {
-                requestAudioFocus()
-                applyPlaybackParams(mp)
-                mp.start()
-                _state.value = _state.value.copy(isPlaying = true, errorMessage = null)
-                startProgressPolling()
-            }
-        } catch (_: IllegalStateException) {
+        val player = exoPlayer ?: return
+        if (player.isPlaying || (player.playWhenReady && player.playbackState == Player.STATE_BUFFERING)) {
+            player.pause()
+            stopProgressPolling()
+            _state.value = _state.value.copy(isPlaying = false)
+        } else {
+            player.playbackParameters = PlaybackParameters(currentSpeed, currentPitch)
+            player.play()
+            _state.value = _state.value.copy(isPlaying = true, errorMessage = null)
+            startProgressPolling()
         }
     }
 
     fun resume() {
-        val mp = mediaPlayer ?: return
-        try {
-            if (!mp.isPlaying) {
-                requestAudioFocus()
-                applyPlaybackParams(mp)
-                mp.start()
-                _state.value = _state.value.copy(isPlaying = true, errorMessage = null)
-                startProgressPolling()
-            }
-        } catch (_: IllegalStateException) {
+        val player = exoPlayer ?: return
+        if (!player.isPlaying) {
+            player.playbackParameters = PlaybackParameters(currentSpeed, currentPitch)
+            player.play()
+            _state.value = _state.value.copy(isPlaying = true, errorMessage = null)
+            startProgressPolling()
         }
     }
 
     fun pause() {
-        val mp = mediaPlayer ?: return
-        try {
-            if (mp.isPlaying) {
-                mp.pause()
-                stopProgressPolling()
-                _state.value = _state.value.copy(isPlaying = false)
-            }
-        } catch (_: IllegalStateException) {
+        val player = exoPlayer ?: return
+        if (player.isPlaying || player.playWhenReady) {
+            player.pause()
+            stopProgressPolling()
+            _state.value = _state.value.copy(isPlaying = false)
         }
     }
 
     fun seekTo(positionMs: Long) {
-        val mp = mediaPlayer ?: return
-        try {
-            val safePos = positionMs.coerceIn(0L, _state.value.durationMs.coerceAtLeast(1L))
-            mp.seekTo(safePos.toInt())
-            _state.value = _state.value.copy(positionMs = safePos)
-        } catch (_: IllegalStateException) {
-        }
+        val player = exoPlayer ?: return
+        val maxDur = player.duration.takeIf { it != C.TIME_UNSET && it > 0L }
+            ?: _state.value.durationMs.coerceAtLeast(1L)
+        val safePos = positionMs.coerceIn(0L, maxDur)
+        player.seekTo(safePos)
+        _state.value = _state.value.copy(positionMs = safePos)
     }
 
     fun updatePlaybackParams(speed: Float, pitch: Float) {
         currentSpeed = speed.coerceIn(0.5f, 2.0f)
         currentPitch = pitch.coerceIn(0.75f, 1.5f)
-        mediaPlayer?.let { mp ->
-            try {
-                val wasPlaying = mp.isPlaying
-                applyPlaybackParams(mp)
-                if (!wasPlaying && mp.isPlaying) {
-                    mp.pause()
-                }
-            } catch (_: Exception) {
-            }
-        }
+        exoPlayer?.playbackParameters = PlaybackParameters(currentSpeed, currentPitch)
     }
 
     fun updateEqualizerBands(bandsDb: List<Float>) {
@@ -277,19 +378,14 @@ class KoplingfyAudioEngine(
 
     fun updateCrossfadeSeconds(seconds: Int) {
         crossfadeSeconds = seconds.coerceIn(0, 10)
-        if (crossfadeSeconds == 0 && !isDucked) {
-            val vol = (1.0f * sleepFadeMultiplier).coerceIn(0.05f, 1.0f)
-            runCatching { mediaPlayer?.setVolume(vol, vol) }
+        if (crossfadeSeconds == 0) {
+            exoPlayer?.volume = (1.0f * sleepFadeMultiplier).coerceIn(0.05f, 1.0f)
         }
     }
 
     fun setSleepFadeMultiplier(multiplier: Float) {
         sleepFadeMultiplier = multiplier.coerceIn(0.05f, 1.0f)
-        val mp = mediaPlayer ?: return
-        runCatching {
-            val maxVol = (if (isDucked) 0.3f else 1.0f) * sleepFadeMultiplier
-            mp.setVolume(maxVol, maxVol)
-        }
+        exoPlayer?.volume = sleepFadeMultiplier
     }
 
     fun setAbLoop(startMs: Long?, endMs: Long?) {
@@ -297,20 +393,21 @@ class KoplingfyAudioEngine(
         abLoopEndMs = endMs
     }
 
-    private fun applyPlaybackParams(mp: MediaPlayer) {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
-            try {
-                val params = PlaybackParams()
-                    .setSpeed(currentSpeed)
-                    .setPitch(currentPitch)
-                mp.playbackParams = params
-            } catch (_: Exception) {
+    fun clearStreamCache(): Long {
+        val cache = sharedStreamCache ?: return 0L
+        val before = cache.cacheSpace
+        runCatching {
+            cache.keys.toList().forEach { key ->
+                cache.removeResource(key)
             }
         }
+        return before
     }
 
     private fun attachAudioEffects(audioSessionId: Int) {
+        if (audioSessionId == attachedAudioSessionId && equalizer != null) return
         releaseEffects()
+        attachedAudioSessionId = audioSessionId
         runCatching {
             equalizer = Equalizer(0, audioSessionId).apply { enabled = true }
             applyEqualizerBands()
@@ -353,89 +450,48 @@ class KoplingfyAudioEngine(
         }
     }
 
-    private fun requestAudioFocus() {
-        runCatching {
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                val req = AudioFocusRequest.Builder(AudioManager.AUDIOFOCUS_GAIN)
-                    .setAudioAttributes(
-                        AudioAttributes.Builder()
-                            .setUsage(AudioAttributes.USAGE_MEDIA)
-                            .setContentType(AudioAttributes.CONTENT_TYPE_MUSIC)
-                            .build()
-                    )
-                    .setOnAudioFocusChangeListener(focusChangeListener)
-                    .build()
-                focusRequest = req
-                audioManager.requestAudioFocus(req)
-            } else {
-                @Suppress("DEPRECATION")
-                audioManager.requestAudioFocus(
-                    focusChangeListener,
-                    AudioManager.STREAM_MUSIC,
-                    AudioManager.AUDIOFOCUS_GAIN
-                )
-            }
-        }
-    }
-
-    private fun registerNoisyReceiver() {
-        if (!noisyReceiverRegistered) {
-            runCatching {
-                context.registerReceiver(
-                    becomingNoisyReceiver,
-                    IntentFilter(AudioManager.ACTION_AUDIO_BECOMING_NOISY)
-                )
-                noisyReceiverRegistered = true
-            }
-        }
-    }
-
     private fun startProgressPolling() {
         stopProgressPolling()
         progressJob = scope.launch {
             while (isActive) {
-                val mp = mediaPlayer
-                if (mp != null) {
-                    try {
-                        if (mp.isPlaying) {
-                            var pos = mp.currentPosition.toLong()
-                            val dur = mp.duration.toLong().coerceAtLeast(_state.value.durationMs)
-                            val loopA = abLoopStartMs
-                            val loopB = abLoopEndMs
-                            if (loopA != null && loopB != null && loopB > loopA + 500L && pos >= loopB) {
-                                runCatching { mp.seekTo(loopA.toInt()) }
-                                pos = loopA
-                            }
-                            applyCrossfadeVolume(mp, pos, dur)
-                            _state.value = _state.value.copy(
-                                isPlaying = true,
-                                positionMs = pos,
-                                durationMs = dur
-                            )
-                        }
-                    } catch (_: IllegalStateException) {
+                val player = exoPlayer
+                if (player != null && player.isPlaying) {
+                    var pos = player.currentPosition.coerceAtLeast(0L)
+                    val dur = player.duration.takeIf { it != C.TIME_UNSET && it > 0L }
+                        ?: _state.value.durationMs
+                    val loopA = abLoopStartMs
+                    val loopB = abLoopEndMs
+                    if (loopA != null && loopB != null && loopB > loopA + 500L && pos >= loopB) {
+                        player.seekTo(loopA)
+                        pos = loopA
                     }
+                    applyCrossfadeVolume(player, pos, dur)
+                    _state.value = _state.value.copy(
+                        isPlaying = true,
+                        isBuffering = false,
+                        positionMs = pos,
+                        durationMs = dur
+                    )
                 }
                 delay(200L)
             }
         }
     }
 
-    private fun applyCrossfadeVolume(mp: MediaPlayer, positionMs: Long, durationMs: Long) {
-        val maxVol = (if (isDucked) 0.3f else 1.0f) * sleepFadeMultiplier
+    private fun applyCrossfadeVolume(player: ExoPlayer, positionMs: Long, durationMs: Long) {
+        val maxVol = sleepFadeMultiplier
         if (crossfadeSeconds <= 0 || durationMs <= 12_000L) {
-            runCatching { mp.setVolume(maxVol, maxVol) }
+            if (player.volume != maxVol) player.volume = maxVol
             return
         }
         val fadeWindowMs = (crossfadeSeconds * 1_000L).coerceAtMost(durationMs / 3L)
         val remainingMs = (durationMs - positionMs).coerceAtLeast(0L)
         val factor = when {
-            positionMs < fadeWindowMs -> (positionMs.toFloat() / fadeWindowMs.toFloat()).coerceIn(0.12f, 1.0f)
+            positionMs < fadeWindowMs -> (positionMs.toFloat() / fadeWindowMs.toFloat()).coerceIn(0.14f, 1.0f)
             remainingMs < fadeWindowMs -> (remainingMs.toFloat() / fadeWindowMs.toFloat()).coerceIn(0.08f, 1.0f)
             else -> 1.0f
         }
-        val vol = (maxVol * factor).coerceIn(0.04f, 1.0f)
-        runCatching { mp.setVolume(vol, vol) }
+        player.volume = (maxVol * factor).coerceIn(0.04f, 1.0f)
     }
 
     private fun stopProgressPolling() {
@@ -450,25 +506,40 @@ class KoplingfyAudioEngine(
         equalizer = null
         bassBoost = null
         loudnessEnhancer = null
-    }
-
-    private fun releasePlayerOnly() {
-        stopProgressPolling()
-        releaseEffects()
-        runCatching { mediaPlayer?.stop() }
-        runCatching { mediaPlayer?.release() }
-        mediaPlayer = null
+        attachedAudioSessionId = C.AUDIO_SESSION_ID_UNSET
     }
 
     fun release() {
-        releasePlayerOnly()
-        if (noisyReceiverRegistered) {
-            runCatching { context.unregisterReceiver(becomingNoisyReceiver) }
-            noisyReceiverRegistered = false
-        }
+        stopProgressPolling()
+        releaseEffects()
         runCatching {
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                focusRequest?.let { audioManager.abandonAudioFocusRequest(it) }
+            exoPlayer?.removeListener(playerListener)
+            exoPlayer?.release()
+        }
+        exoPlayer = null
+        scope.cancel()
+    }
+
+    companion object {
+        const val STREAM_CACHE_DIR_NAME = "koplingfy_exo_cache"
+        private const val STREAM_CACHE_MAX_BYTES: Long = 128L * 1024L * 1024L
+
+        @Volatile
+        private var sharedStreamCache: SimpleCache? = null
+
+        private fun getOrCreateStreamCache(context: Context): SimpleCache? {
+            sharedStreamCache?.let { return it }
+            return synchronized(this) {
+                sharedStreamCache ?: runCatching {
+                    val cacheDir = File(context.cacheDir, STREAM_CACHE_DIR_NAME).apply {
+                        if (!exists()) mkdirs()
+                    }
+                    SimpleCache(
+                        cacheDir,
+                        LeastRecentlyUsedCacheEvictor(STREAM_CACHE_MAX_BYTES),
+                        StandaloneDatabaseProvider(context)
+                    ).also { sharedStreamCache = it }
+                }.getOrNull()
             }
         }
     }

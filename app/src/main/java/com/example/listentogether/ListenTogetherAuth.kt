@@ -1,6 +1,5 @@
 package com.example.listentogether
 
-import android.annotation.SuppressLint
 import android.app.Activity
 import android.content.Context
 import android.content.ContextWrapper
@@ -10,6 +9,7 @@ import androidx.credentials.CredentialManager
 import androidx.credentials.CustomCredential
 import androidx.credentials.GetCredentialRequest
 import androidx.credentials.exceptions.GetCredentialCancellationException
+import com.example.R
 import com.google.android.libraries.identity.googleid.GetGoogleIdOption
 import com.google.android.libraries.identity.googleid.GetSignInWithGoogleOption
 import com.google.android.libraries.identity.googleid.GoogleIdTokenCredential
@@ -43,13 +43,6 @@ internal tailrec fun Context.findActivity(): Activity? = when (this) {
     else -> null
 }
 
-@SuppressLint("DiscouragedApi")
-private fun resolveDefaultWebClientId(context: Context): String? {
-    val resId = context.resources.getIdentifier("default_web_client_id", "string", context.packageName)
-    if (resId == 0) return null
-    return runCatching { context.getString(resId) }.getOrNull()?.takeIf { it.isNotBlank() }
-}
-
 /**
  * Silent Auto-Sign-In using GetGoogleIdOption ONLY in its GetCredentialRequest.
  */
@@ -68,7 +61,11 @@ fun attemptAutoSignIn(
         onAuthSuccess()
         return
     }
-    val clientId = resolveDefaultWebClientId(context) ?: run {
+    val clientId = try {
+        context.getString(R.string.default_web_client_id).takeIf { it.isNotBlank() }
+    } catch (_: Exception) {
+        null
+    } ?: run {
         onUnauthenticated()
         return
     }
@@ -116,7 +113,11 @@ fun onGoogleSignInClicked(
         onAuthError("Konfigurasi Firebase belum terpasang pada build ini (google-services.json belum disertakan).")
         return
     }
-    val clientId = resolveDefaultWebClientId(context) ?: run {
+    val clientId = try {
+        context.getString(R.string.default_web_client_id).takeIf { it.isNotBlank() }
+    } catch (_: Exception) {
+        null
+    } ?: run {
         onAuthError("Konfigurasi Login Google belum tersedia (default_web_client_id tidak ditemukan).")
         return
     }

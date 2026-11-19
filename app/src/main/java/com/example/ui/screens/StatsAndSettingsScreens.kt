@@ -31,10 +31,12 @@ import androidx.compose.material.icons.rounded.AutoAwesome
 import androidx.compose.material.icons.rounded.Backup
 import androidx.compose.material.icons.rounded.Check
 import androidx.compose.material.icons.rounded.CleaningServices
+import androidx.compose.material.icons.rounded.CloudDone
 import androidx.compose.material.icons.rounded.DeleteSweep
 import androidx.compose.material.icons.rounded.Download
 import androidx.compose.material.icons.rounded.Equalizer
 import androidx.compose.material.icons.rounded.GraphicEq
+import androidx.compose.material.icons.rounded.Groups
 import androidx.compose.material.icons.rounded.HighQuality
 import androidx.compose.material.icons.rounded.Login
 import androidx.compose.material.icons.rounded.Logout
@@ -537,9 +539,16 @@ fun SettingsScreen(
     onClearCache: () -> Unit,
     onClearDownloads: () -> Unit,
     onExportBackup: () -> Unit,
-    onImportBackup: () -> Unit
+    onImportBackup: () -> Unit,
+    isFirebaseReady: Boolean = false,
+    firebaseUserName: String? = null,
+    firebaseUserEmail: String? = null,
+    activeRoomCode: String? = null,
+    onOpenListenTogether: () -> Unit = {},
+    onSignOutFirebase: () -> Unit = {}
 ) {
     BackHandler(onBack = onBack)
+    val firestoreDbId = stringResource(R.string.firestore_database_id)
 
     LazyColumn(
         modifier = Modifier
@@ -629,6 +638,113 @@ fun SettingsScreen(
                         Icon(Icons.Rounded.Login, contentDescription = null, modifier = Modifier.size(18.dp))
                         Spacer(modifier = Modifier.width(8.dp))
                         Text("Masuk Akun YouTube Music")
+                    }
+                }
+            }
+        }
+
+        // ---- Firebase & Play Bersama Configuration Card ----
+        item {
+            SettingsSectionCard(title = "Firebase & Play Bersama", icon = Icons.Rounded.CloudDone) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            text = if (isFirebaseReady) "Cloud Firestore Terhubung" else "Firebase Belum Terpasang",
+                            style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold)
+                        )
+                        Text(
+                            text = if (isFirebaseReady) "DB: ${firestoreDbId.take(28)}…"
+                            else "Sertakan google-services.json saat build APK",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                    }
+                    Surface(
+                        shape = RoundedCornerShape(50),
+                        color = if (isFirebaseReady) MaterialTheme.colorScheme.primary.copy(alpha = 0.16f)
+                        else MaterialTheme.colorScheme.errorContainer
+                    ) {
+                        Text(
+                            text = if (isFirebaseReady) "AKTIF" else "OFFLINE",
+                            style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.ExtraBold),
+                            color = if (isFirebaseReady) MaterialTheme.colorScheme.primary
+                            else MaterialTheme.colorScheme.onErrorContainer,
+                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp)
+                        )
+                    }
+                }
+
+                Spacer(modifier = Modifier.height(10.dp))
+
+                Surface(
+                    shape = RoundedCornerShape(14.dp),
+                    color = MaterialTheme.colorScheme.surfaceContainerHigh.copy(alpha = 0.7f),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Column(
+                        modifier = Modifier.padding(12.dp),
+                        verticalArrangement = Arrangement.spacedBy(4.dp)
+                    ) {
+                        Text(
+                            text = if (!firebaseUserName.isNullOrBlank()) {
+                                "Akun Google: $firebaseUserName"
+                            } else {
+                                "Akun Google: Belum masuk"
+                            },
+                            style = MaterialTheme.typography.labelLarge.copy(fontWeight = FontWeight.SemiBold),
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                        if (!firebaseUserEmail.isNullOrBlank()) {
+                            Text(
+                                text = firebaseUserEmail,
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                        }
+                        if (!activeRoomCode.isNullOrBlank()) {
+                            Text(
+                                text = "Ruang Play Bersama Aktif: $activeRoomCode",
+                                style = MaterialTheme.typography.labelMedium,
+                                color = MaterialTheme.colorScheme.primary
+                            )
+                        }
+                    }
+                }
+
+                Spacer(modifier = Modifier.height(12.dp))
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(10.dp)
+                ) {
+                    Button(
+                        onClick = onOpenListenTogether,
+                        modifier = Modifier.weight(1f).testTag("settings_open_play_together")
+                    ) {
+                        Icon(Icons.Rounded.Groups, contentDescription = null, modifier = Modifier.size(18.dp))
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text(
+                            text = if (!firebaseUserName.isNullOrBlank()) "Buka Play Bersama" else "Masuk Google",
+                            maxLines = 1
+                        )
+                    }
+                    if (!firebaseUserName.isNullOrBlank()) {
+                        OutlinedButton(
+                            onClick = onSignOutFirebase,
+                            modifier = Modifier.testTag("settings_signout_firebase")
+                        ) {
+                            Icon(Icons.Rounded.Logout, contentDescription = null, modifier = Modifier.size(18.dp))
+                            Spacer(modifier = Modifier.width(4.dp))
+                            Text("Keluar")
+                        }
                     }
                 }
             }
