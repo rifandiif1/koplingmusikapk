@@ -28,12 +28,17 @@ import androidx.compose.material.icons.automirrored.rounded.PlaylistAdd
 import androidx.compose.material.icons.automirrored.rounded.QueueMusic
 import androidx.compose.material.icons.rounded.Add
 import androidx.compose.material.icons.rounded.DeleteOutline
+import androidx.compose.material.icons.rounded.Download
 import androidx.compose.material.icons.rounded.Favorite
 import androidx.compose.material.icons.rounded.FavoriteBorder
+import androidx.compose.material.icons.rounded.Groups
 import androidx.compose.material.icons.rounded.MoreVert
 import androidx.compose.material.icons.rounded.MusicNote
+import androidx.compose.material.icons.rounded.Person
 import androidx.compose.material.icons.rounded.PlayArrow
 import androidx.compose.material.icons.rounded.PlaylistPlay
+import androidx.compose.material.icons.rounded.Radio
+import androidx.compose.material.icons.rounded.Share
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -322,6 +327,20 @@ fun TrackRowItem(
                             )
                         }
                     }
+                    if (track.isDownloaded) {
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Surface(
+                            color = Color(0xFF00C2FF).copy(alpha = 0.18f),
+                            shape = RoundedCornerShape(4.dp)
+                        ) {
+                            Text(
+                                text = "OFFLINE",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = Color(0xFF00C2FF),
+                                modifier = Modifier.padding(horizontal = 4.dp, vertical = 1.dp)
+                            )
+                        }
+                    }
                     if (track.isLocal) {
                         Spacer(modifier = Modifier.width(6.dp))
                         Surface(
@@ -415,12 +434,18 @@ fun GlassActionPill(
 fun TrackOptionsBottomSheet(
     track: Track,
     isLiked: Boolean,
+    isDownloaded: Boolean,
     onDismiss: () -> Unit,
     onPlayNow: () -> Unit,
+    onStartRadio: () -> Unit,
     onPlayNext: () -> Unit,
     onAddToQueue: () -> Unit,
     onToggleLike: () -> Unit,
+    onDownloadOrRemove: () -> Unit,
     onAddToPlaylist: () -> Unit,
+    onOpenArtist: () -> Unit,
+    onShare: () -> Unit,
+    onAddToListenRoom: (() -> Unit)? = null,
     onRemoveAction: (() -> Unit)? = null,
     removeActionLabel: String = "Hapus"
 ) {
@@ -460,18 +485,37 @@ fun TrackOptionsBottomSheet(
                 }
             }
 
-            Spacer(modifier = Modifier.height(16.dp))
+            Spacer(modifier = Modifier.height(14.dp))
             HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
-            Spacer(modifier = Modifier.height(8.dp))
+            Spacer(modifier = Modifier.height(6.dp))
 
             SheetOptionRow(Icons.Rounded.PlayArrow, "Putar Sekarang") {
                 onPlayNow(); onDismiss()
+            }
+            if (!track.isLocal) {
+                SheetOptionRow(Icons.Rounded.Radio, "Mulai Radio Lagu Serupa", tint = MaterialTheme.colorScheme.primary) {
+                    onStartRadio(); onDismiss()
+                }
             }
             SheetOptionRow(Icons.Rounded.PlaylistPlay, "Putar Berikutnya") {
                 onPlayNext(); onDismiss()
             }
             SheetOptionRow(Icons.AutoMirrored.Rounded.QueueMusic, "Tambahkan ke Antrean") {
                 onAddToQueue(); onDismiss()
+            }
+            if (onAddToListenRoom != null && !track.isLocal) {
+                SheetOptionRow(Icons.Rounded.Groups, "Tambah ke Antrean Play Bersama", tint = MaterialTheme.colorScheme.primary) {
+                    onAddToListenRoom(); onDismiss()
+                }
+            }
+            if (!track.isLocal) {
+                SheetOptionRow(
+                    if (isDownloaded) Icons.Rounded.DeleteOutline else Icons.Rounded.Download,
+                    if (isDownloaded) "Hapus Unduhan Offline" else "Unduh untuk Mode Offline",
+                    tint = if (isDownloaded) MaterialTheme.colorScheme.secondary else MaterialTheme.colorScheme.onSurface
+                ) {
+                    onDownloadOrRemove(); onDismiss()
+                }
             }
             SheetOptionRow(
                 if (isLiked) Icons.Rounded.Favorite else Icons.Rounded.FavoriteBorder,
@@ -482,6 +526,14 @@ fun TrackOptionsBottomSheet(
             }
             SheetOptionRow(Icons.AutoMirrored.Rounded.PlaylistAdd, "Simpan ke Playlist") {
                 onDismiss(); onAddToPlaylist()
+            }
+            if (!track.isLocal) {
+                SheetOptionRow(Icons.Rounded.Person, "Lihat Artis (${track.artist})") {
+                    onDismiss(); onOpenArtist()
+                }
+            }
+            SheetOptionRow(Icons.Rounded.Share, "Bagikan Lagu") {
+                onShare(); onDismiss()
             }
             if (onRemoveAction != null) {
                 SheetOptionRow(

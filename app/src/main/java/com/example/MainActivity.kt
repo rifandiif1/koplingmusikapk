@@ -1,5 +1,6 @@
 package com.example
 
+import android.content.Intent
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -51,6 +52,7 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -60,10 +62,22 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.unit.dp
+import androidx.lifecycle.ViewModelProvider.AndroidViewModelFactory.Companion.APPLICATION_KEY
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
+import androidx.lifecycle.viewmodel.initializer
+import androidx.lifecycle.viewmodel.viewModelFactory
+import com.example.listentogether.ListenRoom
+import com.example.listentogether.ListenSessionUiState
+import com.example.listentogether.ListenTogetherRepository
+import com.example.listentogether.ListenTogetherViewModel
+import com.example.listentogether.ListenUiState
+import com.example.listentogether.RecentRoomEntry
+import com.example.listentogether.authStateFlow
+import com.example.model.ArtistSummary
 import com.example.model.CollectionDetailType
 import com.example.model.Track
 import com.example.ui.components.AddToPlaylistDialog
@@ -75,11 +89,17 @@ import com.example.ui.screens.CollectionDetailScreen
 import com.example.ui.screens.ExploreScreen
 import com.example.ui.screens.HomeScreen
 import com.example.ui.screens.LibraryScreen
+import com.example.ui.screens.ListenTogetherScreenHost
 import com.example.ui.screens.SearchScreen
 import com.example.ui.screens.SettingsScreen
 import com.example.ui.screens.StatsScreen
+import com.example.ui.screens.YouTubeLoginScreen
 import com.example.ui.theme.KoplingfyTheme
 import com.example.viewmodel.KoplingfyViewModel
+import com.google.firebase.Firebase
+import com.google.firebase.auth.FirebaseUser
+import com.google.firebase.auth.auth
+import com.google.firebase.firestore.FirebaseFirestore
 
 private data class NavTab(
     val route: String,
@@ -96,7 +116,7 @@ private val koplingfyTabs = listOf(
 )
 
 private enum class OverlayPage {
-    NONE, COLLECTION_DETAIL, SETTINGS, STATS
+    NONE, COLLECTION_DETAIL, SETTINGS, STATS, YOUTUBE_LOGIN, LISTEN_TOGETHER
 }
 
 class MainActivity : ComponentActivity() {
@@ -105,14 +125,105 @@ class MainActivity : ComponentActivity() {
         enableEdgeToEdge()
         setContent {
             val viewModel: KoplingfyViewModel = viewModel()
-            KoplingfyAppRoot(viewModel = viewModel)
+            KoplingfyAuthScopedRoot(viewModel = viewModel)
+        }
+    }
+}
+
+/**
+ * Auth-gated wrapper: Firestore ListenTogetherViewModel is ONLY instantiated when
+ * Firebase.auth.currentUser != null and is keyed by uid so account switches or sign-out
+ * cleanly tear down all Firestore listeners.
+ */
+@Composable
+private fun KoplingfyAuthScopedRoot(viewModel: KoplingfyViewModel) {
+    val auth = remember { Firebase.auth }
+    val currentGoogleUser by auth.authStateFlow().collectAsStateWithLifecycle(initialValue = auth.currentUser)
+
+    val user = currentGoogleUser
+    if (user == null) {
+        KoplingfyAppRoot(
+            viewModel = viewModel,
+            currentGoogleUser = null,
+            listenViewModel = null,
+            listenSessionState = ListenSessionUiState(),
+            myActiveRoomsState = ListenUiState.Success(emptyList()),
+            recentRoomsState = ListenUiState.Success(emptyList())
+        )
+    } else {
+        key(user.uid) {
+            val displayName = user.displayName?.takeIf { it.isNotBlank() }
+                ?: user.email?.substringBefore("@")?.takeIf { it.isNotBlank() }
+                ?: "Pendengar"
+
+            val listenViewModel: ListenTogetherViewModel = viewModel(
+                key = user.uid,
+                factory = viewModelFactory {
+                    initializer {
+                        val app = checkNotNull(this[APPLICATION_KEY]) {
+                            "APPLICATION_KEY missing from CreationExtras"
+                        }
+                        val databaseId = app.getString(R.string.firestore_database_id)
+                        val db = FirebaseFirestore.getInstance(databaseId)
+                        ListenTogetherViewModel(
+                            repository = ListenTogetherRepository(db),
+                            currentUserId = user.uid,
+                            currentUserName = displayName
+                        )
+                    }
+                }
+            )
+
+            val sessionState by listenViewModel.sessionState.collectAsStateWithLifecycle()
+            val myActiveRoomsState by listenViewModel.myActiveRoomsState.collectAsStateWithLifecycle()
+            val recentRoomsState by listenViewModel.recentRoomsState.collectAsStateWithLifecycle()
+
+            // Inbound Real-Time Sync: Firestore Room -> Local Audio Engine
+            val activeRoom = sessionState.activeRoom
+            LaunchedEffect(activeRoom?.roomCode, activeRoom?.syncSequence, activeRoom?.status) {
+                val room = activeRoom ?: return@LaunchedEffect
+                if (listenViewModel.shouldApplyInboundSync(room)) {
+                    listenViewModel.markInboundSynced(room.syncSequence)
+                    val track = room.currentTrackOrNull()
+                    val queue = room.parsedQueue().map { it.toTrack() }
+                    if (track != null) {
+                        viewModel.applyRemoteRoomSync(
+                            track = track,
+                            shouldPlay = room.playing,
+                            targetPositionMs = room.positionMs,
+                            roomQueue = queue
+                        )
+                    }
+                }
+            }
+
+            KoplingfyAppRoot(
+                viewModel = viewModel,
+                currentGoogleUser = user,
+                listenViewModel = listenViewModel,
+                listenSessionState = sessionState,
+                myActiveRoomsState = myActiveRoomsState,
+                recentRoomsState = recentRoomsState
+            )
         }
     }
 }
 
 @Composable
-fun KoplingfyAppRoot(viewModel: KoplingfyViewModel) {
+fun KoplingfyAppRoot(
+    viewModel: KoplingfyViewModel,
+    currentGoogleUser: FirebaseUser?,
+    listenViewModel: ListenTogetherViewModel?,
+    listenSessionState: ListenSessionUiState,
+    myActiveRoomsState: ListenUiState<List<ListenRoom>>,
+    recentRoomsState: ListenUiState<List<RecentRoomEntry>>
+) {
+    val context = LocalContext.current
     val settings by viewModel.settings.collectAsStateWithLifecycle()
+    val youtubeAccount by viewModel.youtubeAccount.collectAsStateWithLifecycle()
+    val isSyncingAccount by viewModel.isSyncingAccount.collectAsStateWithLifecycle()
+    val storageStats by viewModel.storageStats.collectAsStateWithLifecycle()
+
     val homeState by viewModel.homeState.collectAsStateWithLifecycle()
     val searchState by viewModel.searchState.collectAsStateWithLifecycle()
     val playerState by viewModel.playerState.collectAsStateWithLifecycle()
@@ -120,6 +231,9 @@ fun KoplingfyAppRoot(viewModel: KoplingfyViewModel) {
 
     val likedTracks by viewModel.likedTracks.collectAsStateWithLifecycle()
     val likedIds by viewModel.likedTrackIds.collectAsStateWithLifecycle()
+    val downloadedTracks by viewModel.downloadedTracks.collectAsStateWithLifecycle()
+    val downloadedIds by viewModel.downloadedTrackIds.collectAsStateWithLifecycle()
+    val activeDownloads by viewModel.activeDownloads.collectAsStateWithLifecycle()
     val localTracks by viewModel.localTracks.collectAsStateWithLifecycle()
     val playlists by viewModel.playlists.collectAsStateWithLifecycle()
     val playHistory by viewModel.playHistory.collectAsStateWithLifecycle()
@@ -132,8 +246,13 @@ fun KoplingfyAppRoot(viewModel: KoplingfyViewModel) {
     var optionsTrack by remember { mutableStateOf<Track?>(null) }
     var addToPlaylistTrack by remember { mutableStateOf<Track?>(null) }
     var showCreatePlaylistDialog by remember { mutableStateOf(false) }
+    var savingQueueAsPlaylist by remember { mutableStateOf(false) }
 
     val snackbarHostState = remember { SnackbarHostState() }
+    val activeRoomCode = listenSessionState.activeRoom?.takeIf { it.status == "active" }?.roomCode
+    val canControlActiveRoom = currentGoogleUser != null &&
+        listenViewModel != null &&
+        listenSessionState.canControl(currentGoogleUser.uid)
 
     LaunchedEffect(snackbarMsg) {
         val msg = snackbarMsg
@@ -143,18 +262,143 @@ fun KoplingfyAppRoot(viewModel: KoplingfyViewModel) {
         }
     }
 
-    // Zero-permission Android Storage Access Framework launcher for local MP3/M4A/FLAC audio files
+    // Outbound playback wrappers that also push to active Play Bersama room when permitted
+    val playTrackWithRoomSync: (Track, List<Track>, Boolean) -> Unit = { track, queue, expand ->
+        viewModel.playTrack(track, queue, expandPlayer = expand)
+        if (canControlActiveRoom && !track.isLocal) {
+            listenViewModel?.pushPlaybackSync(
+                track = track,
+                playing = true,
+                positionMs = 0L,
+                actionLabel = "${listenViewModel.currentUserName} memutar \"${track.title}\""
+            )
+        }
+    }
+
+    val togglePlayPauseWithRoomSync: () -> Unit = {
+        val current = playerState.currentTrack
+        val nextPlaying = !playerState.isPlaying
+        viewModel.togglePlayPause()
+        if (canControlActiveRoom && current != null && !current.isLocal) {
+            listenViewModel?.pushPlaybackSync(
+                track = current,
+                playing = nextPlaying,
+                positionMs = playerState.positionMs,
+                actionLabel = if (nextPlaying) {
+                    "${listenViewModel.currentUserName} melanjutkan pemutaran"
+                } else {
+                    "${listenViewModel.currentUserName} menjeda pemutaran"
+                }
+            )
+        }
+    }
+
+    val seekWithRoomSync: (Long) -> Unit = { targetMs ->
+        viewModel.seekTo(targetMs)
+        val current = playerState.currentTrack
+        if (canControlActiveRoom && current != null && !current.isLocal) {
+            listenViewModel?.pushPlaybackSync(
+                track = current,
+                playing = playerState.isPlaying,
+                positionMs = targetMs,
+                actionLabel = "${listenViewModel.currentUserName} menggeser posisi lagu"
+            )
+        }
+    }
+
+    val skipNextWithRoomSync: () -> Unit = {
+        val room = listenSessionState.activeRoom
+        val sharedQueue = room?.parsedQueue().orEmpty()
+        if (canControlActiveRoom && sharedQueue.isNotEmpty()) {
+            val nextTrack = sharedQueue.first().toTrack()
+            listenViewModel?.playRoomQueueTrack(0)
+            viewModel.playTrack(nextTrack, sharedQueue.map { it.toTrack() })
+        } else {
+            val nextIdx = if (playerState.currentIndex + 1 in playerState.queue.indices) {
+                playerState.currentIndex + 1
+            } else -1
+            val nextCandidate = if (nextIdx >= 0) playerState.queue[nextIdx] else null
+            viewModel.skipNext()
+            if (canControlActiveRoom && nextCandidate != null && !nextCandidate.isLocal) {
+                listenViewModel?.pushPlaybackSync(
+                    track = nextCandidate,
+                    playing = true,
+                    positionMs = 0L,
+                    actionLabel = "${listenViewModel.currentUserName} memutar \"${nextCandidate.title}\""
+                )
+            }
+        }
+    }
+
+    val skipPreviousWithRoomSync: () -> Unit = {
+        val prevIdx = if (playerState.positionMs <= 3_500L && playerState.currentIndex - 1 in playerState.queue.indices) {
+            playerState.currentIndex - 1
+        } else playerState.currentIndex
+        val targetTrack = playerState.queue.getOrNull(prevIdx)
+        viewModel.skipPrevious()
+        if (canControlActiveRoom && targetTrack != null && !targetTrack.isLocal) {
+            listenViewModel?.pushPlaybackSync(
+                track = targetTrack,
+                playing = true,
+                positionMs = 0L,
+                actionLabel = "${listenViewModel.currentUserName} memutar \"${targetTrack.title}\""
+            )
+        }
+    }
+
+    // Zero-permission SAF launchers
     val localAudioPicker = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.OpenMultipleDocuments()
     ) { uris ->
-        if (uris.isNotEmpty()) {
-            viewModel.importLocalAudio(uris)
+        if (uris.isNotEmpty()) viewModel.importLocalAudio(uris)
+    }
+
+    val backupExportLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.CreateDocument("application/json")
+    ) { uri ->
+        if (uri != null) viewModel.exportBackup(uri)
+    }
+
+    val backupImportLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.OpenDocument()
+    ) { uri ->
+        if (uri != null) viewModel.importBackup(uri)
+    }
+
+    val shareTrack: (Track) -> Unit = { track ->
+        val ytLink = if (track.id.startsWith("yt_")) {
+            "\nhttps://music.youtube.com/watch?v=${track.id.removePrefix("yt_")}"
+        } else ""
+        val shareIntent = Intent(Intent.ACTION_SEND).apply {
+            type = "text/plain"
+            putExtra(Intent.EXTRA_SUBJECT, "${track.title} — ${track.artist}")
+            putExtra(Intent.EXTRA_TEXT, "Mendengarkan \"${track.title}\" oleh ${track.artist} di Koplingfy$ytLink")
         }
+        runCatching { context.startActivity(Intent.createChooser(shareIntent, "Bagikan Lagu")) }
+    }
+
+    val shareLyricsText: (Track, String) -> Unit = { track, text ->
+        val shareIntent = Intent(Intent.ACTION_SEND).apply {
+            type = "text/plain"
+            putExtra(Intent.EXTRA_SUBJECT, "Lirik: ${track.title}")
+            putExtra(Intent.EXTRA_TEXT, "${track.title} — ${track.artist}\n\n$text\n\n— Koplingfy")
+        }
+        runCatching { context.startActivity(Intent.createChooser(shareIntent, "Bagikan Lirik")) }
     }
 
     val openCollection: (CollectionDetailType) -> Unit = { type ->
         viewModel.openCollectionDetail(type)
         overlayPage = OverlayPage.COLLECTION_DETAIL
+    }
+
+    val openYouTubeLogin: () -> Unit = {
+        viewModel.setPlayerExpanded(false)
+        overlayPage = OverlayPage.YOUTUBE_LOGIN
+    }
+
+    val openListenTogether: () -> Unit = {
+        viewModel.setPlayerExpanded(false)
+        overlayPage = OverlayPage.LISTEN_TOGETHER
     }
 
     KoplingfyTheme(
@@ -196,7 +440,6 @@ fun KoplingfyAppRoot(viewModel: KoplingfyViewModel) {
                         .padding(innerPadding)
                 ) {
                     Row(modifier = Modifier.fillMaxSize()) {
-                        // Adaptive NavigationRail on tablets/foldables
                         if (isExpandedWidth) {
                             NavigationRail(
                                 containerColor = MaterialTheme.colorScheme.surface,
@@ -232,6 +475,47 @@ fun KoplingfyAppRoot(viewModel: KoplingfyViewModel) {
                         // Main screen area
                         Box(modifier = Modifier.weight(1f).fillMaxHeight()) {
                             when (overlayPage) {
+                                OverlayPage.LISTEN_TOGETHER -> {
+                                    ListenTogetherScreenHost(
+                                        currentUser = currentGoogleUser,
+                                        listenViewModel = listenViewModel,
+                                        sessionState = listenSessionState,
+                                        myActiveRoomsState = myActiveRoomsState,
+                                        recentRoomsState = recentRoomsState,
+                                        playerState = playerState,
+                                        bottomContentPadding = bottomListPadding,
+                                        onBack = { overlayPage = OverlayPage.NONE },
+                                        onShowSnackbar = viewModel::showMessage,
+                                        onSyncPlayerTogglePlayPause = togglePlayPauseWithRoomSync,
+                                        onSyncPlayerNext = skipNextWithRoomSync,
+                                        onForceResyncFromRoom = { room ->
+                                            val track = room.currentTrackOrNull()
+                                            if (track != null) {
+                                                viewModel.applyRemoteRoomSync(
+                                                    track = track,
+                                                    shouldPlay = room.playing,
+                                                    targetPositionMs = room.positionMs,
+                                                    roomQueue = room.parsedQueue().map { it.toTrack() }
+                                                )
+                                                viewModel.showMessage("Pemutaran disinkronkan dengan ruang ${room.roomCode}")
+                                            }
+                                        },
+                                        onPlayRoomTrackLocally = { track, queue ->
+                                            viewModel.playTrack(track, queue, expandPlayer = false)
+                                        }
+                                    )
+                                }
+                                OverlayPage.YOUTUBE_LOGIN -> {
+                                    YouTubeLoginScreen(
+                                        isVerifying = isSyncingAccount,
+                                        onBack = { overlayPage = OverlayPage.NONE },
+                                        onCookieCaptured = { cookie ->
+                                            viewModel.completeYouTubeLogin(cookie) {
+                                                overlayPage = OverlayPage.NONE
+                                            }
+                                        }
+                                    )
+                                }
                                 OverlayPage.COLLECTION_DETAIL -> {
                                     CollectionDetailScreen(
                                         detailState = detailState,
@@ -243,8 +527,19 @@ fun KoplingfyAppRoot(viewModel: KoplingfyViewModel) {
                                             viewModel.closeCollectionDetail()
                                             overlayPage = OverlayPage.NONE
                                         },
-                                        onPlayTrack = { track, list -> viewModel.playTrack(track, list) },
-                                        onPlayAll = { list, shuffle -> viewModel.playAll(list, shuffle) },
+                                        onPlayTrack = { track, list -> playTrackWithRoomSync(track, list, false) },
+                                        onPlayAll = { list, shuffle ->
+                                            viewModel.playAll(list, shuffle)
+                                            val first = list.firstOrNull()
+                                            if (canControlActiveRoom && first != null && !first.isLocal) {
+                                                listenViewModel?.pushPlaybackSync(
+                                                    track = first,
+                                                    playing = true,
+                                                    positionMs = 0L,
+                                                    actionLabel = "${listenViewModel.currentUserName} memutar \"${first.title}\""
+                                                )
+                                            }
+                                        },
                                         onToggleLike = viewModel::toggleLike,
                                         onTrackOptions = { optionsTrack = it },
                                         onImportLocalAudio = { localAudioPicker.launch(arrayOf("audio/*")) },
@@ -252,16 +547,31 @@ fun KoplingfyAppRoot(viewModel: KoplingfyViewModel) {
                                     )
                                 }
                                 OverlayPage.SETTINGS -> {
+                                    LaunchedEffect(Unit) { viewModel.refreshStorageStats() }
                                     SettingsScreen(
                                         settings = settings,
+                                        youtubeAccount = youtubeAccount,
+                                        isSyncingAccount = isSyncingAccount,
+                                        storageStats = storageStats,
                                         bottomContentPadding = bottomListPadding,
                                         onBack = { overlayPage = OverlayPage.NONE },
+                                        onOpenYouTubeLogin = openYouTubeLogin,
+                                        onSyncYouTubeLibrary = viewModel::syncYouTubeAccountLibrary,
+                                        onLogoutYouTube = viewModel::logoutYouTubeAccount,
                                         onThemeModeChange = viewModel::setThemeMode,
                                         onAccentChange = viewModel::setAccentPreset,
                                         onArtStyleChange = viewModel::setPlayerArtStyle,
+                                        onBgStyleChange = viewModel::setPlayerBackgroundStyle,
+                                        onAudioQualityChange = viewModel::setAudioQuality,
                                         onEqPresetChange = viewModel::setEqPreset,
-                                        onHighQualityChange = viewModel::setHighQualityStream,
-                                        onGaplessChange = viewModel::setGaplessPlayback
+                                        onNormalizeAudioChange = viewModel::setNormalizeAudio,
+                                        onAutoplayRadioChange = viewModel::setAutoplayRadio,
+                                        onKeepScreenOnLyricsChange = viewModel::setKeepScreenOnLyrics,
+                                        onGaplessChange = viewModel::setGaplessPlayback,
+                                        onClearCache = viewModel::clearAppCache,
+                                        onClearDownloads = viewModel::clearAllDownloads,
+                                        onExportBackup = { backupExportLauncher.launch("koplingfy_backup.json") },
+                                        onImportBackup = { backupImportLauncher.launch(arrayOf("application/json", "*/*")) }
                                     )
                                 }
                                 OverlayPage.STATS -> {
@@ -269,7 +579,7 @@ fun KoplingfyAppRoot(viewModel: KoplingfyViewModel) {
                                         stats = listeningStats,
                                         bottomContentPadding = bottomListPadding,
                                         onBack = { overlayPage = OverlayPage.NONE },
-                                        onPlayTrack = { track, list -> viewModel.playTrack(track, list) }
+                                        onPlayTrack = { track, list -> playTrackWithRoomSync(track, list, false) }
                                     )
                                 }
                                 OverlayPage.NONE -> {
@@ -277,18 +587,23 @@ fun KoplingfyAppRoot(viewModel: KoplingfyViewModel) {
                                         0 -> HomeScreen(
                                             homeState = homeState,
                                             recentTracks = playHistory,
+                                            youtubeAccount = youtubeAccount,
                                             currentTrackId = playerState.currentTrack?.id,
                                             isPlaying = playerState.isPlaying,
                                             likedIds = likedIds,
                                             bottomContentPadding = bottomListPadding,
                                             onSelectMood = { viewModel.loadHomeFeed(it) },
                                             onRetry = { viewModel.loadHomeFeed() },
-                                            onPlayTrack = { track, list -> viewModel.playTrack(track, list) },
+                                            onPlayTrack = { track, list -> playTrackWithRoomSync(track, list, false) },
                                             onPlayAll = { list, shuffle -> viewModel.playAll(list, shuffle) },
                                             onToggleLike = viewModel::toggleLike,
                                             onTrackOptions = { optionsTrack = it },
                                             onAlbumClick = { openCollection(CollectionDetailType.AlbumCollection(it)) },
                                             onArtistClick = { openCollection(CollectionDetailType.ArtistCollection(it)) },
+                                            onRemotePlaylistClick = { openCollection(CollectionDetailType.RemotePlaylistCollection(it)) },
+                                            onOpenYouTubeLogin = openYouTubeLogin,
+                                            onOpenListenTogether = openListenTogether,
+                                            activeRoomCode = activeRoomCode,
                                             onOpenSettings = { overlayPage = OverlayPage.SETTINGS },
                                             onOpenStats = { overlayPage = OverlayPage.STATS }
                                         )
@@ -300,7 +615,7 @@ fun KoplingfyAppRoot(viewModel: KoplingfyViewModel) {
                                             bottomContentPadding = bottomListPadding,
                                             onMoodCardClick = { openCollection(CollectionDetailType.MoodCollection(it)) },
                                             onAlbumClick = { openCollection(CollectionDetailType.AlbumCollection(it)) },
-                                            onPlayTrack = { track, list -> viewModel.playTrack(track, list) },
+                                            onPlayTrack = { track, list -> playTrackWithRoomSync(track, list, false) },
                                             onPlayAll = { list, shuffle -> viewModel.playAll(list, shuffle) },
                                             onToggleLike = viewModel::toggleLike,
                                             onTrackOptions = { optionsTrack = it }
@@ -314,26 +629,37 @@ fun KoplingfyAppRoot(viewModel: KoplingfyViewModel) {
                                             bottomContentPadding = bottomListPadding,
                                             onQueryChange = viewModel::onSearchQueryChange,
                                             onSubmitSearch = viewModel::submitSearch,
+                                            onToggleScope = viewModel::toggleSearchScope,
                                             onFilterChange = viewModel::setSearchFilter,
                                             onDeleteHistoryItem = viewModel::deleteSearchHistoryItem,
                                             onClearHistory = viewModel::clearSearchHistory,
-                                            onPlayTrack = { track, list -> viewModel.playTrack(track, list) },
+                                            onPlayTrack = { track, list -> playTrackWithRoomSync(track, list, false) },
                                             onToggleLike = viewModel::toggleLike,
                                             onTrackOptions = { optionsTrack = it },
                                             onAlbumClick = { openCollection(CollectionDetailType.AlbumCollection(it)) },
-                                            onArtistClick = { openCollection(CollectionDetailType.ArtistCollection(it)) }
+                                            onArtistClick = { openCollection(CollectionDetailType.ArtistCollection(it)) },
+                                            onRemotePlaylistClick = { openCollection(CollectionDetailType.RemotePlaylistCollection(it)) }
                                         )
                                         else -> LibraryScreen(
                                             likedCount = likedTracks.size,
+                                            downloadedCount = downloadedTracks.size,
                                             historyCount = playHistory.size,
                                             localCount = localTracks.size,
                                             totalPlays = listeningStats.totalPlays,
+                                            youtubeAccount = youtubeAccount,
                                             playlists = playlists,
                                             bottomContentPadding = bottomListPadding,
                                             onOpenCollection = openCollection,
                                             onOpenStats = { overlayPage = OverlayPage.STATS },
+                                            onOpenListenTogether = openListenTogether,
+                                            activeRoomCode = activeRoomCode,
+                                            onOpenYouTubeLogin = openYouTubeLogin,
+                                            onSyncYouTubeLibrary = viewModel::syncYouTubeAccountLibrary,
                                             onImportLocalAudio = { localAudioPicker.launch(arrayOf("audio/*")) },
-                                            onCreatePlaylistClick = { showCreatePlaylistDialog = true },
+                                            onCreatePlaylistClick = {
+                                                savingQueueAsPlaylist = false
+                                                showCreatePlaylistDialog = true
+                                            },
                                             onDeletePlaylist = viewModel::deletePlaylist
                                         )
                                     }
@@ -343,76 +669,78 @@ fun KoplingfyAppRoot(viewModel: KoplingfyViewModel) {
                     }
 
                     // ---- Docked Floating MiniPlayer + Bottom Navigation Bar ----
-                    Column(
-                        modifier = Modifier
-                            .align(Alignment.BottomCenter)
-                            .fillMaxWidth()
-                    ) {
-                        AnimatedVisibility(
-                            visible = hasActiveTrack && !playerState.isPlayerExpanded,
-                            enter = slideInVertically { it } + fadeIn(),
-                            exit = slideOutVertically { it } + fadeOut()
+                    if (overlayPage != OverlayPage.YOUTUBE_LOGIN) {
+                        Column(
+                            modifier = Modifier
+                                .align(Alignment.BottomCenter)
+                                .fillMaxWidth()
                         ) {
-                            FloatingMiniPlayer(
-                                playerState = playerState,
-                                onExpand = { viewModel.setPlayerExpanded(true) },
-                                onTogglePlayPause = viewModel::togglePlayPause,
-                                onNext = viewModel::skipNext,
-                                modifier = Modifier
-                                    .padding(
-                                        start = if (isExpandedWidth) 84.dp else 0.dp,
-                                        bottom = if (isExpandedWidth) 16.dp else 8.dp
-                                    )
-                                    .let { if (isExpandedWidth) it.navigationBarsPadding() else it }
-                            )
-                        }
-
-                        if (!isExpandedWidth) {
-                            Surface(
-                                color = MaterialTheme.colorScheme.surface.copy(alpha = 0.96f),
-                                border = BorderStroke(0.5.dp, MaterialTheme.colorScheme.outlineVariant),
-                                shadowElevation = 12.dp
+                            AnimatedVisibility(
+                                visible = hasActiveTrack && !playerState.isPlayerExpanded,
+                                enter = slideInVertically { it } + fadeIn(),
+                                exit = slideOutVertically { it } + fadeOut()
                             ) {
-                                NavigationBar(
-                                    containerColor = Color.Transparent,
-                                    tonalElevation = 0.dp
-                                ) {
-                                    koplingfyTabs.forEachIndexed { index, tab ->
-                                        val selected = selectedTab == index && overlayPage == OverlayPage.NONE
-                                        NavigationBarItem(
-                                            selected = selected,
-                                            onClick = {
-                                                selectedTab = index
-                                                overlayPage = OverlayPage.NONE
-                                            },
-                                            icon = {
-                                                Icon(
-                                                    imageVector = if (selected) tab.selectedIcon else tab.unselectedIcon,
-                                                    contentDescription = tab.label
-                                                )
-                                            },
-                                            label = {
-                                                Text(
-                                                    text = tab.label,
-                                                    style = MaterialTheme.typography.labelSmall
-                                                )
-                                            },
-                                            colors = NavigationBarItemDefaults.colors(
-                                                selectedIconColor = MaterialTheme.colorScheme.onPrimary,
-                                                selectedTextColor = MaterialTheme.colorScheme.primary,
-                                                indicatorColor = MaterialTheme.colorScheme.primary,
-                                                unselectedIconColor = MaterialTheme.colorScheme.onSurfaceVariant,
-                                                unselectedTextColor = MaterialTheme.colorScheme.onSurfaceVariant
-                                            ),
-                                            modifier = Modifier.testTag("nav_tab_${tab.route}")
+                                FloatingMiniPlayer(
+                                    playerState = playerState,
+                                    onExpand = { viewModel.setPlayerExpanded(true) },
+                                    onTogglePlayPause = togglePlayPauseWithRoomSync,
+                                    onNext = skipNextWithRoomSync,
+                                    modifier = Modifier
+                                        .padding(
+                                            start = if (isExpandedWidth) 84.dp else 0.dp,
+                                            bottom = if (isExpandedWidth) 16.dp else 8.dp
                                         )
+                                        .let { if (isExpandedWidth) it.navigationBarsPadding() else it }
+                                )
+                            }
+
+                            if (!isExpandedWidth) {
+                                Surface(
+                                    color = MaterialTheme.colorScheme.surface,
+                                    border = BorderStroke(0.5.dp, MaterialTheme.colorScheme.outlineVariant),
+                                    shadowElevation = 12.dp
+                                ) {
+                                    NavigationBar(
+                                        containerColor = Color.Transparent,
+                                        tonalElevation = 0.dp
+                                    ) {
+                                        koplingfyTabs.forEachIndexed { index, tab ->
+                                            val selected = selectedTab == index && overlayPage == OverlayPage.NONE
+                                            NavigationBarItem(
+                                                selected = selected,
+                                                onClick = {
+                                                    selectedTab = index
+                                                    overlayPage = OverlayPage.NONE
+                                                },
+                                                icon = {
+                                                    Icon(
+                                                        imageVector = if (selected) tab.selectedIcon else tab.unselectedIcon,
+                                                        contentDescription = tab.label
+                                                    )
+                                                },
+                                                label = {
+                                                    Text(
+                                                        text = tab.label,
+                                                        style = MaterialTheme.typography.labelSmall
+                                                    )
+                                                },
+                                                colors = NavigationBarItemDefaults.colors(
+                                                    selectedIconColor = MaterialTheme.colorScheme.onPrimary,
+                                                    selectedTextColor = MaterialTheme.colorScheme.primary,
+                                                    indicatorColor = MaterialTheme.colorScheme.primary,
+                                                    unselectedIconColor = MaterialTheme.colorScheme.onSurfaceVariant,
+                                                    unselectedTextColor = MaterialTheme.colorScheme.onSurfaceVariant
+                                                ),
+                                                modifier = Modifier.testTag("nav_tab_${tab.route}")
+                                            )
+                                        }
                                     }
                                 }
                             }
                         }
                     }
 
-                    // ---- Full-Screen Player Overlay ----
+                    // ---- 100% Opaque Full-Screen Player Overlay ----
                     AnimatedVisibility(
                         visible = playerState.isPlayerExpanded && playerState.currentTrack != null,
                         enter = slideInVertically { it } + fadeIn(),
@@ -420,26 +748,49 @@ fun KoplingfyAppRoot(viewModel: KoplingfyViewModel) {
                     ) {
                         val currentTrack = playerState.currentTrack
                         if (currentTrack != null) {
+                            val isDownloaded = currentTrack.id in downloadedIds || currentTrack.isDownloaded
                             FullScreenPlayerModal(
                                 playerState = playerState,
                                 settings = settings,
                                 isLiked = currentTrack.id in likedIds,
+                                isDownloaded = isDownloaded,
+                                downloadProgress = activeDownloads[currentTrack.id],
                                 onCollapse = { viewModel.setPlayerExpanded(false) },
-                                onTogglePlayPause = viewModel::togglePlayPause,
-                                onSeek = viewModel::seekTo,
-                                onNext = viewModel::skipNext,
-                                onPrevious = viewModel::skipPrevious,
+                                onTogglePlayPause = togglePlayPauseWithRoomSync,
+                                onSeek = seekWithRoomSync,
+                                onNext = skipNextWithRoomSync,
+                                onPrevious = skipPreviousWithRoomSync,
                                 onToggleShuffle = viewModel::toggleShuffle,
                                 onCycleRepeat = viewModel::cycleRepeatMode,
                                 onToggleLike = { viewModel.toggleLike(currentTrack) },
+                                onDownloadClick = {
+                                    if (isDownloaded) viewModel.removeDownload(currentTrack)
+                                    else viewModel.downloadTrack(currentTrack)
+                                },
+                                onStartRadio = { viewModel.startRadio(currentTrack) },
+                                onShareTrack = { shareTrack(currentTrack) },
+                                onShareLyrics = { text -> shareLyricsText(currentTrack, text) },
+                                onOpenYouTubeLogin = openYouTubeLogin,
+                                onOpenListenTogether = openListenTogether,
+                                activeRoomCode = activeRoomCode,
                                 onAddToPlaylist = { addToPlaylistTrack = currentTrack },
                                 onTrackOptions = { optionsTrack = currentTrack },
-                                onSelectQueueItem = { item -> viewModel.playTrack(item, playerState.queue, expandPlayer = true) },
+                                onSelectQueueItem = { item -> playTrackWithRoomSync(item, playerState.queue, true) },
+                                onMoveQueueItem = viewModel::moveQueueItem,
                                 onRemoveQueueItem = viewModel::removeFromQueue,
+                                onClearUpcomingQueue = viewModel::clearUpcomingQueue,
+                                onSaveQueueAsPlaylist = {
+                                    savingQueueAsPlaylist = true
+                                    showCreatePlaylistDialog = true
+                                },
+                                onToggleAutoplay = viewModel::setAutoplayRadio,
+                                onLyricsFontScaleChange = viewModel::setLyricsFontScale,
                                 onSleepMinutes = viewModel::setSleepTimerMinutes,
                                 onSleepEndOfTrack = viewModel::setSleepAfterCurrentTrack,
                                 onEqPreset = viewModel::setEqPreset,
                                 onCustomBand = viewModel::setCustomBand,
+                                onBassBoostChange = viewModel::setBassBoost,
+                                onNormalizeAudioChange = viewModel::setNormalizeAudio,
                                 onSpeedChange = viewModel::setPlaybackSpeed,
                                 onPitchChange = viewModel::setPlaybackPitch
                             )
@@ -453,6 +804,7 @@ fun KoplingfyAppRoot(viewModel: KoplingfyViewModel) {
         val activeOptionTrack = optionsTrack
         if (activeOptionTrack != null) {
             val detailType = detailState.type
+            val isDownloaded = activeOptionTrack.id in downloadedIds || activeOptionTrack.isDownloaded
             val removeLambda: (() -> Unit)? = when {
                 overlayPage == OverlayPage.COLLECTION_DETAIL && detailType is CollectionDetailType.CustomPlaylist -> {
                     { viewModel.removeTrackFromPlaylist(detailType.playlistId, activeOptionTrack.id) }
@@ -466,15 +818,40 @@ fun KoplingfyAppRoot(viewModel: KoplingfyViewModel) {
                 "Hapus dari Playlist Ini"
             } else "Hapus Audio Lokal"
 
+            val addToListenRoomLambda: (() -> Unit)? = if (canControlActiveRoom && listenViewModel != null) {
+                { listenViewModel.addTrackToRoomQueue(activeOptionTrack) }
+            } else null
+
             TrackOptionsBottomSheet(
                 track = activeOptionTrack,
                 isLiked = activeOptionTrack.id in likedIds,
+                isDownloaded = isDownloaded,
                 onDismiss = { optionsTrack = null },
-                onPlayNow = { viewModel.playTrack(activeOptionTrack, listOf(activeOptionTrack)) },
+                onPlayNow = { playTrackWithRoomSync(activeOptionTrack, listOf(activeOptionTrack), false) },
+                onStartRadio = { viewModel.startRadio(activeOptionTrack) },
                 onPlayNext = { viewModel.addToQueueNext(activeOptionTrack) },
                 onAddToQueue = { viewModel.addToQueueEnd(activeOptionTrack) },
                 onToggleLike = { viewModel.toggleLike(activeOptionTrack) },
+                onDownloadOrRemove = {
+                    if (isDownloaded) viewModel.removeDownload(activeOptionTrack)
+                    else viewModel.downloadTrack(activeOptionTrack)
+                },
                 onAddToPlaylist = { addToPlaylistTrack = activeOptionTrack },
+                onOpenArtist = {
+                    viewModel.setPlayerExpanded(false)
+                    openCollection(
+                        CollectionDetailType.ArtistCollection(
+                            ArtistSummary(
+                                id = activeOptionTrack.artistBrowseId?.let { "yt_artist_$it" } ?: "yt_artist_search_${activeOptionTrack.artist}",
+                                name = activeOptionTrack.artist,
+                                artworkUrl = activeOptionTrack.artworkUrl,
+                                genre = "YouTube Music"
+                            )
+                        )
+                    )
+                },
+                onShare = { shareTrack(activeOptionTrack) },
+                onAddToListenRoom = addToListenRoomLambda,
                 onRemoveAction = removeLambda,
                 removeActionLabel = removeLabel
             )
@@ -490,15 +867,28 @@ fun KoplingfyAppRoot(viewModel: KoplingfyViewModel) {
                 onSelectPlaylist = { playlist ->
                     viewModel.addTrackToPlaylist(playlist.id, playlist.name, targetTrack)
                 },
-                onCreateNewClick = { showCreatePlaylistDialog = true }
+                onCreateNewClick = {
+                    savingQueueAsPlaylist = false
+                    showCreatePlaylistDialog = true
+                }
             )
         }
 
-        // ---- Create Playlist Dialog ----
+        // ---- Create Playlist / Save Queue Dialog ----
         if (showCreatePlaylistDialog) {
             CreatePlaylistDialog(
-                onDismiss = { showCreatePlaylistDialog = false },
-                onCreate = { name, desc -> viewModel.createPlaylist(name, desc) }
+                onDismiss = {
+                    showCreatePlaylistDialog = false
+                    savingQueueAsPlaylist = false
+                },
+                onCreate = { name, desc ->
+                    if (savingQueueAsPlaylist) {
+                        viewModel.saveQueueAsPlaylist(name)
+                    } else {
+                        viewModel.createPlaylist(name, desc)
+                    }
+                    savingQueueAsPlaylist = false
+                }
             )
         }
     }

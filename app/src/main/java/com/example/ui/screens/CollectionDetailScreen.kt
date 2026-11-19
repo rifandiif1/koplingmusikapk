@@ -75,6 +75,7 @@ fun CollectionDetailScreen(
     Box(
         modifier = Modifier
             .fillMaxSize()
+            .background(bgColor)
             .background(
                 Brush.verticalGradient(
                     colors = listOf(accentColor.copy(alpha = 0.24f), bgColor, bgColor),
@@ -238,6 +239,7 @@ fun CollectionDetailScreen(
                         Text(
                             text = when (detailState.type) {
                                 CollectionDetailType.LikedSongs -> "Ketuk ikon hati pada lagu mana pun untuk menyimpannya di sini."
+                                CollectionDetailType.Downloads -> "Ketuk ikon Unduh di pemutar atau menu lagu untuk memutar penuh tanpa internet."
                                 CollectionDetailType.LocalAudio -> "Ketuk tombol Impor untuk memilih file MP3, M4A, atau FLAC dari perangkatmu."
                                 CollectionDetailType.History -> "Lagu yang kamu dengarkan akan muncul di riwayat ini."
                                 else -> "Tambahkan lagu melalui menu titik tiga pada lagu mana pun."

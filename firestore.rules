@@ -1,0 +1,196 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // Global safety net: deny everything by default
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // ---- Global Hardened Primitives ----
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() >= 1 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function isValidRoomCode(code) {
+      return code is string && code.size() == 6 && code.matches('^[A-Z2-9]{6}$');
+    }
+
+    // ---- Validation Helpers (Anti-Update-Gap) ----
+    function isValidListenRoom(data) {
+      return data.keys().hasAll([
+               'hostUid', 'hostName', 'roomName', 'status', 'guestsCanControl',
+               'memberUids', 'memberNames', 'currentTrackId', 'currentTrackTitle',
+               'currentTrackArtist', 'currentTrackAlbum', 'currentTrackArtwork',
+               'currentTrackDurationMs', 'playing', 'positionMs', 'syncSequence',
+               'queueTracks', 'lastActionBy', 'createdAt', 'updatedAt'
+             ]) &&
+             data.keys().hasOnly([
+               'hostUid', 'hostName', 'roomName', 'status', 'guestsCanControl',
+               'memberUids', 'memberNames', 'currentTrackId', 'currentTrackTitle',
+               'currentTrackArtist', 'currentTrackAlbum', 'currentTrackArtwork',
+               'currentTrackDurationMs', 'playing', 'positionMs', 'syncSequence',
+               'queueTracks', 'lastActionBy', 'createdAt', 'updatedAt'
+             ]) &&
+             isValidId(data.hostUid) &&
+             data.hostName is string && data.hostName.size() >= 1 && data.hostName.size() <= 60 &&
+             data.roomName is string && data.roomName.size() >= 1 && data.roomName.size() <= 60 &&
+             data.status is string && data.status in ['active', 'ended'] &&
+             data.guestsCanControl is bool &&
+             data.memberUids is list && data.memberUids.size() >= 1 && data.memberUids.size() <= 25 &&
+             data.memberUids[0] is string &&
+             data.memberNames is list && data.memberNames.size() >= 1 && data.memberNames.size() <= 25 &&
+             data.memberNames[0] is string &&
+             data.currentTrackId is string && data.currentTrackId.size() <= 128 &&
+             data.currentTrackTitle is string && data.currentTrackTitle.size() <= 200 &&
+             data.currentTrackArtist is string && data.currentTrackArtist.size() <= 200 &&
+             data.currentTrackAlbum is string && data.currentTrackAlbum.size() <= 200 &&
+             data.currentTrackArtwork is string && data.currentTrackArtwork.size() <= 600 &&
+             data.currentTrackDurationMs is int && data.currentTrackDurationMs >= 0 && data.currentTrackDurationMs <= 86400000 &&
+             data.playing is bool &&
+             data.positionMs is int && data.positionMs >= 0 && data.positionMs <= 86400000 &&
+             data.syncSequence is int && data.syncSequence >= 0 &&
+             data.queueTracks is list && data.queueTracks.size() <= 30 &&
+             (data.queueTracks.size() == 0 || data.queueTracks[0] is map) &&
+             data.lastActionBy is string && data.lastActionBy.size() <= 140 &&
+             data.createdAt is timestamp &&
+             data.updatedAt is timestamp;
+    }
+
+    function isValidRecentRoom(data, userId) {
+      return data.keys().hasAll(['userId', 'roomName', 'hostName', 'role', 'createdAt', 'updatedAt']) &&
+             data.keys().hasOnly(['userId', 'roomName', 'hostName', 'role', 'createdAt', 'updatedAt']) &&
+             data.userId == userId &&
+             data.roomName is string && data.roomName.size() >= 1 && data.roomName.size() <= 60 &&
+             data.hostName is string && data.hostName.size() >= 1 && data.hostName.size() <= 60 &&
+             data.role is string && data.role in ['host', 'guest'] &&
+             data.createdAt is timestamp &&
+             data.updatedAt is timestamp;
+    }
+
+    // ---- Collection: /listen_rooms/{roomCode} ----
+    match /listen_rooms/{roomCode} {
+      // Direct lookup by secret 6-char room code (via code input or QR scan)
+      allow get: if isSignedIn() && isValidRoomCode(roomCode);
+
+      // List queries MUST filter by membership (whereArrayContains("memberUids", uid))
+      allow list: if isSignedIn() && request.auth.uid in resource.data.memberUids;
+
+      // Create: Authenticated host initializes active room with only themselves in memberUids
+      allow create: if isSignedIn() &&
+                       isValidRoomCode(roomCode) &&
+                       isValidListenRoom(incoming()) &&
+                       incoming().hostUid == request.auth.uid &&
+                       incoming().status == 'active' &&
+                       incoming().memberUids.size() == 1 &&
+                       incoming().memberUids[0] == request.auth.uid &&
+                       incoming().memberNames.size() == 1 &&
+                       incoming().createdAt <= request.time &&
+                       incoming().updatedAt <= request.time;
+
+      // Update: Validation helper first + terminal state lock + immutable fields + Action-Based branches
+      allow update: if isSignedIn() &&
+                       isValidRoomCode(roomCode) &&
+                       isValidListenRoom(incoming()) &&
+                       existing().status == 'active' &&
+                       incoming().hostUid == existing().hostUid &&
+                       incoming().createdAt == existing().createdAt &&
+                       incoming().updatedAt <= request.time && (
+                         // Action 1: Guest joins an active room (adds only self to memberUids)
+                         (
+                           !(request.auth.uid in existing().memberUids) &&
+                           request.auth.uid in incoming().memberUids &&
+                           incoming().memberUids.size() == existing().memberUids.size() + 1 &&
+                           incoming().memberUids.hasAll(existing().memberUids) &&
+                           incoming().memberNames.size() == existing().memberNames.size() + 1 &&
+                           incoming().diff(existing()).affectedKeys().hasOnly(['memberUids', 'memberNames', 'lastActionBy', 'updatedAt'])
+                         ) ||
+                         // Action 2: Non-host member leaves the room (removes only self from memberUids)
+                         (
+                           request.auth.uid != existing().hostUid &&
+                           request.auth.uid in existing().memberUids &&
+                           !(request.auth.uid in incoming().memberUids) &&
+                           incoming().memberUids.size() == existing().memberUids.size() - 1 &&
+                           existing().memberUids.hasAll(incoming().memberUids) &&
+                           incoming().diff(existing()).affectedKeys().hasOnly(['memberUids', 'memberNames', 'lastActionBy', 'updatedAt'])
+                         ) ||
+                         // Action 3: Synchronized playback, queue, or live reaction update
+                         (
+                           (
+                             request.auth.uid == existing().hostUid ||
+                             (existing().guestsCanControl == true && request.auth.uid in existing().memberUids)
+                           ) &&
+                           incoming().diff(existing()).affectedKeys().hasOnly([
+                             'currentTrackId', 'currentTrackTitle', 'currentTrackArtist',
+                             'currentTrackAlbum', 'currentTrackArtwork', 'currentTrackDurationMs',
+                             'playing', 'positionMs', 'syncSequence', 'queueTracks',
+                             'lastActionBy', 'updatedAt'
+                           ])
+                         ) ||
+                         // Action 4: Host room settings or ending the session
+                         (
+                           request.auth.uid == existing().hostUid &&
+                           incoming().diff(existing()).affectedKeys().hasOnly([
+                             'roomName', 'guestsCanControl', 'status', 'lastActionBy', 'updatedAt'
+                           ])
+                         ) ||
+                         // Action 5: Joined member sends a live reaction banner
+                         (
+                           request.auth.uid in existing().memberUids &&
+                           incoming().diff(existing()).affectedKeys().hasOnly([
+                             'lastActionBy', 'updatedAt'
+                           ])
+                         )
+                       );
+
+      // Delete: Only the host can delete their room
+      allow delete: if isSignedIn() &&
+                       isValidRoomCode(roomCode) &&
+                       existing().hostUid == request.auth.uid;
+    }
+
+    // ---- Collection: /users/{userId}/recent_rooms/{roomCode} ----
+    match /users/{userId}/recent_rooms/{roomCode} {
+      allow get: if isSignedIn() && isValidId(userId) && isValidRoomCode(roomCode) && request.auth.uid == userId;
+
+      // User-scoped subcollection list: isolated by {userId} wildcard (no existing() check)
+      allow list: if isSignedIn() && request.auth.uid == userId;
+
+      allow create: if isSignedIn() &&
+                       isValidId(userId) &&
+                       isValidRoomCode(roomCode) &&
+                       request.auth.uid == userId &&
+                       isValidRecentRoom(incoming(), userId) &&
+                       incoming().createdAt <= request.time &&
+                       incoming().updatedAt <= request.time;
+
+      allow update: if isSignedIn() &&
+                       isValidId(userId) &&
+                       isValidRoomCode(roomCode) &&
+                       request.auth.uid == userId &&
+                       isValidRecentRoom(incoming(), userId) &&
+                       incoming().userId == existing().userId &&
+                       incoming().createdAt == existing().createdAt &&
+                       incoming().updatedAt <= request.time &&
+                       incoming().diff(existing()).affectedKeys().hasOnly(['roomName', 'hostName', 'role', 'updatedAt']);
+
+      allow delete: if isSignedIn() &&
+                       isValidId(userId) &&
+                       isValidRoomCode(roomCode) &&
+                       request.auth.uid == userId;
+    }
+  }
+}

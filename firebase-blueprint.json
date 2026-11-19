@@ -1,0 +1,172 @@
+{
+  "entities": {
+    "ListenRoom": {
+      "title": "ListenRoom",
+      "description": "Real-time Play Bersama (Listen Together) synchronized playback room identified by a 6-character room code.",
+      "type": "object",
+      "properties": {
+        "hostUid": {
+          "type": "string",
+          "description": "Authenticated Firebase UID of the room host (immutable after create)."
+        },
+        "hostName": {
+          "type": "string",
+          "description": "Display name of the room host."
+        },
+        "roomName": {
+          "type": "string",
+          "description": "Human-friendly room title."
+        },
+        "status": {
+          "type": "string",
+          "description": "Lifecycle status of the room. Once ended, no further mutations are permitted.",
+          "enum": ["active", "ended"]
+        },
+        "guestsCanControl": {
+          "type": "boolean",
+          "description": "Whether joined participants can control playback and add songs to the shared queue."
+        },
+        "memberUids": {
+          "type": "array",
+          "description": "Bounded list (1..25) of authenticated Firebase UIDs currently in this room."
+        },
+        "memberNames": {
+          "type": "array",
+          "description": "Bounded parallel list (1..25) of display labels formatted as uid|name for active listeners."
+        },
+        "currentTrackId": {
+          "type": "string",
+          "description": "YouTube video ID or track identifier currently synchronized."
+        },
+        "currentTrackTitle": {
+          "type": "string",
+          "description": "Title of the currently synchronized track."
+        },
+        "currentTrackArtist": {
+          "type": "string",
+          "description": "Artist name of the currently synchronized track."
+        },
+        "currentTrackAlbum": {
+          "type": "string",
+          "description": "Album name of the currently synchronized track."
+        },
+        "currentTrackArtwork": {
+          "type": "string",
+          "description": "Artwork URL of the currently synchronized track."
+        },
+        "currentTrackDurationMs": {
+          "type": "integer",
+          "description": "Track duration in milliseconds."
+        },
+        "playing": {
+          "type": "boolean",
+          "description": "Whether synchronized playback is currently playing."
+        },
+        "positionMs": {
+          "type": "integer",
+          "description": "Last synced playback position in milliseconds."
+        },
+        "syncSequence": {
+          "type": "integer",
+          "description": "Monotonic sequence counter incremented on every playback/queue sync event."
+        },
+        "queueTracks": {
+          "type": "array",
+          "description": "Bounded list (0..30) of shared upcoming track maps in the room."
+        },
+        "lastActionBy": {
+          "type": "string",
+          "description": "Short activity message describing the latest room event."
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp (FieldValue.serverTimestamp()) when the room was created."
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp (FieldValue.serverTimestamp()) of the most recent update."
+        }
+      },
+      "required": [
+        "hostUid",
+        "hostName",
+        "roomName",
+        "status",
+        "guestsCanControl",
+        "memberUids",
+        "memberNames",
+        "currentTrackId",
+        "currentTrackTitle",
+        "currentTrackArtist",
+        "currentTrackAlbum",
+        "currentTrackArtwork",
+        "currentTrackDurationMs",
+        "playing",
+        "positionMs",
+        "syncSequence",
+        "queueTracks",
+        "lastActionBy",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "RecentRoomEntry": {
+      "title": "RecentRoomEntry",
+      "description": "User-private history of Play Bersama rooms created or joined.",
+      "type": "object",
+      "properties": {
+        "userId": {
+          "type": "string",
+          "description": "Owner Firebase UID matching path userId."
+        },
+        "roomName": {
+          "type": "string",
+          "description": "Room display title."
+        },
+        "hostName": {
+          "type": "string",
+          "description": "Host display name."
+        },
+        "role": {
+          "type": "string",
+          "description": "User role in the room.",
+          "enum": ["host", "guest"]
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp (FieldValue.serverTimestamp()) when first joined."
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp (FieldValue.serverTimestamp()) when last visited."
+        }
+      },
+      "required": [
+        "userId",
+        "roomName",
+        "hostName",
+        "role",
+        "createdAt",
+        "updatedAt"
+      ]
+    }
+  },
+  "firestore": {
+    "/listen_rooms/{roomCode}": {
+      "schema": {
+        "$ref": "#/entities/ListenRoom"
+      },
+      "description": "Real-time Play Bersama rooms keyed by 6-character alphanumeric room codes."
+    },
+    "/users/{userId}/recent_rooms/{roomCode}": {
+      "schema": {
+        "$ref": "#/entities/RecentRoomEntry"
+      },
+      "description": "User-scoped private list of recently created or joined Play Bersama rooms."
+    }
+  }
+}

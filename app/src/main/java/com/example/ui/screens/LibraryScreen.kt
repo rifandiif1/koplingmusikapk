@@ -25,11 +25,16 @@ import androidx.compose.material.icons.rounded.Add
 import androidx.compose.material.icons.rounded.AudioFile
 import androidx.compose.material.icons.rounded.AutoGraph
 import androidx.compose.material.icons.rounded.DeleteOutline
+import androidx.compose.material.icons.rounded.DownloadDone
 import androidx.compose.material.icons.rounded.Favorite
 import androidx.compose.material.icons.rounded.FolderOpen
+import androidx.compose.material.icons.rounded.Groups
 import androidx.compose.material.icons.rounded.History
+import androidx.compose.material.icons.rounded.Login
 import androidx.compose.material.icons.rounded.MusicNote
+import androidx.compose.material.icons.rounded.QrCode2
 import androidx.compose.material.icons.rounded.QueueMusic
+import androidx.compose.material.icons.rounded.Sync
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -49,6 +54,7 @@ import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import com.example.model.CollectionDetailType
 import com.example.model.PlaylistSummary
+import com.example.model.YouTubeAccount
 import com.example.ui.components.AlbumArtImage
 import com.example.ui.components.GlassActionPill
 import com.example.ui.components.SectionHeader
@@ -56,13 +62,19 @@ import com.example.ui.components.SectionHeader
 @Composable
 fun LibraryScreen(
     likedCount: Int,
+    downloadedCount: Int,
     historyCount: Int,
     localCount: Int,
     totalPlays: Int,
+    youtubeAccount: YouTubeAccount,
     playlists: List<PlaylistSummary>,
     bottomContentPadding: Dp,
     onOpenCollection: (CollectionDetailType) -> Unit,
     onOpenStats: () -> Unit,
+    onOpenListenTogether: () -> Unit,
+    activeRoomCode: String? = null,
+    onOpenYouTubeLogin: () -> Unit,
+    onSyncYouTubeLibrary: () -> Unit,
     onImportLocalAudio: () -> Unit,
     onCreatePlaylistClick: () -> Unit,
     onDeletePlaylist: (Long) -> Unit
@@ -92,7 +104,7 @@ fun LibraryScreen(
                         color = MaterialTheme.colorScheme.onBackground
                     )
                     Text(
-                        text = "Musik tersimpan, playlist & audio lokal",
+                        text = "Lagu disukai, unduhan offline, playlist & lokal",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
@@ -114,7 +126,138 @@ fun LibraryScreen(
             }
         }
 
-        // ---- 2x2 Smart Bento Grid ----
+        // ---- YouTube Music Account Sync / Login Banner ----
+        item {
+            Surface(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 20.dp),
+                shape = RoundedCornerShape(22.dp),
+                color = MaterialTheme.colorScheme.surface,
+                border = BorderStroke(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.35f))
+            ) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(14.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    if (youtubeAccount.isLoggedIn) {
+                        AlbumArtImage(
+                            url = youtubeAccount.avatarUrl,
+                            contentDescription = youtubeAccount.name,
+                            modifier = Modifier.size(44.dp),
+                            shape = CircleShape
+                        )
+                    } else {
+                        Box(
+                            modifier = Modifier
+                                .size(44.dp)
+                                .clip(CircleShape)
+                                .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.16f)),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Icon(
+                                imageVector = Icons.Rounded.Login,
+                                contentDescription = null,
+                                tint = MaterialTheme.colorScheme.primary
+                            )
+                        }
+                    }
+                    Spacer(modifier = Modifier.width(12.dp))
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            text = if (youtubeAccount.isLoggedIn) youtubeAccount.name else "Sinkron YouTube Music",
+                            style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold),
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                        Text(
+                            text = if (youtubeAccount.isLoggedIn) "Tarik Lagu Disukai & Playlist akunmu"
+                            else "Login untuk buka lagu Explicit & sinkronisasi",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                    }
+                    Spacer(modifier = Modifier.width(8.dp))
+                    GlassActionPill(
+                        label = if (youtubeAccount.isLoggedIn) "Sync" else "Masuk",
+                        icon = if (youtubeAccount.isLoggedIn) Icons.Rounded.Sync else Icons.Rounded.Login,
+                        highlighted = true,
+                        onClick = if (youtubeAccount.isLoggedIn) onSyncYouTubeLibrary else onOpenYouTubeLogin,
+                        modifier = Modifier.testTag("library_ytm_action")
+                    )
+                }
+            }
+        }
+
+        // ---- Play Bersama (Kode Ruang & Scan QR) Banner ----
+        item {
+            Surface(
+                onClick = onOpenListenTogether,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 20.dp)
+                    .testTag("library_play_together_card"),
+                shape = RoundedCornerShape(22.dp),
+                color = MaterialTheme.colorScheme.surface,
+                border = BorderStroke(1.dp, MaterialTheme.colorScheme.secondary.copy(alpha = 0.45f))
+            ) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .background(
+                            Brush.horizontalGradient(
+                                listOf(
+                                    MaterialTheme.colorScheme.secondary.copy(alpha = 0.16f),
+                                    Color.Transparent
+                                )
+                            )
+                        )
+                        .padding(14.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Box(
+                        modifier = Modifier
+                            .size(44.dp)
+                            .clip(RoundedCornerShape(14.dp))
+                            .background(MaterialTheme.colorScheme.secondary.copy(alpha = 0.2f)),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Icon(
+                            imageVector = Icons.Rounded.Groups,
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.secondary
+                        )
+                    }
+                    Spacer(modifier = Modifier.width(12.dp))
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            text = if (activeRoomCode != null) "Play Bersama Aktif • $activeRoomCode" else "Play Bersama (Listen Together)",
+                            style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold),
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                        Text(
+                            text = "Dengarkan musik real-time via Kode Ruang & Scan QR",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                    }
+                    Icon(
+                        imageVector = Icons.Rounded.QrCode2,
+                        contentDescription = "Buka Play Bersama",
+                        tint = MaterialTheme.colorScheme.secondary
+                    )
+                }
+            }
+        }
+
+        // ---- Smart Bento Grid (Liked, Offline Downloads, History, Local, Stats) ----
         item {
             Column(
                 modifier = Modifier.padding(horizontal = 20.dp),
@@ -133,6 +276,19 @@ fun LibraryScreen(
                         modifier = Modifier.weight(1f).testTag("tile_liked_songs")
                     )
                     SmartLibraryTile(
+                        title = "Unduhan Offline",
+                        subtitle = "$downloadedCount lagu siap",
+                        icon = Icons.Rounded.DownloadDone,
+                        accent = Color(0xFF00C2FF),
+                        onClick = { onOpenCollection(CollectionDetailType.Downloads) },
+                        modifier = Modifier.weight(1f).testTag("tile_downloads")
+                    )
+                }
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(12.dp)
+                ) {
+                    SmartLibraryTile(
                         title = "Riwayat Putar",
                         subtitle = "$historyCount diputar",
                         icon = Icons.Rounded.History,
@@ -140,11 +296,6 @@ fun LibraryScreen(
                         onClick = { onOpenCollection(CollectionDetailType.History) },
                         modifier = Modifier.weight(1f).testTag("tile_history")
                     )
-                }
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(12.dp)
-                ) {
                     SmartLibraryTile(
                         title = "Audio Lokal",
                         subtitle = "$localCount file perangkat",
@@ -153,14 +304,38 @@ fun LibraryScreen(
                         onClick = { onOpenCollection(CollectionDetailType.LocalAudio) },
                         modifier = Modifier.weight(1f).testTag("tile_local_audio")
                     )
-                    SmartLibraryTile(
-                        title = "Statistik",
-                        subtitle = "$totalPlays total putar",
-                        icon = Icons.Rounded.AutoGraph,
-                        accent = Color(0xFFFF6B7A),
-                        onClick = onOpenStats,
-                        modifier = Modifier.weight(1f).testTag("tile_stats")
-                    )
+                }
+
+                // Full-width Stats banner tile
+                Surface(
+                    onClick = onOpenStats,
+                    shape = RoundedCornerShape(20.dp),
+                    color = MaterialTheme.colorScheme.surface,
+                    border = BorderStroke(1.dp, Color(0xFFFF6B7A).copy(alpha = 0.3f)),
+                    modifier = Modifier.fillMaxWidth().testTag("tile_stats")
+                ) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .background(Brush.horizontalGradient(listOf(Color(0xFFFF6B7A).copy(alpha = 0.16f), Color.Transparent)))
+                            .padding(14.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Box(
+                            modifier = Modifier
+                                .size(40.dp)
+                                .clip(RoundedCornerShape(12.dp))
+                                .background(Color(0xFFFF6B7A).copy(alpha = 0.2f)),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Icon(Icons.Rounded.AutoGraph, contentDescription = null, tint = Color(0xFFFF6B7A))
+                        }
+                        Spacer(modifier = Modifier.width(12.dp))
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text("Statistik Mendengar", style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold))
+                            Text("$totalPlays total pemutaran • Grafik 7 hari & artis teratas", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        }
+                    }
                 }
             }
         }
@@ -173,7 +348,7 @@ fun LibraryScreen(
                     .padding(horizontal = 20.dp),
                 shape = RoundedCornerShape(22.dp),
                 color = MaterialTheme.colorScheme.surface,
-                border = BorderStroke(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.28f))
+                border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant)
             ) {
                 Row(
                     modifier = Modifier
@@ -183,7 +358,7 @@ fun LibraryScreen(
                 ) {
                     Box(
                         modifier = Modifier
-                            .size(48.dp)
+                            .size(46.dp)
                             .clip(RoundedCornerShape(14.dp))
                             .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.16f)),
                         contentAlignment = Alignment.Center
@@ -192,17 +367,17 @@ fun LibraryScreen(
                             imageVector = Icons.Rounded.FolderOpen,
                             contentDescription = null,
                             tint = MaterialTheme.colorScheme.primary,
-                            modifier = Modifier.size(24.dp)
+                            modifier = Modifier.size(22.dp)
                         )
                     }
-                    Spacer(modifier = Modifier.width(14.dp))
+                    Spacer(modifier = Modifier.width(12.dp))
                     Column(modifier = Modifier.weight(1f)) {
                         Text(
-                            text = "Putar File MP3 / FLAC Lokal",
+                            text = "Impor File MP3 / FLAC Lokal",
                             style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold)
                         )
                         Text(
-                            text = "Impor audio penuh dari perangkat tanpa izin penyimpanan penuh",
+                            text = "Putar audio perangkat tanpa izin penyimpanan penuh",
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
@@ -211,7 +386,7 @@ fun LibraryScreen(
                     GlassActionPill(
                         label = "Impor",
                         icon = Icons.Rounded.Add,
-                        highlighted = true,
+                        highlighted = false,
                         onClick = onImportLocalAudio,
                         modifier = Modifier.testTag("import_local_audio_button")
                     )
@@ -267,7 +442,7 @@ fun LibraryScreen(
                         )
                         Spacer(modifier = Modifier.height(4.dp))
                         Text(
-                            text = "Susun playlist untuk setiap suasana hati atau aktivitasmu",
+                            text = "Susun playlist untuk setiap suasana hati atau sinkron dari YouTube Music",
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
@@ -371,7 +546,7 @@ private fun SmartLibraryTile(
 ) {
     Surface(
         onClick = onClick,
-        modifier = modifier.height(106.dp),
+        modifier = modifier.height(104.dp),
         shape = RoundedCornerShape(22.dp),
         color = MaterialTheme.colorScheme.surface,
         border = BorderStroke(1.dp, accent.copy(alpha = 0.28f))

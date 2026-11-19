@@ -54,6 +54,7 @@ import androidx.compose.ui.unit.dp
 import com.example.R
 import com.example.model.AlbumSummary
 import com.example.model.ArtistSummary
+import com.example.model.RemotePlaylistSummary
 import com.example.model.Track
 import com.example.ui.components.AlbumArtImage
 import com.example.ui.components.SectionHeader
@@ -61,8 +62,8 @@ import com.example.ui.components.TrackRowItem
 import com.example.viewmodel.SearchUiState
 
 private val trendingSuggestions = listOf(
-    "Tulus", "Nadin Amizah", "The Weeknd", "Hindia", "Billie Eilish",
-    "Sheila On 7", "Bruno Mars", "Coldplay", "Lofi Beats", "Jazz Piano"
+    "Pierce The Veil", "Tulus", "Nadin Amizah", "The Weeknd", "Hindia",
+    "Billie Eilish", "Sheila On 7", "Bruno Mars", "Coldplay", "Lofi Beats"
 )
 
 @OptIn(ExperimentalLayoutApi::class)
@@ -76,6 +77,7 @@ fun SearchScreen(
     bottomContentPadding: Dp,
     onQueryChange: (String) -> Unit,
     onSubmitSearch: (String) -> Unit,
+    onToggleScope: (Boolean) -> Unit,
     onFilterChange: (Int) -> Unit,
     onDeleteHistoryItem: (String) -> Unit,
     onClearHistory: () -> Unit,
@@ -83,10 +85,11 @@ fun SearchScreen(
     onToggleLike: (Track) -> Unit,
     onTrackOptions: (Track) -> Unit,
     onAlbumClick: (AlbumSummary) -> Unit,
-    onArtistClick: (ArtistSummary) -> Unit
+    onArtistClick: (ArtistSummary) -> Unit,
+    onRemotePlaylistClick: (RemotePlaylistSummary) -> Unit
 ) {
     val keyboard = LocalSoftwareKeyboardController.current
-    val filters = listOf("Semua", "Lagu", "Album", "Artis")
+    val filters = listOf("Semua", "Lagu", "Video", "Album", "Artis", "Playlist")
 
     Column(
         modifier = Modifier
@@ -94,7 +97,7 @@ fun SearchScreen(
             .background(MaterialTheme.colorScheme.background)
             .statusBarsPadding()
     ) {
-        // ---- Header & Search Field ----
+        // ---- Header & Dual-Scope Search (Online YTM vs Koleksi Lokal) ----
         Column(
             modifier = Modifier
                 .fillMaxWidth()
@@ -102,18 +105,35 @@ fun SearchScreen(
                 .padding(top = 14.dp, bottom = 10.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp)
         ) {
-            Text(
-                text = "Cari Musik",
-                style = MaterialTheme.typography.headlineMedium,
-                color = MaterialTheme.colorScheme.onBackground
-            )
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    text = "Cari Musik",
+                    style = MaterialTheme.typography.headlineMedium,
+                    color = MaterialTheme.colorScheme.onBackground
+                )
+                // Metrolist Dual Scope Switcher: Online YTM / Koleksi
+                Surface(
+                    shape = RoundedCornerShape(50),
+                    color = MaterialTheme.colorScheme.surface,
+                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant)
+                ) {
+                    Row(modifier = Modifier.padding(3.dp)) {
+                        ScopePill("YouTube Music", !searchState.localOnly) { onToggleScope(false) }
+                        ScopePill("Koleksi", searchState.localOnly) { onToggleScope(true) }
+                    }
+                }
+            }
 
             OutlinedTextField(
                 value = searchState.query,
                 onValueChange = onQueryChange,
                 placeholder = {
                     Text(
-                        text = stringResource(R.string.search_placeholder),
+                        text = if (searchState.localOnly) "Cari lagu di koleksi & unduhan…" else stringResource(R.string.search_placeholder),
                         style = MaterialTheme.typography.bodyMedium,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
@@ -156,7 +176,41 @@ fun SearchScreen(
                     .testTag("search_input_field")
             )
 
-            if (searchState.query.isNotBlank()) {
+            if (searchState.query.isNotBlank() && searchState.suggestions.isNotEmpty() && !searchState.localOnly) {
+                LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    items(searchState.suggestions, key = { "sug_$it" }) { suggestion ->
+                        Surface(
+                            onClick = {
+                                keyboard?.hide()
+                                onSubmitSearch(suggestion)
+                            },
+                            shape = RoundedCornerShape(50),
+                            color = MaterialTheme.colorScheme.surface,
+                            border = BorderStroke(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.35f))
+                        ) {
+                            Row(
+                                modifier = Modifier.padding(horizontal = 12.dp, vertical = 7.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Rounded.Search,
+                                    contentDescription = null,
+                                    tint = MaterialTheme.colorScheme.primary,
+                                    modifier = Modifier.size(14.dp)
+                                )
+                                Spacer(modifier = Modifier.width(6.dp))
+                                Text(
+                                    text = suggestion,
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurface
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+
+            if (searchState.query.isNotBlank() && !searchState.localOnly) {
                 LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     items(filters.indices.toList()) { idx ->
                         val selected = searchState.selectedFilter == idx
@@ -185,7 +239,6 @@ fun SearchScreen(
             verticalArrangement = Arrangement.spacedBy(16.dp)
         ) {
             if (searchState.query.isBlank()) {
-                // Recent Searches
                 if (searchHistory.isNotEmpty()) {
                     item {
                         Column(
@@ -197,10 +250,7 @@ fun SearchScreen(
                                 horizontalArrangement = Arrangement.SpaceBetween,
                                 verticalAlignment = Alignment.CenterVertically
                             ) {
-                                Text(
-                                    text = "Pencarian Terakhir",
-                                    style = MaterialTheme.typography.titleMedium
-                                )
+                                Text(text = "Pencarian Terakhir", style = MaterialTheme.typography.titleMedium)
                                 TextButton(onClick = onClearHistory) {
                                     Text("Hapus Semua", color = MaterialTheme.colorScheme.primary)
                                 }
@@ -248,7 +298,6 @@ fun SearchScreen(
                     }
                 }
 
-                // Trending Keywords
                 item {
                     Column(
                         modifier = Modifier.padding(horizontal = 20.dp),
@@ -262,10 +311,7 @@ fun SearchScreen(
                                 modifier = Modifier.size(20.dp)
                             )
                             Spacer(modifier = Modifier.width(8.dp))
-                            Text(
-                                text = "Populer Dicari",
-                                style = MaterialTheme.typography.titleMedium
-                            )
+                            Text(text = "Populer Dicari", style = MaterialTheme.typography.titleMedium)
                         }
                         FlowRow(
                             horizontalArrangement = Arrangement.spacedBy(8.dp),
@@ -312,9 +358,12 @@ fun SearchScreen(
                     )
                 }
             } else {
-                val showArtists = (searchState.selectedFilter == 0 || searchState.selectedFilter == 3) && searchState.artists.isNotEmpty()
-                val showAlbums = (searchState.selectedFilter == 0 || searchState.selectedFilter == 2) && searchState.albums.isNotEmpty()
-                val showTracks = (searchState.selectedFilter == 0 || searchState.selectedFilter == 1) && searchState.tracks.isNotEmpty()
+                val f = if (searchState.localOnly) 1 else searchState.selectedFilter
+                val showArtists = (f == 0 || f == 4) && searchState.artists.isNotEmpty()
+                val showAlbums = (f == 0 || f == 3) && searchState.albums.isNotEmpty()
+                val showPlaylists = (f == 0 || f == 5) && searchState.playlists.isNotEmpty()
+                val showTracks = (f == 0 || f == 1) && searchState.tracks.isNotEmpty()
+                val showVideos = (f == 0 || f == 2) && searchState.videos.isNotEmpty()
 
                 if (showArtists) {
                     item {
@@ -378,19 +427,42 @@ fun SearchScreen(
                                                 shape = RoundedCornerShape(12.dp)
                                             )
                                             Spacer(modifier = Modifier.height(8.dp))
-                                            Text(
-                                                text = album.title,
-                                                style = MaterialTheme.typography.titleSmall,
-                                                maxLines = 1,
-                                                overflow = TextOverflow.Ellipsis
+                                            Text(album.title, style = MaterialTheme.typography.titleSmall, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                                            Text(album.artist, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
+                if (showPlaylists) {
+                    item {
+                        Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                            SectionHeader(title = "Playlist Komunitas", modifier = Modifier.padding(horizontal = 20.dp))
+                            LazyRow(
+                                contentPadding = PaddingValues(horizontal = 20.dp),
+                                horizontalArrangement = Arrangement.spacedBy(12.dp)
+                            ) {
+                                items(searchState.playlists, key = { "rpl_${it.id}" }) { pl ->
+                                    Surface(
+                                        onClick = { onRemotePlaylistClick(pl) },
+                                        modifier = Modifier.width(150.dp),
+                                        shape = RoundedCornerShape(18.dp),
+                                        color = MaterialTheme.colorScheme.surface,
+                                        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant)
+                                    ) {
+                                        Column(modifier = Modifier.padding(8.dp)) {
+                                            AlbumArtImage(
+                                                url = pl.artworkUrl,
+                                                contentDescription = pl.title,
+                                                modifier = Modifier.fillMaxWidth().height(126.dp),
+                                                shape = RoundedCornerShape(12.dp)
                                             )
-                                            Text(
-                                                text = album.artist,
-                                                style = MaterialTheme.typography.bodySmall,
-                                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                                maxLines = 1,
-                                                overflow = TextOverflow.Ellipsis
-                                            )
+                                            Spacer(modifier = Modifier.height(8.dp))
+                                            Text(pl.title, style = MaterialTheme.typography.titleSmall, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                                            Text(pl.author, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, overflow = TextOverflow.Ellipsis)
                                         }
                                     }
                                 }
@@ -402,7 +474,7 @@ fun SearchScreen(
                 if (showTracks) {
                     item {
                         SectionHeader(
-                            title = "Lagu (${searchState.tracks.size})",
+                            title = if (searchState.localOnly) "Koleksi Tersimpan (${searchState.tracks.size})" else "Lagu (${searchState.tracks.size})",
                             modifier = Modifier.padding(horizontal = 20.dp)
                         )
                     }
@@ -420,7 +492,28 @@ fun SearchScreen(
                     }
                 }
 
-                if (!showTracks && !showAlbums && !showArtists) {
+                if (showVideos) {
+                    item {
+                        SectionHeader(
+                            title = "Video Musik & Audio Alternatif (${searchState.videos.size})",
+                            modifier = Modifier.padding(horizontal = 20.dp)
+                        )
+                    }
+                    items(searchState.videos, key = { "vid_${it.id}" }) { track ->
+                        TrackRowItem(
+                            track = track,
+                            isCurrent = track.id == currentTrackId,
+                            isPlaying = isPlaying && track.id == currentTrackId,
+                            isLiked = track.id in likedIds,
+                            onClick = { onPlayTrack(track, searchState.videos) },
+                            onLikeClick = { onToggleLike(track) },
+                            onMoreClick = { onTrackOptions(track) },
+                            modifier = Modifier.padding(horizontal = 12.dp)
+                        )
+                    }
+                }
+
+                if (!showTracks && !showVideos && !showAlbums && !showArtists && !showPlaylists) {
                     item {
                         Column(
                             modifier = Modifier
@@ -435,12 +528,9 @@ fun SearchScreen(
                                 modifier = Modifier.size(48.dp)
                             )
                             Spacer(modifier = Modifier.height(12.dp))
+                            Text(text = "Tidak ada hasil untuk \"${searchState.query}\"", style = MaterialTheme.typography.titleMedium)
                             Text(
-                                text = "Tidak ada hasil untuk \"${searchState.query}\"",
-                                style = MaterialTheme.typography.titleMedium
-                            )
-                            Text(
-                                text = "Coba kata kunci lagu atau artis lainnya",
+                                text = "Coba kata kunci lagu, video, atau artis lainnya",
                                 style = MaterialTheme.typography.bodySmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant
                             )
@@ -449,5 +539,21 @@ fun SearchScreen(
                 }
             }
         }
+    }
+}
+
+@Composable
+private fun ScopePill(label: String, selected: Boolean, onClick: () -> Unit) {
+    Surface(
+        onClick = onClick,
+        shape = RoundedCornerShape(50),
+        color = if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.surface
+    ) {
+        Text(
+            text = label,
+            style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold),
+            color = if (selected) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp)
+        )
     }
 }

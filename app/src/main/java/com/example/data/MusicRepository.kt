@@ -11,23 +11,29 @@ import com.example.data.local.PlaylistEntity
 import com.example.data.local.PlaylistTrackCrossRef
 import com.example.data.local.SavedTrackEntity
 import com.example.data.local.SearchHistoryEntity
+import com.example.data.remote.InnerTubeClient
 import com.example.data.remote.KoplingfyNetwork
 import com.example.data.remote.LrcParser
-import com.example.data.remote.toAlbumSummary
-import com.example.data.remote.toArtistSummary
-import com.example.data.remote.toTrack
+import com.example.data.remote.ResolvedStream
+import com.example.data.remote.StreamResolveResult
 import com.example.model.AlbumSummary
 import com.example.model.ArtistStatItem
 import com.example.model.ArtistSummary
+import com.example.model.AudioQuality
 import com.example.model.ListeningStats
 import com.example.model.LyricsState
 import com.example.model.PlaylistSummary
+import com.example.model.RemotePlaylistSummary
 import com.example.model.Track
 import com.example.model.TrackStatItem
+import com.example.model.YouTubeAccount
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.withContext
+import java.io.File
 import java.text.SimpleDateFormat
 import java.util.Calendar
 import java.util.Date
@@ -38,13 +44,16 @@ data class HomeFeedResult(
     val quickPicks: List<Track>,
     val featuredAlbums: List<AlbumSummary>,
     val featuredArtists: List<ArtistSummary>,
+    val featuredPlaylists: List<RemotePlaylistSummary> = emptyList(),
     val errorMessage: String? = null
 )
 
 data class SearchResultBundle(
     val tracks: List<Track>,
+    val videos: List<Track> = emptyList(),
     val albums: List<AlbumSummary>,
     val artists: List<ArtistSummary>,
+    val playlists: List<RemotePlaylistSummary> = emptyList(),
     val errorMessage: String? = null
 )
 
@@ -61,6 +70,12 @@ class MusicRepository(
 
     val localTracksFlow: Flow<List<Track>> = dao.observeLocalTracks()
         .map { list -> list.map { it.toTrack() } }
+
+    val downloadedTracksFlow: Flow<List<Track>> = dao.observeDownloadedTracks()
+        .map { list -> list.map { it.toTrack() } }
+
+    val downloadedTrackIdsFlow: Flow<Set<String>> = dao.observeDownloadedTrackIds()
+        .map { it.toSet() }
 
     val playlistsFlow: Flow<List<PlaylistSummary>> = dao.observePlaylistsWithCount()
         .map { rows ->
@@ -88,142 +103,242 @@ class MusicRepository(
     fun observePlaylistTracks(playlistId: Long): Flow<List<Track>> =
         dao.observeTracksForPlaylist(playlistId).map { list -> list.map { it.toTrack() } }
 
-    // ---- Remote Catalog Fetching ----
+    // ---- Pure YouTube Music InnerTube Home & Explore Feed (ZERO Deezer/iTunes Preview) ----
     suspend fun loadHomeFeed(moodQuery: String = "top hits 2025"): HomeFeedResult = withContext(Dispatchers.IO) {
-        var chartTracks = emptyList<Track>()
-        var featuredAlbums = emptyList<AlbumSummary>()
-        var featuredArtists = emptyList<ArtistSummary>()
-        var quickPicks = emptyList<Track>()
-        var errorMsg: String? = null
-
-        // 1. Fetch Live Global Charts from Deezer
-        runCatching {
-            val chart = KoplingfyNetwork.deezerApi.getGlobalChart(limit = 20)
-            chartTracks = chart.tracks?.data.orEmpty().mapIndexedNotNull { idx, dto ->
-                dto.toTrack(rank = idx + 1)
+        coroutineScope {
+            val chartsDeferred = async {
+                runCatching { InnerTubeClient.fetchChartsAndExplore() }.getOrNull()
             }
-            featuredAlbums = chart.albums?.data.orEmpty().mapNotNull { it.toAlbumSummary() }
-            featuredArtists = chart.artists?.data.orEmpty().mapNotNull { it.toArtistSummary() }
-        }
-
-        // 2. Fetch Mood-specific Quick Picks from iTunes
-        runCatching {
-            val itunesResp = KoplingfyNetwork.itunesApi.searchTracks(term = moodQuery, limit = 20)
-            quickPicks = itunesResp.results.mapNotNull { it.toTrack() }
-                .filter { !it.streamUrl.isNullOrBlank() }
-        }.onFailure {
-            // Fallback to Deezer search if iTunes fails
-            runCatching {
-                val dz = KoplingfyNetwork.deezerApi.searchTracks(query = moodQuery, limit = 20)
-                quickPicks = dz.data.mapNotNull { it.toTrack() }
+            val quickPicksDeferred = async {
+                runCatching { InnerTubeClient.searchAll(moodQuery) }.getOrNull()
             }
-        }
 
-        // Fallback if Deezer chart was unreachable
-        if (chartTracks.isEmpty() && quickPicks.isNotEmpty()) {
-            chartTracks = quickPicks.mapIndexed { idx, track -> track.copy(rank = idx + 1) }
-        }
-        if (featuredAlbums.isEmpty()) {
-            runCatching {
-                val albumsResp = KoplingfyNetwork.itunesApi.searchAlbums(term = moodQuery, limit = 12)
-                featuredAlbums = albumsResp.results.mapNotNull { it.toAlbumSummary() }
-            }
-        }
-        if (featuredArtists.isEmpty() && chartTracks.isNotEmpty()) {
-            featuredArtists = chartTracks
-                .distinctBy { it.artist }
-                .take(10)
-                .mapIndexed { idx, t ->
-                    ArtistSummary(
-                        id = "artist_derived_$idx",
-                        name = t.artist,
-                        artworkUrl = t.artworkUrl,
-                        genre = t.genre
-                    )
+            val charts = chartsDeferred.await()
+            val moodBundle = quickPicksDeferred.await()
+
+            val quickPicks = moodBundle?.tracks.orEmpty()
+            val chartTracks = charts?.tracks?.takeIf { it.isNotEmpty() }
+                ?: quickPicks.mapIndexed { idx, t -> t.copy(rank = idx + 1) }
+
+            val featuredAlbums = (charts?.albums.orEmpty() + moodBundle?.albums.orEmpty())
+                .distinctBy { it.id }
+                .take(12)
+
+            val featuredArtists = (charts?.artists.orEmpty() + moodBundle?.artists.orEmpty())
+                .distinctBy { it.id }
+                .take(12)
+                .ifEmpty {
+                    chartTracks.distinctBy { it.artist }.take(10).mapIndexed { idx, t ->
+                        ArtistSummary(
+                            id = t.artistBrowseId?.let { "yt_artist_$it" } ?: "yt_artist_query_$idx",
+                            name = t.artist,
+                            artworkUrl = t.artworkUrl,
+                            genre = "YouTube Music"
+                        )
+                    }
                 }
-        }
 
-        if (chartTracks.isEmpty() && quickPicks.isEmpty()) {
-            errorMsg = "Tidak dapat memuat katalog musik. Periksa koneksi internet kamu."
-        }
+            val featuredPlaylists = (charts?.playlists.orEmpty() + moodBundle?.playlists.orEmpty())
+                .distinctBy { it.id }
+                .take(10)
 
-        HomeFeedResult(
-            chartTracks = chartTracks,
-            quickPicks = if (quickPicks.isNotEmpty()) quickPicks else chartTracks.shuffled(),
-            featuredAlbums = featuredAlbums,
-            featuredArtists = featuredArtists,
-            errorMessage = errorMsg
-        )
+            val errorMsg = if (chartTracks.isEmpty() && quickPicks.isEmpty()) {
+                "Tidak dapat memuat katalog YouTube Music. Periksa koneksi internet kamu."
+            } else null
+
+            HomeFeedResult(
+                chartTracks = chartTracks,
+                quickPicks = if (quickPicks.isNotEmpty()) quickPicks else chartTracks,
+                featuredAlbums = featuredAlbums,
+                featuredArtists = featuredArtists,
+                featuredPlaylists = featuredPlaylists,
+                errorMessage = errorMsg
+            )
+        }
+    }
+
+    suspend fun getSearchSuggestions(input: String): List<String> = withContext(Dispatchers.IO) {
+        runCatching { InnerTubeClient.getSearchSuggestions(input) }.getOrDefault(emptyList())
     }
 
     suspend fun fetchTracksByQuery(query: String, limit: Int = 25): List<Track> = withContext(Dispatchers.IO) {
-        val itunesTracks = runCatching {
-            KoplingfyNetwork.itunesApi.searchTracks(term = query, limit = limit)
-                .results.mapNotNull { it.toTrack() }
-        }.getOrDefault(emptyList())
-
-        if (itunesTracks.isNotEmpty()) return@withContext itunesTracks
-
-        runCatching {
-            KoplingfyNetwork.deezerApi.searchTracks(query = query, limit = limit)
-                .data.mapNotNull { it.toTrack() }
-        }.getOrDefault(emptyList())
+        runCatching { InnerTubeClient.searchSongs(query).take(limit) }.getOrDefault(emptyList())
     }
 
-    suspend fun searchAll(query: String): SearchResultBundle = withContext(Dispatchers.IO) {
-        val trimmed = query.trim()
-        if (trimmed.isEmpty()) {
-            return@withContext SearchResultBundle(emptyList(), emptyList(), emptyList())
+    suspend fun fetchArtistTracks(artist: ArtistSummary): List<Track> = withContext(Dispatchers.IO) {
+        if (artist.id.startsWith("yt_artist_UC")) {
+            val browseId = artist.id.removePrefix("yt_artist_")
+            val ytTracks = runCatching {
+                InnerTubeClient.browseCollection(browseId, fallbackArt = artist.artworkUrl)
+            }.getOrDefault(emptyList())
+            if (ytTracks.isNotEmpty()) return@withContext ytTracks
         }
-        dao.insertSearchQuery(SearchHistoryEntity(query = trimmed))
+        fetchTracksByQuery(artist.name, limit = 25)
+    }
 
-        var tracks = emptyList<Track>()
-        var albums = emptyList<AlbumSummary>()
-        var errorMsg: String? = null
-
-        runCatching {
-            tracks = KoplingfyNetwork.itunesApi.searchTracks(term = trimmed, limit = 30)
-                .results.mapNotNull { it.toTrack() }
-        }.onFailure {
-            runCatching {
-                tracks = KoplingfyNetwork.deezerApi.searchTracks(query = trimmed, limit = 25)
-                    .data.mapNotNull { it.toTrack() }
-            }.onFailure {
-                errorMsg = "Pencarian gagal. Periksa koneksi internet."
-            }
-        }
-
-        runCatching {
-            albums = KoplingfyNetwork.itunesApi.searchAlbums(term = trimmed, limit = 12)
-                .results.mapNotNull { it.toAlbumSummary() }
-        }
-
-        val artists = tracks
-            .distinctBy { it.artist.lowercase(Locale.getDefault()) }
-            .take(10)
-            .mapIndexed { idx, t ->
-                ArtistSummary(
-                    id = "search_artist_${idx}_${t.artist}",
-                    name = t.artist,
-                    artworkUrl = t.artworkUrl,
-                    genre = t.genre
+    suspend fun fetchAlbumTracks(album: AlbumSummary): List<Track> = withContext(Dispatchers.IO) {
+        if (album.id.startsWith("yt_album_")) {
+            val browseId = album.id.removePrefix("yt_album_")
+            val ytTracks = runCatching {
+                InnerTubeClient.browseCollection(
+                    browseId = browseId,
+                    fallbackTitle = album.title,
+                    fallbackArt = album.artworkUrl
                 )
-            }
+            }.getOrDefault(emptyList())
+            if (ytTracks.isNotEmpty()) return@withContext ytTracks
+        }
+        fetchTracksByQuery("${album.title} ${album.artist}", limit = 25)
+    }
 
-        SearchResultBundle(
-            tracks = tracks,
-            albums = albums,
-            artists = artists,
-            errorMessage = errorMsg
+    suspend fun fetchRemotePlaylistTracks(playlist: RemotePlaylistSummary): List<Track> = withContext(Dispatchers.IO) {
+        val tracks = runCatching {
+            InnerTubeClient.browseCollection(
+                browseId = playlist.id,
+                fallbackTitle = playlist.title,
+                fallbackArt = playlist.artworkUrl
+            )
+        }.getOrDefault(emptyList())
+        if (tracks.isNotEmpty()) tracks else fetchTracksByQuery(playlist.title, limit = 20)
+    }
+
+    // ---- Radio & Autoplay Queue ----
+    suspend fun fetchRadioQueue(track: Track): List<Track> = withContext(Dispatchers.IO) {
+        val videoId = if (track.id.startsWith("yt_")) {
+            track.id.removePrefix("yt_")
+        } else {
+            runCatching {
+                InnerTubeClient.searchSongs("${track.title} ${track.artist}").firstOrNull()?.id?.removePrefix("yt_")
+            }.getOrNull()
+        } ?: return@withContext emptyList()
+
+        val radio = runCatching { InnerTubeClient.getNextRadioQueue(videoId) }.getOrDefault(emptyList())
+        if (radio.size > 1) return@withContext radio
+
+        // Fallback: search related artist songs on YouTube Music
+        runCatching { InnerTubeClient.searchSongs("${track.artist} mix") }.getOrDefault(emptyList())
+    }
+
+    // ---- FULL-LENGTH ONLY Stream Resolution (ZERO 30s Previews!) ----
+    suspend fun resolveFullAudioStream(
+        track: Track,
+        quality: AudioQuality = AudioQuality.HIGH
+    ): StreamResolveResult = withContext(Dispatchers.IO) {
+        // 1. Local SAF audio file
+        if (track.isLocal && !track.streamUrl.isNullOrBlank()) {
+            return@withContext StreamResolveResult.Success(
+                ResolvedStream(
+                    url = track.streamUrl,
+                    durationMs = track.durationMs,
+                    sourceLabel = "AUDIO LOKAL • FULL"
+                )
+            )
+        }
+
+        // 2. Offline downloaded file (plays 100% offline with zero network!)
+        val saved = dao.getTrackById(track.id)
+        val offlinePath = saved?.localDownloadPath ?: track.localDownloadPath
+        if (!offlinePath.isNullOrBlank() && File(offlinePath).exists()) {
+            return@withContext StreamResolveResult.Success(
+                ResolvedStream(
+                    url = Uri.fromFile(File(offlinePath)).toString(),
+                    durationMs = saved?.durationMs ?: track.durationMs,
+                    sourceLabel = "OFFLINE • FULL"
+                )
+            )
+        }
+
+        val cleanTitle = track.title
+            .replace(Regex("""\s*\([^)]*\)"""), "")
+            .replace(Regex("""\s*\[[^\]]*]"""), "")
+            .trim()
+
+        // 3. Resolve direct YouTube videoId via Metrolist InnerTube player profiles
+        var primaryResult: StreamResolveResult? = null
+        val videoId = if (track.id.startsWith("yt_")) {
+            track.id.removePrefix("yt_")
+        } else {
+            runCatching {
+                InnerTubeClient.searchSongs("$cleanTitle ${track.artist}").firstOrNull()?.id?.removePrefix("yt_")
+            }.getOrNull()
+        }
+
+        if (!videoId.isNullOrBlank()) {
+            val direct = InnerTubeClient.resolveAudioStream(videoId, quality)
+            if (direct is StreamResolveResult.Success) return@withContext direct
+            primaryResult = direct
+
+            // 4. If primary explicit/official videoId was blocked when signed out, try up to 3 alternate YouTube Music audio/lyric uploads
+            val altCandidates = runCatching {
+                val audioSearch = InnerTubeClient.searchSongs("$cleanTitle ${track.artist} audio")
+                val videoSearch = InnerTubeClient.searchVideos("$cleanTitle ${track.artist} lyrics")
+                (audioSearch + videoSearch)
+                    .map { it.id.removePrefix("yt_") }
+                    .filter { it.isNotBlank() && it != videoId }
+                    .distinct()
+                    .take(3)
+            }.getOrDefault(emptyList())
+
+            for (altId in altCandidates) {
+                val alt = InnerTubeClient.resolveAudioStream(altId, quality)
+                if (alt is StreamResolveResult.Success) return@withContext alt
+            }
+        }
+
+        // NEVER fall back to 30s preview! Surface the exact InnerTube status so user can Login YTM if needed.
+        primaryResult ?: StreamResolveResult.Unavailable(
+            "Stream penuh YouTube Music tidak tersedia untuk lagu ini. Coba Login YouTube Music di Pengaturan."
         )
     }
 
+    // ---- Search: Online YouTube Music OR Local Library ----
+    suspend fun searchAll(query: String, localOnly: Boolean = false): SearchResultBundle = withContext(Dispatchers.IO) {
+        val rawTrimmed = query.trim()
+        if (rawTrimmed.isEmpty()) {
+            return@withContext SearchResultBundle(emptyList(), emptyList(), emptyList(), emptyList())
+        }
+        dao.insertSearchQuery(SearchHistoryEntity(query = rawTrimmed))
+
+        if (localOnly) {
+            val localMatches = dao.searchLocalLibraryTracks(rawTrimmed).map { it.toTrack() }
+            return@withContext SearchResultBundle(
+                tracks = localMatches,
+                albums = emptyList(),
+                artists = emptyList(),
+                playlists = emptyList()
+            )
+        }
+
+        val ytResult = runCatching { InnerTubeClient.searchAll(rawTrimmed) }
+        val bundle = ytResult.getOrNull()
+        if (bundle != null) {
+            SearchResultBundle(
+                tracks = bundle.tracks,
+                videos = bundle.videos,
+                albums = bundle.albums,
+                artists = bundle.artists,
+                playlists = bundle.playlists,
+                errorMessage = null
+            )
+        } else {
+            SearchResultBundle(
+                tracks = emptyList(),
+                albums = emptyList(),
+                artists = emptyList(),
+                errorMessage = "Gagal terhubung ke YouTube Music InnerTube. Periksa koneksi internet kamu."
+            )
+        }
+    }
+
+    // ---- Multi-Provider Lyrics (LRCLIB Synced -> YouTube Music Native Fallback) ----
     suspend fun fetchLyrics(track: Track): LyricsState = withContext(Dispatchers.IO) {
-        runCatching {
-            val cleanTitle = track.title
-                .replace(Regex("""\s*\([^)]*\)"""), "")
-                .replace(Regex("""\s*\[[^\]]*]"""), "")
-                .trim()
+        val cleanTitle = track.title
+            .replace(Regex("""\s*\([^)]*\)"""), "")
+            .replace(Regex("""\s*\[[^\]]*]"""), "")
+            .trim()
+
+        // Provider 1: LRCLIB (Synced timestamped LRC)
+        val lrcResult = runCatching {
             val results = KoplingfyNetwork.lrcLibApi.searchLyrics(
                 trackName = cleanTitle,
                 artistName = track.artist
@@ -231,10 +346,74 @@ class MusicRepository(
             val best = results.firstOrNull { !it.syncedLyrics.isNullOrBlank() }
                 ?: results.firstOrNull { !it.plainLyrics.isNullOrBlank() }
                 ?: results.firstOrNull()
-            LrcParser.fromLrcItem(best)
-        }.getOrElse {
-            LyricsState(error = "Gagal mengambil lirik saat ini.")
+            LrcParser.fromLrcItem(best).copy(providerName = "LRCLIB")
+        }.getOrNull()
+
+        if (lrcResult != null && (lrcResult.syncedLines.isNotEmpty() || !lrcResult.plainLyrics.isNullOrBlank() || lrcResult.isInstrumental)) {
+            return@withContext lrcResult
         }
+
+        // Provider 2: YouTube Music Native InnerTube Lyrics (MPLYt_*)
+        if (track.id.startsWith("yt_")) {
+            val videoId = track.id.removePrefix("yt_")
+            val ytLyrics = runCatching { InnerTubeClient.fetchYouTubeMusicLyrics(videoId) }.getOrNull()
+            if (!ytLyrics.isNullOrBlank()) {
+                return@withContext LyricsState(
+                    plainLyrics = ytLyrics,
+                    providerName = "YouTube Music"
+                )
+            }
+        }
+
+        LyricsState(error = "Lirik belum tersedia untuk lagu ini.")
+    }
+
+    // ---- YouTube Music Account Verification & Library Sync ----
+    suspend fun verifyAndFetchAccount(cookie: String): YouTubeAccount? = withContext(Dispatchers.IO) {
+        InnerTubeClient.updateAuth(cookie)
+        runCatching { InnerTubeClient.fetchAccountInfo(cookie) }.getOrNull()
+    }
+
+    suspend fun syncYouTubeMusicLibrary(): Pair<Int, Int> = withContext(Dispatchers.IO) {
+        if (!InnerTubeClient.isAuthenticated()) return@withContext (0 to 0)
+        var syncedLiked = 0
+        var syncedPlaylists = 0
+
+        val ytLiked = runCatching { InnerTubeClient.fetchAccountLikedSongs() }.getOrDefault(emptyList())
+        ytLiked.forEach { track ->
+            val existing = dao.getTrackById(track.id)
+            if (existing == null) {
+                dao.upsertTrack(SavedTrackEntity.fromTrack(track, isLiked = true, likedAt = System.currentTimeMillis()))
+            } else if (!existing.isLiked) {
+                dao.updateLikeStatus(track.id, true, System.currentTimeMillis())
+            }
+            syncedLiked++
+        }
+
+        val ytPlaylists = runCatching { InnerTubeClient.fetchAccountPlaylists() }.getOrDefault(emptyList())
+        val localPlaylistNames = dao.getAllPlaylistsOnce().map { it.name.lowercase() }.toSet()
+        ytPlaylists.take(8).forEach { remotePl ->
+            if (remotePl.title.lowercase() !in localPlaylistNames) {
+                val plTracks = runCatching { InnerTubeClient.browseCollection(remotePl.id) }.getOrDefault(emptyList())
+                if (plTracks.isNotEmpty()) {
+                    val newId = dao.insertPlaylist(
+                        PlaylistEntity(
+                            name = remotePl.title,
+                            description = "Disinkronkan dari YouTube Music",
+                            coverUrl = remotePl.artworkUrl ?: plTracks.firstOrNull()?.artworkUrl
+                        )
+                    )
+                    plTracks.forEach { t ->
+                        if (dao.getTrackById(t.id) == null) {
+                            dao.upsertTrack(SavedTrackEntity.fromTrack(t))
+                        }
+                        dao.addTrackToPlaylist(PlaylistTrackCrossRef(newId, t.id))
+                    }
+                    syncedPlaylists++
+                }
+            }
+        }
+        syncedLiked to syncedPlaylists
     }
 
     // ---- Local Library & Playlists Operations ----
@@ -277,6 +456,23 @@ class MusicRepository(
                 description = description.trim()
             )
         )
+    }
+
+    suspend fun createPlaylistWithTracks(name: String, description: String, tracks: List<Track>): Long = withContext(Dispatchers.IO) {
+        val id = dao.insertPlaylist(
+            PlaylistEntity(
+                name = name.trim(),
+                description = description.trim(),
+                coverUrl = tracks.firstOrNull()?.artworkUrl
+            )
+        )
+        tracks.forEach { t ->
+            if (dao.getTrackById(t.id) == null) {
+                dao.upsertTrack(SavedTrackEntity.fromTrack(t))
+            }
+            dao.addTrackToPlaylist(PlaylistTrackCrossRef(playlistId = id, trackId = t.id))
+        }
+        id
     }
 
     suspend fun deletePlaylist(playlistId: Long) = withContext(Dispatchers.IO) {
@@ -381,7 +577,7 @@ class MusicRepository(
     private fun computeStats(entries: List<PlayHistoryEntity>): ListeningStats {
         if (entries.isEmpty()) return ListeningStats()
         val totalPlays = entries.size
-        val totalMinutes = (entries.sumOf { it.durationMs.coerceAtMost(300_000L) } / 60_000L).toInt()
+        val totalMinutes = (entries.sumOf { it.durationMs.coerceAtMost(420_000L) } / 60_000L).toInt()
             .coerceAtLeast(1)
         val uniqueTracks = entries.distinctBy { it.trackId }.size
 

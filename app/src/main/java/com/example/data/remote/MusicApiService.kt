@@ -117,7 +117,31 @@ interface DeezerApi {
     @GET("search")
     suspend fun searchTracks(
         @Query("q") query: String,
-        @Query("limit") limit: Int = 25
+        @Query("limit") limit: Int = 30
+    ): DeezerTrackList
+
+    @GET("search/album")
+    suspend fun searchAlbums(
+        @Query("q") query: String,
+        @Query("limit") limit: Int = 15
+    ): DeezerAlbumList
+
+    @GET("search/artist")
+    suspend fun searchArtists(
+        @Query("q") query: String,
+        @Query("limit") limit: Int = 12
+    ): DeezerArtistList
+
+    @GET("album/{id}/tracks")
+    suspend fun getAlbumTracks(
+        @retrofit2.http.Path("id") albumId: String,
+        @Query("limit") limit: Int = 40
+    ): DeezerTrackList
+
+    @GET("artist/{id}/top")
+    suspend fun getArtistTopTracks(
+        @retrofit2.http.Path("id") artistId: String,
+        @Query("limit") limit: Int = 30
     ): DeezerTrackList
 }
 

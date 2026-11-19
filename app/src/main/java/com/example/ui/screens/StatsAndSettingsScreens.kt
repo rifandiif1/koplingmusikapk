@@ -24,15 +24,26 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.ArrowBack
+import androidx.compose.material.icons.rounded.AccountCircle
 import androidx.compose.material.icons.rounded.Album
+import androidx.compose.material.icons.rounded.Backup
 import androidx.compose.material.icons.rounded.Check
+import androidx.compose.material.icons.rounded.CleaningServices
+import androidx.compose.material.icons.rounded.DeleteSweep
 import androidx.compose.material.icons.rounded.Equalizer
 import androidx.compose.material.icons.rounded.GraphicEq
 import androidx.compose.material.icons.rounded.HighQuality
+import androidx.compose.material.icons.rounded.Login
+import androidx.compose.material.icons.rounded.Logout
 import androidx.compose.material.icons.rounded.Palette
-import androidx.compose.material.icons.rounded.Speed
+import androidx.compose.material.icons.rounded.Restore
+import androidx.compose.material.icons.rounded.Storage
+import androidx.compose.material.icons.rounded.Sync
+import androidx.compose.material3.Button
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
@@ -54,14 +65,18 @@ import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import com.example.R
 import com.example.model.AccentPreset
+import com.example.model.AudioQuality
 import com.example.model.AudioSettings
 import com.example.model.EqPreset
 import com.example.model.ListeningStats
 import com.example.model.PlayerArtStyle
+import com.example.model.PlayerBackgroundStyle
 import com.example.model.ThemeMode
 import com.example.model.Track
+import com.example.model.YouTubeAccount
 import com.example.ui.components.AlbumArtImage
 import com.example.ui.components.SectionHeader
+import com.example.viewmodel.StorageStats
 
 @Composable
 fun StatsScreen(
@@ -84,7 +99,6 @@ fun StatsScreen(
             SubScreenTopBar(title = "Statistik Dengar", subtitle = "Ringkasan aktivitas musikmu", onBack = onBack)
         }
 
-        // ---- 3 Key Metrics Cards ----
         item {
             Row(
                 modifier = Modifier
@@ -98,7 +112,6 @@ fun StatsScreen(
             }
         }
 
-        // ---- 7-Day Activity Canvas Bar Chart ----
         item {
             Surface(
                 modifier = Modifier
@@ -139,7 +152,6 @@ fun StatsScreen(
 
                         daily.forEachIndexed { idx, (_, value) ->
                             val left = idx * slotWidth + (slotWidth - barWidth) / 2f
-                            // Background slot track
                             drawRoundRect(
                                 color = trackBg,
                                 topLeft = Offset(left, 0f),
@@ -183,7 +195,6 @@ fun StatsScreen(
             }
         }
 
-        // ---- Top Artists ----
         if (stats.topArtists.isNotEmpty()) {
             item {
                 SectionHeader(title = "Artis Terfavorit", modifier = Modifier.padding(horizontal = 20.dp))
@@ -231,7 +242,6 @@ fun StatsScreen(
             }
         }
 
-        // ---- Top Tracks ----
         if (stats.topTracks.isNotEmpty()) {
             item {
                 SectionHeader(title = "Lagu Paling Sering Diputar", modifier = Modifier.padding(horizontal = 20.dp))
@@ -321,14 +331,28 @@ private fun MetricTile(label: String, value: String, accent: Color, modifier: Mo
 @Composable
 fun SettingsScreen(
     settings: AudioSettings,
+    youtubeAccount: YouTubeAccount,
+    isSyncingAccount: Boolean,
+    storageStats: StorageStats,
     bottomContentPadding: Dp,
     onBack: () -> Unit,
+    onOpenYouTubeLogin: () -> Unit,
+    onSyncYouTubeLibrary: () -> Unit,
+    onLogoutYouTube: () -> Unit,
     onThemeModeChange: (ThemeMode) -> Unit,
     onAccentChange: (AccentPreset) -> Unit,
     onArtStyleChange: (PlayerArtStyle) -> Unit,
+    onBgStyleChange: (PlayerBackgroundStyle) -> Unit,
+    onAudioQualityChange: (AudioQuality) -> Unit,
     onEqPresetChange: (EqPreset) -> Unit,
-    onHighQualityChange: (Boolean) -> Unit,
-    onGaplessChange: (Boolean) -> Unit
+    onNormalizeAudioChange: (Boolean) -> Unit,
+    onAutoplayRadioChange: (Boolean) -> Unit,
+    onKeepScreenOnLyricsChange: (Boolean) -> Unit,
+    onGaplessChange: (Boolean) -> Unit,
+    onClearCache: () -> Unit,
+    onClearDownloads: () -> Unit,
+    onExportBackup: () -> Unit,
+    onImportBackup: () -> Unit
 ) {
     BackHandler(onBack = onBack)
 
@@ -341,7 +365,88 @@ fun SettingsScreen(
         verticalArrangement = Arrangement.spacedBy(18.dp)
     ) {
         item {
-            SubScreenTopBar(title = "Pengaturan", subtitle = "Kustomisasi visual & mesin audio Koplingfy", onBack = onBack)
+            SubScreenTopBar(title = "Pengaturan", subtitle = "Akun YouTube Music, visual, audio & cadangan", onBack = onBack)
+        }
+
+        // ---- YouTube Music Account (Metrolist InnerTube Login & Sync) ----
+        item {
+            SettingsSectionCard(title = "Akun YouTube Music", icon = Icons.Rounded.AccountCircle) {
+                if (youtubeAccount.isLoggedIn) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        AlbumArtImage(
+                            url = youtubeAccount.avatarUrl,
+                            contentDescription = youtubeAccount.name,
+                            modifier = Modifier.size(50.dp),
+                            shape = CircleShape
+                        )
+                        Spacer(modifier = Modifier.width(12.dp))
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                text = youtubeAccount.name.ifBlank { "Akun YouTube Music" },
+                                style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold),
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                            Text(
+                                text = youtubeAccount.email.ifBlank { "Sesi InnerTube Aktif" },
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.primary,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                        }
+                    }
+                    Spacer(modifier = Modifier.height(12.dp))
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(10.dp)
+                    ) {
+                        Button(
+                            onClick = onSyncYouTubeLibrary,
+                            enabled = !isSyncingAccount,
+                            modifier = Modifier.weight(1f).testTag("settings_sync_ytm_button")
+                        ) {
+                            if (isSyncingAccount) {
+                                CircularProgressIndicator(
+                                    modifier = Modifier.size(16.dp),
+                                    strokeWidth = 2.dp,
+                                    color = MaterialTheme.colorScheme.onPrimary
+                                )
+                            } else {
+                                Icon(Icons.Rounded.Sync, contentDescription = null, modifier = Modifier.size(18.dp))
+                            }
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text("Sinkronkan")
+                        }
+                        OutlinedButton(
+                            onClick = onLogoutYouTube,
+                            modifier = Modifier.weight(1f).testTag("settings_logout_ytm_button")
+                        ) {
+                            Icon(Icons.Rounded.Logout, contentDescription = null, modifier = Modifier.size(18.dp))
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text("Keluar")
+                        }
+                    }
+                } else {
+                    Text(
+                        text = "Masuk ke akun YouTube Music untuk memutar penuh lagu Explicit, sinkronisasi Lagu Disukai & Playlist, serta kualitas audio optimal.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    Spacer(modifier = Modifier.height(12.dp))
+                    Button(
+                        onClick = onOpenYouTubeLogin,
+                        modifier = Modifier.fillMaxWidth().testTag("settings_login_ytm_button")
+                    ) {
+                        Icon(Icons.Rounded.Login, contentDescription = null, modifier = Modifier.size(18.dp))
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text("Masuk Akun YouTube Music")
+                    }
+                }
+            }
         }
 
         // ---- Appearance: Theme Mode ----
@@ -357,10 +462,7 @@ fun SettingsScreen(
                             .testTag("theme_mode_${mode.name}"),
                         verticalAlignment = Alignment.CenterVertically
                     ) {
-                        RadioButton(
-                            selected = settings.themeMode == mode,
-                            onClick = { onThemeModeChange(mode) }
-                        )
+                        RadioButton(selected = settings.themeMode == mode, onClick = { onThemeModeChange(mode) })
                         Spacer(modifier = Modifier.width(8.dp))
                         Column {
                             Text(mode.label, style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.SemiBold))
@@ -397,11 +499,7 @@ fun SettingsScreen(
                                 contentAlignment = Alignment.Center
                             ) {
                                 if (selected) {
-                                    Icon(
-                                        imageVector = Icons.Rounded.Check,
-                                        contentDescription = "Aktif",
-                                        tint = Color(0xFF0A0B0F)
-                                    )
+                                    Icon(Icons.Rounded.Check, contentDescription = "Aktif", tint = Color(0xFF0A0B0F))
                                 }
                             }
                             Spacer(modifier = Modifier.height(6.dp))
@@ -416,22 +514,20 @@ fun SettingsScreen(
             }
         }
 
-        // ---- Player Art Style ----
+        // ---- Player Style & Background ----
         item {
-            SettingsSectionCard(title = "Gaya Pemutar Utama", icon = Icons.Rounded.Album) {
+            SettingsSectionCard(title = "Gaya Pemutar Now Playing", icon = Icons.Rounded.Album) {
+                Text("Gaya Sampul", style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.primary)
                 PlayerArtStyle.entries.forEach { style ->
                     Row(
                         modifier = Modifier
                             .fillMaxWidth()
                             .clip(RoundedCornerShape(14.dp))
                             .clickable { onArtStyleChange(style) }
-                            .padding(vertical = 8.dp, horizontal = 4.dp),
+                            .padding(vertical = 6.dp, horizontal = 4.dp),
                         verticalAlignment = Alignment.CenterVertically
                     ) {
-                        RadioButton(
-                            selected = settings.playerArtStyle == style,
-                            onClick = { onArtStyleChange(style) }
-                        )
+                        RadioButton(selected = settings.playerArtStyle == style, onClick = { onArtStyleChange(style) })
                         Spacer(modifier = Modifier.width(8.dp))
                         Column {
                             Text(style.label, style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.SemiBold))
@@ -439,39 +535,75 @@ fun SettingsScreen(
                         }
                     }
                 }
+                Spacer(modifier = Modifier.height(10.dp))
+                Text("Latar Belakang Pemutar (Solid Opaque)", style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.primary)
+                PlayerBackgroundStyle.entries.forEach { bgStyle ->
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(14.dp))
+                            .clickable { onBgStyleChange(bgStyle) }
+                            .padding(vertical = 6.dp, horizontal = 4.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        RadioButton(selected = settings.playerBackgroundStyle == bgStyle, onClick = { onBgStyleChange(bgStyle) })
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Column {
+                            Text(bgStyle.label, style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.SemiBold))
+                            Text(bgStyle.subtitle, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        }
+                    }
+                }
+                SettingsToggleRow(
+                    title = "Layar Tetap Menyala Saat Lirik",
+                    subtitle = "Cegah layar mati otomatis saat membaca lirik",
+                    checked = settings.keepScreenOnLyrics,
+                    onCheckedChange = onKeepScreenOnLyricsChange
+                )
             }
         }
 
-        // ---- Audio Engine & EQ Preset ----
+        // ---- Audio Engine, Quality & Radio ----
         item {
             SettingsSectionCard(title = "Audio Hi-Fi & Equalizer", icon = Icons.Rounded.Equalizer) {
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(vertical = 6.dp),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Column(modifier = Modifier.weight(1f)) {
-                        Text("Streaming Kualitas Tinggi", style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.SemiBold))
-                        Text("Prioritaskan bitrate tertinggi yang tersedia", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Text("Kualitas Streaming Audio", style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.primary)
+                AudioQuality.entries.forEach { q ->
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(14.dp))
+                            .clickable { onAudioQualityChange(q) }
+                            .padding(vertical = 5.dp, horizontal = 4.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        RadioButton(selected = settings.audioQuality == q, onClick = { onAudioQualityChange(q) })
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Column {
+                            Text(q.label, style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.SemiBold))
+                            Text(q.subtitle, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        }
                     }
-                    Switch(checked = settings.highQualityStream, onCheckedChange = onHighQualityChange)
                 }
 
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(vertical = 6.dp),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Column(modifier = Modifier.weight(1f)) {
-                        Text("Pemutaran Mulus (Gapless)", style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.SemiBold))
-                        Text("Transisi cepat antar lagu dalam antrean", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                    }
-                    Switch(checked = settings.gaplessPlayback, onCheckedChange = onGaplessChange)
-                }
+                Spacer(modifier = Modifier.height(6.dp))
+                SettingsToggleRow(
+                    title = "Normalisasi Volume Audio",
+                    subtitle = "Aktifkan LoudnessEnhancer agar volume stabil antar lagu",
+                    checked = settings.normalizeAudio,
+                    onCheckedChange = onNormalizeAudioChange
+                )
+                SettingsToggleRow(
+                    title = "Putar Otomatis Radio Serupa",
+                    subtitle = "Lanjutkan antrean secara otomatis dengan lagu mirip",
+                    checked = settings.autoplayRadio,
+                    onCheckedChange = onAutoplayRadioChange
+                )
+                SettingsToggleRow(
+                    title = "Pemutaran Mulus (Gapless)",
+                    subtitle = "Transisi cepat antar lagu dalam antrean",
+                    checked = settings.gaplessPlayback,
+                    onCheckedChange = onGaplessChange
+                )
 
                 Spacer(modifier = Modifier.height(8.dp))
                 Text(
@@ -510,6 +642,68 @@ fun SettingsScreen(
             }
         }
 
+        // ---- Storage, Cache & Backup / Restore (Metrolist feature) ----
+        item {
+            SettingsSectionCard(title = "Penyimpanan & Cadangan", icon = Icons.Rounded.Storage) {
+                val dlMb = storageStats.downloadsBytes / (1024.0 * 1024.0)
+                val cacheMb = storageStats.cacheBytes / (1024.0 * 1024.0)
+
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(10.dp)
+                ) {
+                    MetricTile("Unduhan", "%.1f MB".format(dlMb), MaterialTheme.colorScheme.primary, Modifier.weight(1f))
+                    MetricTile("Cache", "%.1f MB".format(cacheMb), MaterialTheme.colorScheme.secondary, Modifier.weight(1f))
+                }
+
+                Spacer(modifier = Modifier.height(12.dp))
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(10.dp)
+                ) {
+                    OutlinedButton(
+                        onClick = onClearCache,
+                        modifier = Modifier.weight(1f).testTag("settings_clear_cache")
+                    ) {
+                        Icon(Icons.Rounded.CleaningServices, contentDescription = null, modifier = Modifier.size(16.dp))
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text("Hapus Cache", maxLines = 1)
+                    }
+                    OutlinedButton(
+                        onClick = onClearDownloads,
+                        modifier = Modifier.weight(1f).testTag("settings_clear_downloads")
+                    ) {
+                        Icon(Icons.Rounded.DeleteSweep, contentDescription = null, modifier = Modifier.size(16.dp))
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text("Hapus Unduh", maxLines = 1)
+                    }
+                }
+
+                Spacer(modifier = Modifier.height(10.dp))
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(10.dp)
+                ) {
+                    Button(
+                        onClick = onExportBackup,
+                        modifier = Modifier.weight(1f).testTag("settings_export_backup")
+                    ) {
+                        Icon(Icons.Rounded.Backup, contentDescription = null, modifier = Modifier.size(16.dp))
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text("Backup JSON", maxLines = 1)
+                    }
+                    OutlinedButton(
+                        onClick = onImportBackup,
+                        modifier = Modifier.weight(1f).testTag("settings_import_backup")
+                    ) {
+                        Icon(Icons.Rounded.Restore, contentDescription = null, modifier = Modifier.size(16.dp))
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text("Restore", maxLines = 1)
+                    }
+                }
+            }
+        }
+
         // ---- About Koplingfy Card ----
         item {
             Surface(
@@ -541,11 +735,11 @@ fun SettingsScreen(
                     Spacer(modifier = Modifier.width(14.dp))
                     Column {
                         Text(
-                            text = "Koplingfy Studio v1.0",
+                            text = "Koplingfy Studio v2.0",
                             style = MaterialTheme.typography.titleMedium
                         )
                         Text(
-                            text = "Material 3 Expressive • Lirik Sinkron LRCLIB • DSP 5-Band EQ",
+                            text = "Full InnerTube YTM Engine • Tanpa Preview • Offline Download • Lirik LRCLIB & YTM • DSP EQ",
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
@@ -553,6 +747,29 @@ fun SettingsScreen(
                 }
             }
         }
+    }
+}
+
+@Composable
+private fun SettingsToggleRow(
+    title: String,
+    subtitle: String,
+    checked: Boolean,
+    onCheckedChange: (Boolean) -> Unit
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(vertical = 6.dp),
+        horizontalArrangement = Arrangement.SpaceBetween,
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Column(modifier = Modifier.weight(1f)) {
+            Text(title, style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.SemiBold))
+            Text(subtitle, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        }
+        Spacer(modifier = Modifier.width(10.dp))
+        Switch(checked = checked, onCheckedChange = onCheckedChange)
     }
 }
 

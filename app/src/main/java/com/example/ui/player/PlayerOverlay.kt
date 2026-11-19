@@ -1,5 +1,6 @@
 package com.example.ui.player
 
+import android.view.WindowManager
 import androidx.activity.compose.BackHandler
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.core.LinearEasing
@@ -14,6 +15,8 @@ import androidx.compose.animation.core.tween
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.detectHorizontalDragGestures
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -40,34 +43,47 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.PlaylistAdd
 import androidx.compose.material.icons.automirrored.rounded.QueueMusic
+import androidx.compose.material.icons.rounded.ArrowDownward
+import androidx.compose.material.icons.rounded.ArrowUpward
 import androidx.compose.material.icons.rounded.Bedtime
+import androidx.compose.material.icons.rounded.CheckCircle
 import androidx.compose.material.icons.rounded.Close
+import androidx.compose.material.icons.rounded.DeleteSweep
+import androidx.compose.material.icons.rounded.Download
 import androidx.compose.material.icons.rounded.Equalizer
 import androidx.compose.material.icons.rounded.Favorite
 import androidx.compose.material.icons.rounded.FavoriteBorder
+import androidx.compose.material.icons.rounded.Groups
 import androidx.compose.material.icons.rounded.KeyboardArrowDown
+import androidx.compose.material.icons.rounded.Login
 import androidx.compose.material.icons.rounded.Lyrics
 import androidx.compose.material.icons.rounded.MoreHoriz
 import androidx.compose.material.icons.rounded.Pause
 import androidx.compose.material.icons.rounded.PlayArrow
+import androidx.compose.material.icons.rounded.Radio
 import androidx.compose.material.icons.rounded.Repeat
 import androidx.compose.material.icons.rounded.RepeatOne
+import androidx.compose.material.icons.rounded.Save
+import androidx.compose.material.icons.rounded.Share
 import androidx.compose.material.icons.rounded.Shuffle
 import androidx.compose.material.icons.rounded.SkipNext
 import androidx.compose.material.icons.rounded.SkipPrevious
+import androidx.compose.material.icons.rounded.TextDecrease
+import androidx.compose.material.icons.rounded.TextIncrease
+import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
-import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.Slider
 import androidx.compose.material3.SliderDefaults
 import androidx.compose.material3.Surface
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
@@ -77,11 +93,15 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.BlurredEdgeTreatment
+import androidx.compose.ui.draw.blur
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.draw.scale
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
@@ -93,6 +113,7 @@ import com.example.R
 import com.example.model.AudioSettings
 import com.example.model.EqPreset
 import com.example.model.PlayerArtStyle
+import com.example.model.PlayerBackgroundStyle
 import com.example.model.RepeatMode as KoplingfyRepeatMode
 import com.example.model.Track
 import com.example.ui.components.AlbumArtImage
@@ -120,9 +141,9 @@ fun FloatingMiniPlayer(
             .padding(horizontal = 12.dp)
             .testTag("mini_player_bar"),
         shape = RoundedCornerShape(22.dp),
-        color = MaterialTheme.colorScheme.surfaceContainerHigh.copy(alpha = 0.96f),
-        border = BorderStroke(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.32f)),
-        shadowElevation = 14.dp
+        color = MaterialTheme.colorScheme.surfaceContainerHigh,
+        border = BorderStroke(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.35f)),
+        shadowElevation = 16.dp
     ) {
         Column {
             Row(
@@ -144,7 +165,7 @@ fun FloatingMiniPlayer(
                                 .align(Alignment.BottomEnd)
                                 .padding(3.dp)
                                 .clip(RoundedCornerShape(6.dp))
-                                .background(Color(0xCC0A0B0F))
+                                .background(Color(0xD90A0B0F))
                                 .padding(horizontal = 4.dp, vertical = 2.dp)
                         ) {
                             AudioVisualizerBars(
@@ -168,7 +189,7 @@ fun FloatingMiniPlayer(
                         overflow = TextOverflow.Ellipsis
                     )
                     Text(
-                        text = if (playerState.isBuffering) "Memuat audio…" else track.artist,
+                        text = if (playerState.isBuffering) "Memuat audio penuh…" else track.artist,
                         style = MaterialTheme.typography.bodySmall,
                         color = if (playerState.isBuffering) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
                         maxLines = 1,
@@ -226,6 +247,8 @@ fun FullScreenPlayerModal(
     playerState: PlayerUiState,
     settings: AudioSettings,
     isLiked: Boolean,
+    isDownloaded: Boolean,
+    downloadProgress: Float?,
     onCollapse: () -> Unit,
     onTogglePlayPause: () -> Unit,
     onSeek: (Long) -> Unit,
@@ -234,14 +257,28 @@ fun FullScreenPlayerModal(
     onToggleShuffle: () -> Unit,
     onCycleRepeat: () -> Unit,
     onToggleLike: () -> Unit,
+    onDownloadClick: () -> Unit,
+    onStartRadio: () -> Unit,
+    onShareTrack: () -> Unit,
+    onShareLyrics: (String) -> Unit,
+    onOpenYouTubeLogin: () -> Unit,
+    onOpenListenTogether: () -> Unit,
+    activeRoomCode: String? = null,
     onAddToPlaylist: () -> Unit,
     onTrackOptions: () -> Unit,
     onSelectQueueItem: (Track) -> Unit,
+    onMoveQueueItem: (Int, Int) -> Unit,
     onRemoveQueueItem: (Int) -> Unit,
+    onClearUpcomingQueue: () -> Unit,
+    onSaveQueueAsPlaylist: () -> Unit,
+    onToggleAutoplay: (Boolean) -> Unit,
+    onLyricsFontScaleChange: (Float) -> Unit,
     onSleepMinutes: (Int) -> Unit,
     onSleepEndOfTrack: () -> Unit,
     onEqPreset: (EqPreset) -> Unit,
     onCustomBand: (Int, Float) -> Unit,
+    onBassBoostChange: (Float) -> Unit,
+    onNormalizeAudioChange: (Boolean) -> Unit,
     onSpeedChange: (Float) -> Unit,
     onPitchChange: (Float) -> Unit
 ) {
@@ -253,6 +290,18 @@ fun FullScreenPlayerModal(
     var showSleepSheet by remember { mutableStateOf(false) }
     var showAudioFxSheet by remember { mutableStateOf(false) }
 
+    // Keep screen on while reading lyrics (Metrolist feature)
+    val context = LocalContext.current
+    DisposableEffect(activeTab, settings.keepScreenOnLyrics) {
+        val window = (context as? android.app.Activity)?.window
+        if (activeTab == 1 && settings.keepScreenOnLyrics) {
+            window?.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        }
+        onDispose {
+            window?.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        }
+    }
+
     val primary = MaterialTheme.colorScheme.primary
     val secondary = MaterialTheme.colorScheme.secondary
     val bg = MaterialTheme.colorScheme.background
@@ -263,28 +312,71 @@ fun FullScreenPlayerModal(
         label = "like_scale"
     )
 
+    // CRITICAL FIX: 100% OPAQUE solid base background + touch blocker so menu behind NEVER bleeds through!
     Box(
         modifier = Modifier
             .fillMaxSize()
-            .background(
-                Brush.verticalGradient(
-                    colors = listOf(
-                        primary.copy(alpha = 0.28f),
-                        secondary.copy(alpha = 0.12f),
-                        bg,
-                        bg
-                    )
-                )
+            .background(bg)
+            .clickable(
+                interactionSource = remember { MutableInteractionSource() },
+                indication = null,
+                onClick = {}
             )
-            .statusBarsPadding()
-            .navigationBarsPadding()
+            .testTag("fullscreen_player_container")
     ) {
+        // Optional ambient backdrop layer rendered STRICTLY ON TOP OF solid opaque `bg`
+        when (settings.playerBackgroundStyle) {
+            PlayerBackgroundStyle.BLUR_ARTWORK -> {
+                if (!track.artworkUrl.isNullOrBlank()) {
+                    AlbumArtImage(
+                        url = track.artworkUrl,
+                        contentDescription = null,
+                        shape = RoundedCornerShape(0.dp),
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .blur(24.dp, edgeTreatment = BlurredEdgeTreatment.Rectangle)
+                    )
+                }
+                Box(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .background(
+                            Brush.verticalGradient(
+                                colors = listOf(
+                                    bg.copy(alpha = 0.72f),
+                                    bg.copy(alpha = 0.88f),
+                                    bg.copy(alpha = 0.98f)
+                                )
+                            )
+                        )
+                )
+            }
+            PlayerBackgroundStyle.GRADIENT -> {
+                Box(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .background(
+                            Brush.verticalGradient(
+                                colors = listOf(
+                                    primary.copy(alpha = 0.24f),
+                                    secondary.copy(alpha = 0.10f),
+                                    bg
+                                )
+                            )
+                        )
+                )
+            }
+            PlayerBackgroundStyle.SOLID -> Unit
+        }
+
         Column(
             modifier = Modifier
                 .fillMaxSize()
+                .statusBarsPadding()
+                .navigationBarsPadding()
                 .widthIn(max = 600.dp)
                 .align(Alignment.Center)
-                .padding(horizontal = 24.dp, vertical = 12.dp),
+                .padding(horizontal = 22.dp, vertical = 10.dp),
             horizontalAlignment = Alignment.CenterHorizontally
         ) {
             // ---- Top Bar ----
@@ -306,11 +398,19 @@ fun FullScreenPlayerModal(
                 }
 
                 Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                    Text(
-                        text = if (track.isLocal) "KOPLINGFY LOKAL AUDIO" else "KOPLINGFY HI-FI",
-                        style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold),
-                        color = MaterialTheme.colorScheme.primary
-                    )
+                    Surface(
+                        shape = RoundedCornerShape(50),
+                        color = MaterialTheme.colorScheme.primary.copy(alpha = 0.16f),
+                        border = BorderStroke(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.35f))
+                    ) {
+                        Text(
+                            text = playerState.streamSourceLabel.uppercase(),
+                            style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold),
+                            color = MaterialTheme.colorScheme.primary,
+                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 3.dp)
+                        )
+                    }
+                    Spacer(modifier = Modifier.height(2.dp))
                     Text(
                         text = track.album,
                         style = MaterialTheme.typography.bodySmall,
@@ -321,21 +421,33 @@ fun FullScreenPlayerModal(
                     )
                 }
 
-                IconButton(
-                    onClick = onTrackOptions,
-                    modifier = Modifier.size(48.dp)
-                ) {
-                    Icon(
-                        imageVector = Icons.Rounded.MoreHoriz,
-                        contentDescription = "Opsi lainnya",
-                        tint = MaterialTheme.colorScheme.onBackground
-                    )
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    IconButton(
+                        onClick = onOpenListenTogether,
+                        modifier = Modifier.size(44.dp).testTag("player_listen_together_button")
+                    ) {
+                        Icon(
+                            imageVector = Icons.Rounded.Groups,
+                            contentDescription = "Play Bersama",
+                            tint = if (activeRoomCode != null) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onBackground
+                        )
+                    }
+                    IconButton(
+                        onClick = onTrackOptions,
+                        modifier = Modifier.size(44.dp)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Rounded.MoreHoriz,
+                            contentDescription = "Opsi lainnya",
+                            tint = MaterialTheme.colorScheme.onBackground
+                        )
+                    }
                 }
             }
 
-            Spacer(modifier = Modifier.height(10.dp))
+            Spacer(modifier = Modifier.height(8.dp))
 
-            // ---- Center Stage: Artwork / Lyrics / Queue ----
+            // ---- Center Stage: Artwork (swipeable) / Lyrics / Queue ----
             Box(
                 modifier = Modifier
                     .weight(1f)
@@ -347,40 +459,68 @@ fun FullScreenPlayerModal(
                         0 -> PlayerArtworkStage(
                             track = track,
                             isPlaying = playerState.isPlaying,
-                            artStyle = settings.playerArtStyle
+                            artStyle = settings.playerArtStyle,
+                            onSwipeNext = onNext,
+                            onSwipePrev = onPrevious
                         )
                         1 -> SyncedLyricsStage(
                             playerState = playerState,
+                            fontScale = settings.lyricsFontScale,
+                            onFontScaleChange = onLyricsFontScaleChange,
+                            onShareLyrics = onShareLyrics,
                             onSeekTo = onSeek
                         )
                         else -> QueueStage(
                             queue = playerState.queue,
                             currentIndex = playerState.currentIndex,
                             isPlaying = playerState.isPlaying,
+                            autoplayRadio = settings.autoplayRadio,
+                            onToggleAutoplay = onToggleAutoplay,
                             onSelect = onSelectQueueItem,
-                            onRemove = onRemoveQueueItem
+                            onMoveItem = onMoveQueueItem,
+                            onRemove = onRemoveQueueItem,
+                            onClearUpcoming = onClearUpcomingQueue,
+                            onSaveQueue = onSaveQueueAsPlaylist
                         )
                     }
                 }
             }
 
-            // ---- Error notice if stream failed ----
+            // ---- Error / Login Required Banner (ZERO Preview fallback!) ----
             if (playerState.audioError != null) {
                 Surface(
-                    shape = RoundedCornerShape(12.dp),
-                    color = MaterialTheme.colorScheme.error.copy(alpha = 0.16f),
-                    modifier = Modifier.padding(bottom = 8.dp)
+                    shape = RoundedCornerShape(16.dp),
+                    color = MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.92f),
+                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.error.copy(alpha = 0.45f)),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(bottom = 8.dp)
                 ) {
-                    Text(
-                        text = playerState.audioError,
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.error,
-                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp)
-                    )
+                    Column(
+                        modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp),
+                        verticalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        Text(
+                            text = playerState.audioError,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onErrorContainer
+                        )
+                        if (playerState.requiresYouTubeLogin) {
+                            Button(
+                                onClick = onOpenYouTubeLogin,
+                                shape = RoundedCornerShape(12.dp),
+                                modifier = Modifier.fillMaxWidth().testTag("player_login_ytm_button")
+                            ) {
+                                Icon(Icons.Rounded.Login, contentDescription = null, modifier = Modifier.size(18.dp))
+                                Spacer(modifier = Modifier.width(8.dp))
+                                Text("Login YouTube Music (Buka Full Audio)")
+                            }
+                        }
+                    }
                 }
             }
 
-            // ---- Track Title & Quick Like/Playlist Actions ----
+            // ---- Track Title & Metrolist Quick Action Row ----
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 verticalAlignment = Alignment.CenterVertically
@@ -403,9 +543,42 @@ fun FullScreenPlayerModal(
                     )
                 }
 
+                // Offline Download button
+                IconButton(
+                    onClick = onDownloadClick,
+                    modifier = Modifier.size(44.dp).testTag("player_download_button")
+                ) {
+                    when {
+                        downloadProgress != null -> {
+                            CircularProgressIndicator(
+                                progress = { downloadProgress },
+                                modifier = Modifier.size(22.dp),
+                                strokeWidth = 2.5.dp,
+                                color = MaterialTheme.colorScheme.primary
+                            )
+                        }
+                        isDownloaded -> {
+                            Icon(
+                                imageVector = Icons.Rounded.CheckCircle,
+                                contentDescription = "Tersimpan offline",
+                                tint = MaterialTheme.colorScheme.primary,
+                                modifier = Modifier.size(24.dp)
+                            )
+                        }
+                        else -> {
+                            Icon(
+                                imageVector = Icons.Rounded.Download,
+                                contentDescription = "Unduh offline",
+                                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier.size(24.dp)
+                            )
+                        }
+                    }
+                }
+
                 IconButton(
                     onClick = onAddToPlaylist,
-                    modifier = Modifier.size(48.dp)
+                    modifier = Modifier.size(44.dp)
                 ) {
                     Icon(
                         imageVector = Icons.AutoMirrored.Rounded.PlaylistAdd,
@@ -417,7 +590,7 @@ fun FullScreenPlayerModal(
                 IconButton(
                     onClick = onToggleLike,
                     modifier = Modifier
-                        .size(48.dp)
+                        .size(44.dp)
                         .scale(likeScale)
                         .testTag("player_like_button")
                 ) {
@@ -430,7 +603,7 @@ fun FullScreenPlayerModal(
                 }
             }
 
-            Spacer(modifier = Modifier.height(8.dp))
+            Spacer(modifier = Modifier.height(6.dp))
 
             // ---- Scrubber & Timestamps ----
             val duration = playerState.durationMs.coerceAtLeast(1L)
@@ -472,7 +645,7 @@ fun FullScreenPlayerModal(
                 )
             }
 
-            Spacer(modifier = Modifier.height(10.dp))
+            Spacer(modifier = Modifier.height(8.dp))
 
             // ---- Expressive Playback Controls ----
             Row(
@@ -557,19 +730,19 @@ fun FullScreenPlayerModal(
                 }
             }
 
-            Spacer(modifier = Modifier.height(16.dp))
+            Spacer(modifier = Modifier.height(14.dp))
 
-            // ---- Bottom Utility Pill Bar (Lyrics, Queue, Sleep Timer, Audio FX) ----
+            // ---- Bottom Utility Pill Bar (Lyrics, Queue, Radio, Timer, Audio FX, Share) ----
             Surface(
                 shape = RoundedCornerShape(22.dp),
-                color = MaterialTheme.colorScheme.surface.copy(alpha = 0.85f),
+                color = MaterialTheme.colorScheme.surface,
                 border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
                 modifier = Modifier.fillMaxWidth()
             ) {
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .padding(horizontal = 6.dp, vertical = 6.dp),
+                        .padding(horizontal = 4.dp, vertical = 6.dp),
                     horizontalArrangement = Arrangement.SpaceEvenly
                 ) {
                     UtilityChip(
@@ -585,6 +758,13 @@ fun FullScreenPlayerModal(
                         active = activeTab == 2,
                         onClick = { activeTab = if (activeTab == 2) 0 else 2 },
                         modifier = Modifier.testTag("player_tab_queue")
+                    )
+                    UtilityChip(
+                        icon = Icons.Rounded.Radio,
+                        label = if (playerState.isLoadingRadio) "…" else "Radio",
+                        active = playerState.isLoadingRadio,
+                        onClick = onStartRadio,
+                        modifier = Modifier.testTag("player_radio_button")
                     )
                     val timerActive = playerState.sleepTimerRemainingSec != null || playerState.sleepAfterCurrentTrack
                     val timerLabel = when {
@@ -605,10 +785,17 @@ fun FullScreenPlayerModal(
                     )
                     UtilityChip(
                         icon = Icons.Rounded.Equalizer,
-                        label = "Audio FX",
-                        active = settings.eqPreset != EqPreset.FLAT || settings.playbackSpeed != 1.0f,
+                        label = "EQ",
+                        active = settings.eqPreset != EqPreset.FLAT || settings.playbackSpeed != 1.0f || settings.bassBoostStrength > 0.05f,
                         onClick = { showAudioFxSheet = true },
                         modifier = Modifier.testTag("player_audio_fx_button")
+                    )
+                    UtilityChip(
+                        icon = Icons.Rounded.Share,
+                        label = "Bagikan",
+                        active = false,
+                        onClick = onShareTrack,
+                        modifier = Modifier.testTag("player_share_button")
                     )
                 }
             }
@@ -637,6 +824,8 @@ fun FullScreenPlayerModal(
             onDismiss = { showAudioFxSheet = false },
             onEqPreset = onEqPreset,
             onCustomBand = onCustomBand,
+            onBassBoostChange = onBassBoostChange,
+            onNormalizeAudioChange = onNormalizeAudioChange,
             onSpeedChange = onSpeedChange,
             onPitchChange = onPitchChange
         )
@@ -647,7 +836,9 @@ fun FullScreenPlayerModal(
 private fun PlayerArtworkStage(
     track: Track,
     isPlaying: Boolean,
-    artStyle: PlayerArtStyle
+    artStyle: PlayerArtStyle,
+    onSwipeNext: () -> Unit,
+    onSwipePrev: () -> Unit
 ) {
     val infiniteTransition = rememberInfiniteTransition(label = "vinyl_spin")
     val rotation by infiniteTransition.animateFloat(
@@ -665,15 +856,29 @@ private fun PlayerArtworkStage(
         label = "art_scale"
     )
 
+    var totalDrag by remember { mutableFloatStateOf(0f) }
+
     Box(
         modifier = Modifier
             .fillMaxWidth(0.84f)
             .aspectRatio(1f)
-            .scale(scale),
+            .scale(scale)
+            .pointerInput(track.id) {
+                detectHorizontalDragGestures(
+                    onDragStart = { totalDrag = 0f },
+                    onHorizontalDrag = { _, dragAmount -> totalDrag += dragAmount },
+                    onDragEnd = {
+                        when {
+                            totalDrag < -90f -> onSwipeNext()
+                            totalDrag > 90f -> onSwipePrev()
+                        }
+                        totalDrag = 0f
+                    }
+                )
+            },
         contentAlignment = Alignment.Center
     ) {
         if (artStyle == PlayerArtStyle.VINYL) {
-            // Spinning luxury vinyl disc
             Surface(
                 modifier = Modifier
                     .fillMaxSize()
@@ -687,11 +892,9 @@ private fun PlayerArtworkStage(
                     AlbumArtImage(
                         url = track.artworkUrl,
                         contentDescription = track.title,
-                        modifier = Modifier
-                            .fillMaxSize(0.76f),
+                        modifier = Modifier.fillMaxSize(0.76f),
                         shape = CircleShape
                     )
-                    // Center spindle hole
                     Box(
                         modifier = Modifier
                             .size(32.dp)
@@ -707,7 +910,7 @@ private fun PlayerArtworkStage(
             Surface(
                 modifier = Modifier.fillMaxSize(),
                 shape = RoundedCornerShape(30.dp),
-                border = BorderStroke(1.5.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.35f)),
+                border = BorderStroke(1.5.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.38f)),
                 shadowElevation = 22.dp
             ) {
                 AlbumArtImage(
@@ -724,6 +927,9 @@ private fun PlayerArtworkStage(
 @Composable
 private fun SyncedLyricsStage(
     playerState: PlayerUiState,
+    fontScale: Float,
+    onFontScaleChange: (Float) -> Unit,
+    onShareLyrics: (String) -> Unit,
     onSeekTo: (Long) -> Unit
 ) {
     val lyrics = playerState.lyricsState
@@ -742,78 +948,132 @@ private fun SyncedLyricsStage(
     Surface(
         modifier = Modifier
             .fillMaxSize()
-            .padding(vertical = 8.dp),
+            .padding(vertical = 6.dp),
         shape = RoundedCornerShape(26.dp),
-        color = MaterialTheme.colorScheme.surface.copy(alpha = 0.65f),
+        color = MaterialTheme.colorScheme.surface,
         border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant)
     ) {
-        when {
-            lyrics.isLoading -> {
-                Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                        CircularProgressIndicator(color = MaterialTheme.colorScheme.primary)
-                        Spacer(Modifier.height(10.dp))
-                        Text("Mencari lirik sinkron…", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        Column(modifier = Modifier.fillMaxSize()) {
+            // Lyrics toolbar (Provider badge, font scale -/+, Share)
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 14.dp, vertical = 8.dp),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    text = if (lyrics.providerName.isNotBlank()) "Lirik • ${lyrics.providerName}" else "Lirik",
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.primary
+                )
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    IconButton(
+                        onClick = { onFontScaleChange((fontScale - 0.1f).coerceAtLeast(0.8f)) },
+                        modifier = Modifier.size(34.dp)
+                    ) {
+                        Icon(Icons.Rounded.TextDecrease, contentDescription = "Perkecil huruf", modifier = Modifier.size(18.dp))
+                    }
+                    IconButton(
+                        onClick = { onFontScaleChange((fontScale + 0.1f).coerceAtMost(1.4f)) },
+                        modifier = Modifier.size(34.dp)
+                    ) {
+                        Icon(Icons.Rounded.TextIncrease, contentDescription = "Perbesar huruf", modifier = Modifier.size(18.dp))
+                    }
+                    val shareableText = when {
+                        lyrics.syncedLines.isNotEmpty() -> lyrics.syncedLines.joinToString("\n") { it.text }
+                        !lyrics.plainLyrics.isNullOrBlank() -> lyrics.plainLyrics
+                        else -> null
+                    }
+                    if (shareableText != null) {
+                        IconButton(
+                            onClick = { onShareLyrics(shareableText) },
+                            modifier = Modifier.size(34.dp)
+                        ) {
+                            Icon(Icons.Rounded.Share, contentDescription = "Bagikan lirik", modifier = Modifier.size(18.dp))
+                        }
                     }
                 }
             }
-            lyrics.isInstrumental -> {
-                Box(Modifier.fillMaxSize().padding(24.dp), contentAlignment = Alignment.Center) {
-                    Text(
-                        text = "♪ Lagu Instrumental ♪\nNikmati alunan musiknya.",
-                        style = MaterialTheme.typography.titleMedium,
-                        textAlign = TextAlign.Center,
-                        color = MaterialTheme.colorScheme.primary
-                    )
-                }
-            }
-            lyrics.syncedLines.isNotEmpty() -> {
-                LazyColumn(
-                    state = listState,
-                    contentPadding = PaddingValues(horizontal = 20.dp, vertical = 28.dp),
-                    verticalArrangement = Arrangement.spacedBy(16.dp)
-                ) {
-                    itemsIndexed(lyrics.syncedLines) { idx, line ->
-                        val isActive = idx == activeLineIndex
-                        Text(
-                            text = line.text,
-                            style = if (isActive) {
-                                MaterialTheme.typography.headlineSmall.copy(fontSize = 22.sp, fontWeight = FontWeight.Bold)
-                            } else {
-                                MaterialTheme.typography.titleMedium
-                            },
-                            color = if (isActive) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.65f),
+
+            Box(modifier = Modifier.weight(1f).fillMaxWidth()) {
+                when {
+                    lyrics.isLoading -> {
+                        Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                            Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                                CircularProgressIndicator(color = MaterialTheme.colorScheme.primary)
+                                Spacer(Modifier.height(10.dp))
+                                Text("Mencari lirik LRCLIB & YouTube Music…", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            }
+                        }
+                    }
+                    lyrics.isInstrumental -> {
+                        Box(Modifier.fillMaxSize().padding(24.dp), contentAlignment = Alignment.Center) {
+                            Text(
+                                text = "♪ Lagu Instrumental ♪\nNikmati alunan musiknya.",
+                                style = MaterialTheme.typography.titleMedium,
+                                textAlign = TextAlign.Center,
+                                color = MaterialTheme.colorScheme.primary
+                            )
+                        }
+                    }
+                    lyrics.syncedLines.isNotEmpty() -> {
+                        LazyColumn(
+                            state = listState,
+                            contentPadding = PaddingValues(horizontal = 20.dp, vertical = 18.dp),
+                            verticalArrangement = Arrangement.spacedBy(14.dp)
+                        ) {
+                            itemsIndexed(lyrics.syncedLines) { idx, line ->
+                                val isActive = idx == activeLineIndex
+                                Text(
+                                    text = line.text,
+                                    style = if (isActive) {
+                                        MaterialTheme.typography.headlineSmall.copy(
+                                            fontSize = (21f * fontScale).sp,
+                                            fontWeight = FontWeight.Bold
+                                        )
+                                    } else {
+                                        MaterialTheme.typography.titleMedium.copy(
+                                            fontSize = (16f * fontScale).sp
+                                        )
+                                    },
+                                    color = if (isActive) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.65f),
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .clip(RoundedCornerShape(10.dp))
+                                        .clickable { onSeekTo(line.timestampMs) }
+                                        .padding(vertical = 4.dp)
+                                )
+                            }
+                        }
+                    }
+                    !lyrics.plainLyrics.isNullOrBlank() -> {
+                        Column(
                             modifier = Modifier
-                                .fillMaxWidth()
-                                .clip(RoundedCornerShape(10.dp))
-                                .clickable { onSeekTo(line.timestampMs) }
-                                .padding(vertical = 4.dp)
-                        )
+                                .fillMaxSize()
+                                .verticalScroll(rememberScrollState())
+                                .padding(horizontal = 20.dp, vertical = 12.dp)
+                        ) {
+                            Text(
+                                text = lyrics.plainLyrics,
+                                style = MaterialTheme.typography.bodyLarge.copy(
+                                    fontSize = (16f * fontScale).sp,
+                                    lineHeight = (26f * fontScale).sp
+                                ),
+                                color = MaterialTheme.colorScheme.onSurface
+                            )
+                        }
                     }
-                }
-            }
-            !lyrics.plainLyrics.isNullOrBlank() -> {
-                Column(
-                    modifier = Modifier
-                        .fillMaxSize()
-                        .verticalScroll(rememberScrollState())
-                        .padding(22.dp)
-                ) {
-                    Text(
-                        text = lyrics.plainLyrics,
-                        style = MaterialTheme.typography.bodyLarge.copy(lineHeight = 28.sp),
-                        color = MaterialTheme.colorScheme.onSurface
-                    )
-                }
-            }
-            else -> {
-                Box(Modifier.fillMaxSize().padding(24.dp), contentAlignment = Alignment.Center) {
-                    Text(
-                        text = lyrics.error ?: "Lirik belum tersedia untuk lagu ini.",
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        textAlign = TextAlign.Center
-                    )
+                    else -> {
+                        Box(Modifier.fillMaxSize().padding(24.dp), contentAlignment = Alignment.Center) {
+                            Text(
+                                text = lyrics.error ?: "Lirik belum tersedia untuk lagu ini.",
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                textAlign = TextAlign.Center
+                            )
+                        }
+                    }
                 }
             }
         }
@@ -825,23 +1085,59 @@ private fun QueueStage(
     queue: List<Track>,
     currentIndex: Int,
     isPlaying: Boolean,
+    autoplayRadio: Boolean,
+    onToggleAutoplay: (Boolean) -> Unit,
     onSelect: (Track) -> Unit,
-    onRemove: (Int) -> Unit
+    onMoveItem: (Int, Int) -> Unit,
+    onRemove: (Int) -> Unit,
+    onClearUpcoming: () -> Unit,
+    onSaveQueue: () -> Unit
 ) {
     Surface(
         modifier = Modifier
             .fillMaxSize()
-            .padding(vertical = 8.dp),
+            .padding(vertical = 6.dp),
         shape = RoundedCornerShape(26.dp),
-        color = MaterialTheme.colorScheme.surface.copy(alpha = 0.7f),
+        color = MaterialTheme.colorScheme.surface,
         border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant)
     ) {
         Column(modifier = Modifier.fillMaxSize().padding(14.dp)) {
-            Text(
-                text = "Antrean Putar (${queue.size})",
-                style = MaterialTheme.typography.titleMedium,
-                modifier = Modifier.padding(horizontal = 6.dp, vertical = 6.dp)
-            )
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    text = "Antrean (${queue.size})",
+                    style = MaterialTheme.typography.titleMedium,
+                    modifier = Modifier.padding(start = 6.dp)
+                )
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    IconButton(onClick = onSaveQueue, modifier = Modifier.size(36.dp)) {
+                        Icon(Icons.Rounded.Save, contentDescription = "Simpan antrean ke playlist", modifier = Modifier.size(18.dp))
+                    }
+                    IconButton(onClick = onClearUpcoming, modifier = Modifier.size(36.dp)) {
+                        Icon(Icons.Rounded.DeleteSweep, contentDescription = "Bersihkan antrean", modifier = Modifier.size(18.dp))
+                    }
+                }
+            }
+
+            // Metrolist Autoplay Radio Switch
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 6.dp, vertical = 4.dp),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    text = "Putar Otomatis Radio Serupa",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                Switch(checked = autoplayRadio, onCheckedChange = onToggleAutoplay)
+            }
+
             LazyColumn(verticalArrangement = Arrangement.spacedBy(6.dp)) {
                 itemsIndexed(queue, key = { idx, t -> "q_${idx}_${t.id}" }) { idx, item ->
                     val isCurrent = idx == currentIndex
@@ -857,7 +1153,7 @@ private fun QueueStage(
                         AlbumArtImage(
                             url = item.artworkUrl,
                             contentDescription = item.title,
-                            modifier = Modifier.size(44.dp),
+                            modifier = Modifier.size(42.dp),
                             shape = RoundedCornerShape(10.dp)
                         )
                         Spacer(Modifier.width(10.dp))
@@ -880,12 +1176,22 @@ private fun QueueStage(
                         if (isCurrent) {
                             AudioVisualizerBars(isPlaying = isPlaying, maxHeight = 14.dp)
                         } else {
-                            IconButton(onClick = { onRemove(idx) }, modifier = Modifier.size(36.dp)) {
+                            if (idx > 0) {
+                                IconButton(onClick = { onMoveItem(idx, idx - 1) }, modifier = Modifier.size(30.dp)) {
+                                    Icon(Icons.Rounded.ArrowUpward, contentDescription = "Naik", modifier = Modifier.size(16.dp))
+                                }
+                            }
+                            if (idx < queue.lastIndex) {
+                                IconButton(onClick = { onMoveItem(idx, idx + 1) }, modifier = Modifier.size(30.dp)) {
+                                    Icon(Icons.Rounded.ArrowDownward, contentDescription = "Turun", modifier = Modifier.size(16.dp))
+                                }
+                            }
+                            IconButton(onClick = { onRemove(idx) }, modifier = Modifier.size(30.dp)) {
                                 Icon(
                                     imageVector = Icons.Rounded.Close,
                                     contentDescription = "Hapus dari antrean",
                                     tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                                    modifier = Modifier.size(18.dp)
+                                    modifier = Modifier.size(16.dp)
                                 )
                             }
                         }
@@ -906,225 +1212,27 @@ private fun UtilityChip(
 ) {
     Surface(
         onClick = onClick,
-        shape = RoundedCornerShape(16.dp),
+        shape = RoundedCornerShape(14.dp),
         color = if (active) MaterialTheme.colorScheme.primary.copy(alpha = 0.18f) else Color.Transparent,
         modifier = modifier
     ) {
         Column(
-            modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
+            modifier = Modifier.padding(horizontal = 8.dp, vertical = 7.dp),
             horizontalAlignment = Alignment.CenterHorizontally
         ) {
             Icon(
                 imageVector = icon,
                 contentDescription = label,
                 tint = if (active) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
-                modifier = Modifier.size(20.dp)
+                modifier = Modifier.size(19.dp)
             )
             Spacer(modifier = Modifier.height(2.dp))
             Text(
                 text = label,
                 style = MaterialTheme.typography.labelSmall,
-                color = if (active) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant
+                color = if (active) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 1
             )
-        }
-    }
-}
-
-@OptIn(ExperimentalMaterial3Api::class)
-@Composable
-private fun SleepTimerBottomSheet(
-    remainingSec: Int?,
-    endOfTrack: Boolean,
-    onDismiss: () -> Unit,
-    onSelectMinutes: (Int) -> Unit,
-    onSelectEndOfTrack: () -> Unit
-) {
-    ModalBottomSheet(
-        onDismissRequest = onDismiss,
-        containerColor = MaterialTheme.colorScheme.surface,
-        shape = RoundedCornerShape(topStart = 28.dp, topEnd = 28.dp)
-    ) {
-        Column(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 24.dp)
-                .padding(bottom = 32.dp),
-            verticalArrangement = Arrangement.spacedBy(10.dp)
-        ) {
-            Text("Timer Tidur", style = MaterialTheme.typography.headlineSmall)
-            Text(
-                text = when {
-                    remainingSec != null -> "Aktif: sisa ${remainingSec / 60} menit ${remainingSec % 60} detik"
-                    endOfTrack -> "Aktif: berhenti setelah lagu ini selesai"
-                    else -> "Otomatis menjeda pemutaran saat kamu beristirahat"
-                },
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
-            )
-            Spacer(modifier = Modifier.height(6.dp))
-            listOf(5, 15, 30, 45, 60).forEach { mins ->
-                Surface(
-                    onClick = { onSelectMinutes(mins) },
-                    shape = RoundedCornerShape(14.dp),
-                    color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.6f),
-                    modifier = Modifier.fillMaxWidth()
-                ) {
-                    Text(
-                        text = "$mins Menit",
-                        style = MaterialTheme.typography.titleMedium,
-                        modifier = Modifier.padding(horizontal = 16.dp, vertical = 14.dp)
-                    )
-                }
-            }
-            Surface(
-                onClick = onSelectEndOfTrack,
-                shape = RoundedCornerShape(14.dp),
-                color = MaterialTheme.colorScheme.primary.copy(alpha = 0.14f),
-                modifier = Modifier.fillMaxWidth()
-            ) {
-                Text(
-                    text = "Akhir Lagu Ini",
-                    style = MaterialTheme.typography.titleMedium,
-                    color = MaterialTheme.colorScheme.primary,
-                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 14.dp)
-                )
-            }
-            if (remainingSec != null || endOfTrack) {
-                TextButton(
-                    onClick = { onSelectMinutes(0) },
-                    modifier = Modifier.fillMaxWidth()
-                ) {
-                    Text("Matikan Timer Tidur", color = MaterialTheme.colorScheme.error)
-                }
-            }
-        }
-    }
-}
-
-@OptIn(ExperimentalMaterial3Api::class)
-@Composable
-private fun AudioFxBottomSheet(
-    settings: AudioSettings,
-    onDismiss: () -> Unit,
-    onEqPreset: (EqPreset) -> Unit,
-    onCustomBand: (Int, Float) -> Unit,
-    onSpeedChange: (Float) -> Unit,
-    onPitchChange: (Float) -> Unit
-) {
-    val freqLabels = listOf("60Hz", "230Hz", "910Hz", "3.6kHz", "14kHz")
-
-    ModalBottomSheet(
-        onDismissRequest = onDismiss,
-        containerColor = MaterialTheme.colorScheme.surface,
-        shape = RoundedCornerShape(topStart = 28.dp, topEnd = 28.dp)
-    ) {
-        Column(
-            modifier = Modifier
-                .fillMaxWidth()
-                .verticalScroll(rememberScrollState())
-                .padding(horizontal = 24.dp)
-                .padding(bottom = 36.dp),
-            verticalArrangement = Arrangement.spacedBy(14.dp)
-        ) {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Column {
-                    Text("Audio Engine & 5-Band EQ", style = MaterialTheme.typography.headlineSmall)
-                    Text("Penyesuaian akustik real-time", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                }
-                TextButton(onClick = {
-                    onEqPreset(EqPreset.FLAT)
-                    onSpeedChange(1.0f)
-                    onPitchChange(1.0f)
-                }) {
-                    Text("Reset", color = MaterialTheme.colorScheme.primary)
-                }
-            }
-
-            // Preset chips
-            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                EqPreset.entries.chunked(3).forEach { row ->
-                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        row.forEach { preset ->
-                            val selected = settings.eqPreset == preset
-                            Surface(
-                                onClick = { onEqPreset(preset) },
-                                modifier = Modifier.weight(1f),
-                                shape = RoundedCornerShape(12.dp),
-                                color = if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.surfaceVariant
-                            ) {
-                                Text(
-                                    text = preset.label.substringBefore(" "),
-                                    style = MaterialTheme.typography.labelLarge,
-                                    color = if (selected) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurface,
-                                    textAlign = TextAlign.Center,
-                                    modifier = Modifier.padding(vertical = 10.dp, horizontal = 6.dp)
-                                )
-                            }
-                        }
-                    }
-                }
-            }
-
-            // 5-Band EQ Sliders
-            Surface(
-                shape = RoundedCornerShape(20.dp),
-                color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f),
-                modifier = Modifier.fillMaxWidth()
-            ) {
-                Column(modifier = Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                    settings.customBandsDb.forEachIndexed { idx, db ->
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            Text(
-                                text = freqLabels.getOrElse(idx) { "" },
-                                style = MaterialTheme.typography.labelMedium,
-                                modifier = Modifier.width(52.dp)
-                            )
-                            Slider(
-                                value = db,
-                                onValueChange = { onCustomBand(idx, it) },
-                                valueRange = -6f..6f,
-                                modifier = Modifier.weight(1f)
-                            )
-                            Text(
-                                text = "%+.0f dB".format(db),
-                                style = MaterialTheme.typography.labelMedium,
-                                color = MaterialTheme.colorScheme.primary,
-                                modifier = Modifier.width(46.dp),
-                                textAlign = TextAlign.End
-                            )
-                        }
-                    }
-                }
-            }
-
-            // Speed & Pitch controls
-            Column {
-                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                    Text("Kecepatan Putar (Tempo)", style = MaterialTheme.typography.titleSmall)
-                    Text("%.2fx".format(settings.playbackSpeed), style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.primary)
-                }
-                Slider(
-                    value = settings.playbackSpeed,
-                    onValueChange = onSpeedChange,
-                    valueRange = 0.5f..2.0f
-                )
-            }
-
-            Column {
-                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                    Text("Nada (Pitch)", style = MaterialTheme.typography.titleSmall)
-                    Text("%.2fx".format(settings.playbackPitch), style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.secondary)
-                }
-                Slider(
-                    value = settings.playbackPitch,
-                    onValueChange = onPitchChange,
-                    valueRange = 0.75f..1.5f
-                )
-            }
         }
     }
 }

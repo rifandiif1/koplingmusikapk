@@ -13,7 +13,7 @@ import androidx.room.RoomDatabase
         PlayHistoryEntity::class,
         SearchHistoryEntity::class
     ],
-    version = 1,
+    version = 2,
     exportSchema = false
 )
 abstract class KoplingfyDatabase : RoomDatabase() {

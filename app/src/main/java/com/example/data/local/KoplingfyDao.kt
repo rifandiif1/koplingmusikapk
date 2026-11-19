@@ -18,7 +18,7 @@ data class PlaylistWithCountRow(
 @Dao
 interface KoplingfyDao {
 
-    // ---- Tracks & Likes ----
+    // ---- Tracks, Likes & Offline Downloads ----
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun upsertTrack(track: SavedTrackEntity)
 
@@ -28,21 +28,51 @@ interface KoplingfyDao {
     @Query("SELECT * FROM saved_tracks WHERE isLiked = 1 ORDER BY likedAt DESC")
     fun observeLikedTracks(): Flow<List<SavedTrackEntity>>
 
+    @Query("SELECT * FROM saved_tracks WHERE isLiked = 1 ORDER BY likedAt DESC")
+    suspend fun getLikedTracksOnce(): List<SavedTrackEntity>
+
     @Query("SELECT id FROM saved_tracks WHERE isLiked = 1")
     fun observeLikedTrackIds(): Flow<List<String>>
 
     @Query("SELECT * FROM saved_tracks WHERE isLocal = 1 ORDER BY addedAt DESC")
     fun observeLocalTracks(): Flow<List<SavedTrackEntity>>
 
+    @Query("SELECT * FROM saved_tracks WHERE isDownloaded = 1 ORDER BY downloadedAt DESC")
+    fun observeDownloadedTracks(): Flow<List<SavedTrackEntity>>
+
+    @Query("SELECT id FROM saved_tracks WHERE isDownloaded = 1")
+    fun observeDownloadedTrackIds(): Flow<List<String>>
+
+    @Query("SELECT * FROM saved_tracks WHERE isDownloaded = 1")
+    suspend fun getDownloadedTracksOnce(): List<SavedTrackEntity>
+
     @Query("UPDATE saved_tracks SET isLiked = :isLiked, likedAt = :likedAt WHERE id = :trackId")
     suspend fun updateLikeStatus(trackId: String, isLiked: Boolean, likedAt: Long)
+
+    @Query("UPDATE saved_tracks SET isDownloaded = :isDownloaded, localDownloadPath = :path, downloadedAt = :downloadedAt WHERE id = :trackId")
+    suspend fun updateDownloadStatus(trackId: String, isDownloaded: Boolean, path: String?, downloadedAt: Long)
+
+    @Query("UPDATE saved_tracks SET isDownloaded = 0, localDownloadPath = NULL, downloadedAt = 0")
+    suspend fun clearAllDownloadFlags()
 
     @Query("DELETE FROM saved_tracks WHERE id = :trackId AND isLocal = 1")
     suspend fun deleteLocalTrack(trackId: String)
 
+    @Query(
+        """
+        SELECT * FROM saved_tracks
+        WHERE title LIKE '%' || :query || '%' OR artist LIKE '%' || :query || '%' OR album LIKE '%' || :query || '%'
+        ORDER BY addedAt DESC
+        """
+    )
+    suspend fun searchLocalLibraryTracks(query: String): List<SavedTrackEntity>
+
     // ---- Playlists ----
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun insertPlaylist(playlist: PlaylistEntity): Long
+
+    @Query("SELECT * FROM playlists ORDER BY createdAt DESC")
+    suspend fun getAllPlaylistsOnce(): List<PlaylistEntity>
 
     @Query("UPDATE playlists SET name = :name, description = :description WHERE id = :playlistId")
     suspend fun updatePlaylist(playlistId: Long, name: String, description: String)
@@ -81,12 +111,25 @@ interface KoplingfyDao {
     )
     fun observeTracksForPlaylist(playlistId: Long): Flow<List<SavedTrackEntity>>
 
+    @Query(
+        """
+        SELECT st.* FROM saved_tracks st
+        INNER JOIN playlist_tracks pt ON st.id = pt.trackId
+        WHERE pt.playlistId = :playlistId
+        ORDER BY pt.addedAt DESC
+        """
+    )
+    suspend fun getTracksForPlaylistOnce(playlistId: Long): List<SavedTrackEntity>
+
     // ---- Play History & Stats ----
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun insertPlayHistory(entry: PlayHistoryEntity)
 
     @Query("SELECT * FROM play_history ORDER BY playedAt DESC LIMIT 100")
     fun observePlayHistory(): Flow<List<PlayHistoryEntity>>
+
+    @Query("SELECT * FROM play_history ORDER BY playedAt DESC LIMIT 100")
+    suspend fun getPlayHistoryOnce(): List<PlayHistoryEntity>
 
     @Query("DELETE FROM play_history")
     suspend fun clearPlayHistory()

@@ -27,6 +27,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.AutoGraph
 import androidx.compose.material.icons.rounded.GraphicEq
+import androidx.compose.material.icons.rounded.Groups
 import androidx.compose.material.icons.rounded.PlayArrow
 import androidx.compose.material.icons.rounded.Refresh
 import androidx.compose.material.icons.rounded.Settings
@@ -55,7 +56,9 @@ import com.example.model.AlbumSummary
 import com.example.model.ArtistSummary
 import com.example.model.KoplingfyMoods
 import com.example.model.MoodFilter
+import com.example.model.RemotePlaylistSummary
 import com.example.model.Track
+import com.example.model.YouTubeAccount
 import com.example.ui.components.AlbumArtImage
 import com.example.ui.components.GlassActionPill
 import com.example.ui.components.SectionHeader
@@ -67,6 +70,7 @@ import java.util.Calendar
 fun HomeScreen(
     homeState: HomeUiState,
     recentTracks: List<Track>,
+    youtubeAccount: YouTubeAccount,
     currentTrackId: String?,
     isPlaying: Boolean,
     likedIds: Set<String>,
@@ -79,6 +83,10 @@ fun HomeScreen(
     onTrackOptions: (Track) -> Unit,
     onAlbumClick: (AlbumSummary) -> Unit,
     onArtistClick: (ArtistSummary) -> Unit,
+    onRemotePlaylistClick: (RemotePlaylistSummary) -> Unit,
+    onOpenYouTubeLogin: () -> Unit,
+    onOpenListenTogether: () -> Unit,
+    activeRoomCode: String? = null,
     onOpenSettings: () -> Unit,
     onOpenStats: () -> Unit
 ) {
@@ -97,6 +105,7 @@ fun HomeScreen(
     Box(
         modifier = Modifier
             .fillMaxSize()
+            .background(bgColor)
             .background(
                 Brush.verticalGradient(
                     colors = listOf(
@@ -119,6 +128,10 @@ fun HomeScreen(
             item {
                 HomeTopHeader(
                     greeting = greeting,
+                    youtubeAccount = youtubeAccount,
+                    activeRoomCode = activeRoomCode,
+                    onOpenListenTogether = onOpenListenTogether,
+                    onOpenYouTubeLogin = onOpenYouTubeLogin,
                     onOpenStats = onOpenStats,
                     onOpenSettings = onOpenSettings
                 )
@@ -352,6 +365,34 @@ fun HomeScreen(
                     }
                 }
             }
+
+            // ---- Mix & Playlist YouTube Music ----
+            if (homeState.featuredPlaylists.isNotEmpty()) {
+                item {
+                    Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                        SectionHeader(
+                            title = "Mix & Playlist YouTube Music",
+                            subtitle = "Kurasi otomatis dan komunitas",
+                            modifier = Modifier.padding(horizontal = 20.dp)
+                        )
+                        LazyRow(
+                            contentPadding = PaddingValues(horizontal = 20.dp),
+                            horizontalArrangement = Arrangement.spacedBy(14.dp)
+                        ) {
+                            items(homeState.featuredPlaylists.take(10), key = { it.id }) { playlist ->
+                                CompactSquareCard(
+                                    title = playlist.title,
+                                    subtitle = playlist.author.ifBlank { "YouTube Music" },
+                                    artworkUrl = playlist.artworkUrl,
+                                    isActive = false,
+                                    cardWidth = 152.dp,
+                                    onClick = { onRemotePlaylistClick(playlist) }
+                                )
+                            }
+                        }
+                    }
+                }
+            }
         }
     }
 }
@@ -359,6 +400,10 @@ fun HomeScreen(
 @Composable
 private fun HomeTopHeader(
     greeting: String,
+    youtubeAccount: YouTubeAccount,
+    activeRoomCode: String?,
+    onOpenListenTogether: () -> Unit,
+    onOpenYouTubeLogin: () -> Unit,
     onOpenStats: () -> Unit,
     onOpenSettings: () -> Unit
 ) {
@@ -389,9 +434,11 @@ private fun HomeTopHeader(
             Spacer(modifier = Modifier.width(12.dp))
             Column {
                 Text(
-                    text = greeting,
+                    text = if (youtubeAccount.isLoggedIn) "$greeting, ${youtubeAccount.name.substringBefore(" ")}" else greeting,
                     style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
                 )
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Text(
@@ -415,13 +462,79 @@ private fun HomeTopHeader(
             }
         }
 
-        Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+        Row(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.CenterVertically) {
+            if (youtubeAccount.isLoggedIn) {
+                Surface(
+                    onClick = onOpenSettings,
+                    shape = CircleShape,
+                    border = BorderStroke(1.5.dp, MaterialTheme.colorScheme.primary),
+                    modifier = Modifier.size(40.dp).testTag("home_account_avatar")
+                ) {
+                    AlbumArtImage(
+                        url = youtubeAccount.avatarUrl,
+                        contentDescription = youtubeAccount.name,
+                        modifier = Modifier.fillMaxSize(),
+                        shape = CircleShape
+                    )
+                }
+            } else {
+                Surface(
+                    onClick = onOpenYouTubeLogin,
+                    shape = RoundedCornerShape(50),
+                    color = MaterialTheme.colorScheme.primary.copy(alpha = 0.16f),
+                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.45f)),
+                    modifier = Modifier.testTag("home_login_ytm_pill")
+                ) {
+                    Text(
+                        text = "Login YTM",
+                        style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold),
+                        color = MaterialTheme.colorScheme.primary,
+                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 7.dp)
+                    )
+                }
+            }
+            Surface(
+                onClick = onOpenListenTogether,
+                shape = if (activeRoomCode != null) RoundedCornerShape(50) else CircleShape,
+                color = if (activeRoomCode != null) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.primary.copy(alpha = 0.16f),
+                border = BorderStroke(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.55f)),
+                modifier = if (activeRoomCode != null) Modifier.testTag("open_listen_together_button") else Modifier.size(42.dp).testTag("open_listen_together_button")
+            ) {
+                if (activeRoomCode != null) {
+                    Row(
+                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 8.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(4.dp)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Rounded.Groups,
+                            contentDescription = "Play Bersama Aktif",
+                            tint = MaterialTheme.colorScheme.onPrimary,
+                            modifier = Modifier.size(16.dp)
+                        )
+                        Text(
+                            text = activeRoomCode,
+                            style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold),
+                            color = MaterialTheme.colorScheme.onPrimary
+                        )
+                    }
+                } else {
+                    Box(contentAlignment = Alignment.Center) {
+                        Icon(
+                            imageVector = Icons.Rounded.Groups,
+                            contentDescription = "Play Bersama",
+                            tint = MaterialTheme.colorScheme.primary,
+                            modifier = Modifier.size(20.dp)
+                        )
+                    }
+                }
+            }
             Surface(
                 onClick = onOpenStats,
                 shape = CircleShape,
                 color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.8f),
                 border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
-                modifier = Modifier.size(44.dp).testTag("open_stats_button")
+                modifier = Modifier.size(42.dp).testTag("open_stats_button")
             ) {
                 Box(contentAlignment = Alignment.Center) {
                     Icon(
@@ -437,7 +550,7 @@ private fun HomeTopHeader(
                 shape = CircleShape,
                 color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.8f),
                 border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
-                modifier = Modifier.size(44.dp).testTag("open_settings_button")
+                modifier = Modifier.size(42.dp).testTag("open_settings_button")
             ) {
                 Box(contentAlignment = Alignment.Center) {
                     Icon(

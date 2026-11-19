@@ -11,11 +11,15 @@ data class Track(
     val artworkUrl: String?,
     val streamUrl: String?,
     val durationMs: Long,
-    val genre: String = "Music",
+    val genre: String = "YouTube Music",
     val isLocal: Boolean = false,
     val isExplicit: Boolean = false,
     val releaseYear: String = "",
-    val rank: Int? = null
+    val rank: Int? = null,
+    val isDownloaded: Boolean = false,
+    val localDownloadPath: String? = null,
+    val artistBrowseId: String? = null,
+    val albumBrowseId: String? = null
 )
 
 @Immutable
@@ -34,7 +38,16 @@ data class ArtistSummary(
     val id: String,
     val name: String,
     val artworkUrl: String?,
-    val genre: String = "Artist"
+    val genre: String = "Artis"
+)
+
+@Immutable
+data class RemotePlaylistSummary(
+    val id: String,
+    val title: String,
+    val author: String,
+    val artworkUrl: String?,
+    val trackCountLabel: String = ""
 )
 
 @Immutable
@@ -48,6 +61,17 @@ data class PlaylistSummary(
 )
 
 @Immutable
+data class YouTubeAccount(
+    val cookie: String = "",
+    val visitorData: String = "",
+    val name: String = "",
+    val email: String = "",
+    val avatarUrl: String? = null
+) {
+    val isLoggedIn: Boolean get() = cookie.contains("SAPISID=") || cookie.contains("__Secure-3PAPISID=")
+}
+
+@Immutable
 data class LyricLine(
     val timestampMs: Long,
     val text: String
@@ -58,6 +82,7 @@ data class LyricsState(
     val isLoading: Boolean = false,
     val syncedLines: List<LyricLine> = emptyList(),
     val plainLyrics: String? = null,
+    val providerName: String = "",
     val isInstrumental: Boolean = false,
     val error: String? = null
 )
@@ -94,6 +119,18 @@ enum class PlayerArtStyle(val label: String, val subtitle: String) {
     VINYL("Audiophile Vinyl", "Piringan hitam berputar klasik")
 }
 
+enum class PlayerBackgroundStyle(val label: String, val subtitle: String) {
+    GRADIENT("Gradient Ambien", "Latar belakang solid dengan gradasi aksen"),
+    BLUR_ARTWORK("Blur Sampul", "Sampul lagu buram elegan di balik scrim gelap"),
+    SOLID("Minimalis Solid", "Latar belakang solid murni bebas distraksi")
+}
+
+enum class AudioQuality(val label: String, val subtitle: String) {
+    HIGH("Tinggi (Hi-Fi)", "Bitrate audio maksimum untuk detail terbaik"),
+    NORMAL("Seimbang", "Kualitas jernih dan hemat kuota"),
+    LOW("Hemat Data", "Stream ringan untuk koneksi lambat")
+}
+
 enum class EqPreset(val label: String, val bandsDb: List<Float>) {
     FLAT("Studio Flat", listOf(0f, 0f, 0f, 0f, 0f)),
     BASS_BOOST("Deep Bass", listOf(6f, 4f, 0f, 1f, 2f)),
@@ -108,8 +145,15 @@ data class AudioSettings(
     val themeMode: ThemeMode = ThemeMode.DARK,
     val accentPreset: AccentPreset = AccentPreset.EMERALD,
     val playerArtStyle: PlayerArtStyle = PlayerArtStyle.ROUNDED,
+    val playerBackgroundStyle: PlayerBackgroundStyle = PlayerBackgroundStyle.GRADIENT,
+    val audioQuality: AudioQuality = AudioQuality.HIGH,
     val eqPreset: EqPreset = EqPreset.FLAT,
     val customBandsDb: List<Float> = listOf(0f, 0f, 0f, 0f, 0f),
+    val bassBoostStrength: Float = 0f,
+    val normalizeAudio: Boolean = true,
+    val autoplayRadio: Boolean = true,
+    val keepScreenOnLyrics: Boolean = true,
+    val lyricsFontScale: Float = 1.0f,
     val playbackSpeed: Float = 1.0f,
     val playbackPitch: Float = 1.0f,
     val highQualityStream: Boolean = true,
@@ -143,10 +187,12 @@ sealed interface CollectionDetailType {
     data object LikedSongs : CollectionDetailType
     data object History : CollectionDetailType
     data object LocalAudio : CollectionDetailType
+    data object Downloads : CollectionDetailType
     data class CustomPlaylist(val playlistId: Long) : CollectionDetailType
     data class MoodCollection(val mood: MoodFilter) : CollectionDetailType
     data class ArtistCollection(val artist: ArtistSummary) : CollectionDetailType
     data class AlbumCollection(val album: AlbumSummary) : CollectionDetailType
+    data class RemotePlaylistCollection(val playlist: RemotePlaylistSummary) : CollectionDetailType
 }
 
 object KoplingfyMoods {

@@ -21,6 +21,9 @@ data class SavedTrackEntity(
     val releaseYear: String,
     val isLiked: Boolean = false,
     val likedAt: Long = 0L,
+    val isDownloaded: Boolean = false,
+    val localDownloadPath: String? = null,
+    val downloadedAt: Long = 0L,
     val addedAt: Long = System.currentTimeMillis()
 ) {
     fun toTrack(): Track = Track(
@@ -34,14 +37,19 @@ data class SavedTrackEntity(
         genre = genre,
         isLocal = isLocal,
         isExplicit = isExplicit,
-        releaseYear = releaseYear
+        releaseYear = releaseYear,
+        isDownloaded = isDownloaded,
+        localDownloadPath = localDownloadPath
     )
 
     companion object {
         fun fromTrack(
             track: Track,
             isLiked: Boolean = false,
-            likedAt: Long = 0L
+            likedAt: Long = 0L,
+            isDownloaded: Boolean = track.isDownloaded,
+            localDownloadPath: String? = track.localDownloadPath,
+            downloadedAt: Long = if (track.isDownloaded) System.currentTimeMillis() else 0L
         ): SavedTrackEntity = SavedTrackEntity(
             id = track.id,
             title = track.title,
@@ -55,7 +63,10 @@ data class SavedTrackEntity(
             isExplicit = track.isExplicit,
             releaseYear = track.releaseYear,
             isLiked = isLiked,
-            likedAt = likedAt
+            likedAt = likedAt,
+            isDownloaded = isDownloaded,
+            localDownloadPath = localDownloadPath,
+            downloadedAt = downloadedAt
         )
     }
 }
