@@ -89,7 +89,10 @@ fun HomeScreen(
     onOpenListenTogether: () -> Unit,
     activeRoomCode: String? = null,
     onOpenSettings: () -> Unit,
-    onOpenStats: () -> Unit
+    onOpenStats: () -> Unit,
+    onPlayNext: ((Track) -> Unit)? = null,
+    onAddToQueue: ((Track) -> Unit)? = null,
+    swipeQueueLabel: String = "Antrean"
 ) {
     val greeting = remember {
         when (Calendar.getInstance().get(Calendar.HOUR_OF_DAY)) {
@@ -264,6 +267,9 @@ fun HomeScreen(
                         onClick = { onPlayTrack(track, homeState.quickPicks) },
                         onLikeClick = { onToggleLike(track) },
                         onMoreClick = { onTrackOptions(track) },
+                        onSwipeRight = onPlayNext?.let { cb -> { cb(track) } },
+                        onSwipeLeft = onAddToQueue?.let { cb -> { cb(track) } },
+                        swipeLeftLabel = swipeQueueLabel,
                         modifier = Modifier.padding(horizontal = 12.dp)
                     )
                 }

@@ -67,7 +67,10 @@ fun ExploreScreen(
     onPlayTrack: (Track, List<Track>) -> Unit,
     onPlayAll: (List<Track>, Boolean) -> Unit,
     onToggleLike: (Track) -> Unit,
-    onTrackOptions: (Track) -> Unit
+    onTrackOptions: (Track) -> Unit,
+    onPlayNext: ((Track) -> Unit)? = null,
+    onAddToQueue: ((Track) -> Unit)? = null,
+    swipeQueueLabel: String = "Antrean"
 ) {
     LazyColumn(
         modifier = Modifier
@@ -278,6 +281,9 @@ fun ExploreScreen(
                     onClick = { onPlayTrack(track, homeState.chartTracks) },
                     onLikeClick = { onToggleLike(track) },
                     onMoreClick = { onTrackOptions(track) },
+                    onSwipeRight = onPlayNext?.let { cb -> { cb(track) } },
+                    onSwipeLeft = onAddToQueue?.let { cb -> { cb(track) } },
+                    swipeLeftLabel = swipeQueueLabel,
                     modifier = Modifier.padding(horizontal = 12.dp)
                 )
             }

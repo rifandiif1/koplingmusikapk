@@ -1,5 +1,10 @@
 package com.example.ui.screens
 
+import android.app.Activity
+import android.content.Intent
+import android.speech.RecognizerIntent
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -28,6 +33,7 @@ import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.Close
 import androidx.compose.material.icons.rounded.History
+import androidx.compose.material.icons.rounded.Mic
 import androidx.compose.material.icons.rounded.Search
 import androidx.compose.material.icons.rounded.Whatshot
 import androidx.compose.material3.CircularProgressIndicator
@@ -61,6 +67,7 @@ import com.example.ui.components.SearchResultsSkeletonShimmer
 import com.example.ui.components.SectionHeader
 import com.example.ui.components.TrackRowItem
 import com.example.viewmodel.SearchUiState
+import java.util.Locale
 
 private val trendingSuggestions = listOf(
     "Pierce The Veil", "Tulus", "Nadin Amizah", "The Weeknd", "Hindia",
@@ -87,10 +94,42 @@ fun SearchScreen(
     onTrackOptions: (Track) -> Unit,
     onAlbumClick: (AlbumSummary) -> Unit,
     onArtistClick: (ArtistSummary) -> Unit,
-    onRemotePlaylistClick: (RemotePlaylistSummary) -> Unit
+    onRemotePlaylistClick: (RemotePlaylistSummary) -> Unit,
+    onPlayNext: ((Track) -> Unit)? = null,
+    onAddToQueue: ((Track) -> Unit)? = null,
+    swipeQueueLabel: String = "Antrean",
+    onShowSnackbar: (String) -> Unit = {}
 ) {
     val keyboard = LocalSoftwareKeyboardController.current
     val filters = listOf("Semua", "Lagu", "Video", "Album", "Artis", "Playlist")
+
+    val voiceSearchLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.StartActivityForResult()
+    ) { result ->
+        if (result.resultCode == Activity.RESULT_OK) {
+            val spoken = result.data
+                ?.getStringArrayListExtra(RecognizerIntent.EXTRA_RESULTS)
+                ?.firstOrNull()
+                ?.trim()
+            if (!spoken.isNullOrBlank()) {
+                keyboard?.hide()
+                onSubmitSearch(spoken)
+            }
+        }
+    }
+
+    val launchVoiceSearch: () -> Unit = {
+        val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
+            putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
+            putExtra(RecognizerIntent.EXTRA_LANGUAGE, Locale("id", "ID").toLanguageTag())
+            putExtra(RecognizerIntent.EXTRA_PROMPT, "Sebutkan judul lagu atau artis…")
+        }
+        runCatching {
+            voiceSearchLauncher.launch(intent)
+        }.onFailure {
+            onShowSnackbar("Pencarian suara tidak tersedia di perangkat ini")
+        }
+    }
 
     Column(
         modifier = Modifier
@@ -147,12 +186,27 @@ fun SearchScreen(
                     )
                 },
                 trailingIcon = {
-                    if (searchState.query.isNotEmpty()) {
-                        IconButton(onClick = { onQueryChange("") }) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        if (searchState.query.isNotEmpty()) {
+                            IconButton(
+                                onClick = { onQueryChange("") },
+                                modifier = Modifier.testTag("search_clear_button")
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Rounded.Close,
+                                    contentDescription = "Hapus pencarian",
+                                    tint = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                        }
+                        IconButton(
+                            onClick = launchVoiceSearch,
+                            modifier = Modifier.testTag("search_voice_button")
+                        ) {
                             Icon(
-                                imageVector = Icons.Rounded.Close,
-                                contentDescription = "Hapus pencarian",
-                                tint = MaterialTheme.colorScheme.onSurfaceVariant
+                                imageVector = Icons.Rounded.Mic,
+                                contentDescription = "Pencarian suara",
+                                tint = MaterialTheme.colorScheme.primary
                             )
                         }
                     }
@@ -481,6 +535,9 @@ fun SearchScreen(
                             onClick = { onPlayTrack(track, searchState.tracks) },
                             onLikeClick = { onToggleLike(track) },
                             onMoreClick = { onTrackOptions(track) },
+                            onSwipeRight = onPlayNext?.let { cb -> { cb(track) } },
+                            onSwipeLeft = onAddToQueue?.let { cb -> { cb(track) } },
+                            swipeLeftLabel = swipeQueueLabel,
                             modifier = Modifier.padding(horizontal = 12.dp)
                         )
                     }
@@ -502,6 +559,9 @@ fun SearchScreen(
                             onClick = { onPlayTrack(track, searchState.videos) },
                             onLikeClick = { onToggleLike(track) },
                             onMoreClick = { onTrackOptions(track) },
+                            onSwipeRight = onPlayNext?.let { cb -> { cb(track) } },
+                            onSwipeLeft = onAddToQueue?.let { cb -> { cb(track) } },
+                            swipeLeftLabel = swipeQueueLabel,
                             modifier = Modifier.padding(horizontal = 12.dp)
                         )
                     }

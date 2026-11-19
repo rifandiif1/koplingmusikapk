@@ -437,7 +437,8 @@ class ListenTogetherRepository(
     suspend fun toggleUpvoteSharedQueueTrack(
         room: ListenRoom,
         actorName: String,
-        index: Int
+        index: Int,
+        autoSortByVotes: Boolean = true
     ): Result<Unit> {
         val docPath = "listen_rooms/${room.roomCode}"
         return try {
@@ -451,8 +452,11 @@ class ListenTogetherRepository(
                 (target.upvoterUids + uid).distinct().take(25)
             }
             queue[index] = target.copy(upvoterUids = nextUpvoters)
-            // Stable sort: higher upvote count rises toward top of the collaborative queue
-            val sorted = queue.sortedByDescending { it.upvoterUids.size }
+            val finalQueue = if (autoSortByVotes) {
+                queue.sortedByDescending { it.upvoterUids.size }
+            } else {
+                queue
+            }
             val safeActor = actorName.trim().ifBlank { "Pendengar" }.take(60)
             val action = if (alreadyUpvoted) {
                 "$safeActor membatalkan vote \"${target.title}\""
@@ -462,9 +466,38 @@ class ListenTogetherRepository(
             db.collection("listen_rooms").document(room.roomCode)
                 .update(
                     mapOf(
-                        "queueTracks" to sorted.take(30).map { it.toFirestoreMap() },
+                        "queueTracks" to finalQueue.take(30).map { it.toFirestoreMap() },
                         "syncSequence" to (room.syncSequence + 1L),
                         "lastActionBy" to action.take(140),
+                        "updatedAt" to FieldValue.serverTimestamp()
+                    )
+                ).await()
+            Result.success(Unit)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            handleFirestoreError(e, OperationType.UPDATE, docPath)
+            Result.failure(e)
+        }
+    }
+
+    suspend fun sortSharedQueueByVotes(
+        room: ListenRoom,
+        actorName: String
+    ): Result<Unit> {
+        val docPath = "listen_rooms/${room.roomCode}"
+        return try {
+            requireUserId()
+            val queue = room.parsedQueue()
+            if (queue.size <= 1) return Result.success(Unit)
+            val sorted = queue.sortedByDescending { it.upvoterUids.size }
+            val safeActor = actorName.trim().ifBlank { "Pendengar" }.take(60)
+            db.collection("listen_rooms").document(room.roomCode)
+                .update(
+                    mapOf(
+                        "queueTracks" to sorted.take(30).map { it.toFirestoreMap() },
+                        "syncSequence" to (room.syncSequence + 1L),
+                        "lastActionBy" to "🔥 $safeActor mengurutkan antrian via Mode Jukebox".take(140),
                         "updatedAt" to FieldValue.serverTimestamp()
                     )
                 ).await()

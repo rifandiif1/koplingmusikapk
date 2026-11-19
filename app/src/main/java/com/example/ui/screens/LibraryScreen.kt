@@ -17,12 +17,14 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.Add
 import androidx.compose.material.icons.rounded.AudioFile
+import androidx.compose.material.icons.rounded.AutoAwesome
 import androidx.compose.material.icons.rounded.AutoGraph
 import androidx.compose.material.icons.rounded.DeleteOutline
 import androidx.compose.material.icons.rounded.DownloadDone
@@ -32,8 +34,10 @@ import androidx.compose.material.icons.rounded.Groups
 import androidx.compose.material.icons.rounded.History
 import androidx.compose.material.icons.rounded.Login
 import androidx.compose.material.icons.rounded.MusicNote
+import androidx.compose.material.icons.rounded.PlayArrow
 import androidx.compose.material.icons.rounded.QrCode2
 import androidx.compose.material.icons.rounded.QueueMusic
+import androidx.compose.material.icons.rounded.Shuffle
 import androidx.compose.material.icons.rounded.Sync
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -54,10 +58,22 @@ import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import com.example.model.CollectionDetailType
 import com.example.model.PlaylistSummary
+import com.example.model.Track
 import com.example.model.YouTubeAccount
 import com.example.ui.components.AlbumArtImage
 import com.example.ui.components.GlassActionPill
 import com.example.ui.components.SectionHeader
+
+private data class SmartMixItem(
+    val id: String,
+    val title: String,
+    val subtitle: String,
+    val tracks: List<Track>,
+    val shuffle: Boolean,
+    val icon: ImageVector,
+    val startColor: Color,
+    val endColor: Color
+)
 
 @Composable
 fun LibraryScreen(
@@ -77,8 +93,72 @@ fun LibraryScreen(
     onSyncYouTubeLibrary: () -> Unit,
     onImportLocalAudio: () -> Unit,
     onCreatePlaylistClick: () -> Unit,
-    onDeletePlaylist: (Long) -> Unit
+    onDeletePlaylist: (Long) -> Unit,
+    topPlayedTracks: List<Track> = emptyList(),
+    likedTracks: List<Track> = emptyList(),
+    recentTracks: List<Track> = emptyList(),
+    downloadedTracks: List<Track> = emptyList(),
+    onPlaySmartMix: (tracks: List<Track>, shuffle: Boolean) -> Unit = { _, _ -> }
 ) {
+    val distinctRecent = recentTracks.distinctBy { it.id }
+    val smartMixes = buildList {
+        if (topPlayedTracks.isNotEmpty()) {
+            add(
+                SmartMixItem(
+                    id = "top_played",
+                    title = "Paling Sering Diputar",
+                    subtitle = "${topPlayedTracks.size} lagu andalanmu",
+                    tracks = topPlayedTracks,
+                    shuffle = false,
+                    icon = Icons.Rounded.AutoAwesome,
+                    startColor = Color(0xFF00C98D),
+                    endColor = Color(0xFF065F46)
+                )
+            )
+        }
+        if (likedTracks.isNotEmpty()) {
+            add(
+                SmartMixItem(
+                    id = "liked_shuffle",
+                    title = "Acak Lagu Disukai",
+                    subtitle = "${likedTracks.size} favorit diacak",
+                    tracks = likedTracks,
+                    shuffle = true,
+                    icon = Icons.Rounded.Shuffle,
+                    startColor = Color(0xFFFF5A7E),
+                    endColor = Color(0xFF881337)
+                )
+            )
+        }
+        if (distinctRecent.isNotEmpty()) {
+            add(
+                SmartMixItem(
+                    id = "recent_mix",
+                    title = "Baru Diputar",
+                    subtitle = "${distinctRecent.size} lagu terakhir",
+                    tracks = distinctRecent,
+                    shuffle = false,
+                    icon = Icons.Rounded.History,
+                    startColor = Color(0xFFF59E0B),
+                    endColor = Color(0xFF78350F)
+                )
+            )
+        }
+        if (downloadedTracks.isNotEmpty()) {
+            add(
+                SmartMixItem(
+                    id = "offline_ready",
+                    title = "Siap Offline",
+                    subtitle = "${downloadedTracks.size} lagu tanpa kuota",
+                    tracks = downloadedTracks,
+                    shuffle = false,
+                    icon = Icons.Rounded.DownloadDone,
+                    startColor = Color(0xFF00B4D8),
+                    endColor = Color(0xFF0C4A6E)
+                )
+            )
+        }
+    }
     LazyColumn(
         modifier = Modifier
             .fillMaxSize()
@@ -394,6 +474,56 @@ fun LibraryScreen(
             }
         }
 
+        // ---- Smart Mix Otomatis Carousel ----
+        item {
+            Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                SectionHeader(
+                    title = "Smart Mix Otomatis",
+                    subtitle = "Kurasi instan dari kebiasaan dengarmu",
+                    modifier = Modifier.padding(horizontal = 20.dp)
+                )
+                if (smartMixes.isEmpty()) {
+                    Surface(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 20.dp),
+                        shape = RoundedCornerShape(20.dp),
+                        color = MaterialTheme.colorScheme.surface,
+                        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant)
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(16.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(12.dp)
+                        ) {
+                            Icon(
+                                imageVector = Icons.Rounded.AutoAwesome,
+                                contentDescription = null,
+                                tint = MaterialTheme.colorScheme.primary
+                            )
+                            Text(
+                                text = "Putar, sukai, atau unduh beberapa lagu agar Smart Mix Otomatis langsung terbentuk di sini.",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                    }
+                } else {
+                    LazyRow(
+                        contentPadding = PaddingValues(horizontal = 20.dp),
+                        horizontalArrangement = Arrangement.spacedBy(12.dp)
+                    ) {
+                        items(smartMixes, key = { "smix_${it.id}" }) { mix ->
+                            SmartMixCard(
+                                mix = mix,
+                                onClick = { onPlaySmartMix(mix.tracks, mix.shuffle) }
+                            )
+                        }
+                    }
+                }
+            }
+        }
+
         // ---- Custom Playlists Section ----
         item {
             SectionHeader(
@@ -590,6 +720,97 @@ private fun SmartLibraryTile(
                         text = subtitle,
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun SmartMixCard(
+    mix: SmartMixItem,
+    onClick: () -> Unit
+) {
+    Surface(
+        onClick = onClick,
+        shape = RoundedCornerShape(22.dp),
+        border = BorderStroke(1.dp, mix.startColor.copy(alpha = 0.45f)),
+        modifier = Modifier
+            .width(172.dp)
+            .height(142.dp)
+            .testTag("smart_mix_${mix.id}")
+    ) {
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .background(Brush.linearGradient(listOf(mix.startColor, mix.endColor)))
+                .padding(14.dp)
+        ) {
+            Column(
+                modifier = Modifier.fillMaxSize(),
+                verticalArrangement = Arrangement.SpaceBetween
+            ) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    val coverUrl = mix.tracks.firstOrNull { !it.artworkUrl.isNullOrBlank() }?.artworkUrl
+                    if (coverUrl != null) {
+                        AlbumArtImage(
+                            url = coverUrl,
+                            contentDescription = mix.title,
+                            modifier = Modifier.size(44.dp),
+                            shape = RoundedCornerShape(12.dp)
+                        )
+                    } else {
+                        Box(
+                            modifier = Modifier
+                                .size(44.dp)
+                                .clip(RoundedCornerShape(12.dp))
+                                .background(Color.White.copy(alpha = 0.22f)),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Icon(
+                                imageVector = mix.icon,
+                                contentDescription = null,
+                                tint = Color.White,
+                                modifier = Modifier.size(22.dp)
+                            )
+                        }
+                    }
+
+                    Box(
+                        modifier = Modifier
+                            .size(36.dp)
+                            .clip(CircleShape)
+                            .background(Color.Black.copy(alpha = 0.34f)),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Icon(
+                            imageVector = Icons.Rounded.PlayArrow,
+                            contentDescription = "Putar ${mix.title}",
+                            tint = Color.White,
+                            modifier = Modifier.size(20.dp)
+                        )
+                    }
+                }
+
+                Column {
+                    Text(
+                        text = mix.title,
+                        style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.ExtraBold),
+                        color = Color.White,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                    Text(
+                        text = mix.subtitle,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = Color.White.copy(alpha = 0.86f),
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis
                     )

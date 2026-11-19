@@ -65,7 +65,10 @@ fun CollectionDetailScreen(
     onToggleLike: (Track) -> Unit,
     onTrackOptions: (Track) -> Unit,
     onImportLocalAudio: () -> Unit,
-    onClearHistory: () -> Unit
+    onClearHistory: () -> Unit,
+    onPlayNext: ((Track) -> Unit)? = null,
+    onAddToQueue: ((Track) -> Unit)? = null,
+    swipeQueueLabel: String = "Antrean"
 ) {
     BackHandler(onBack = onBack)
 
@@ -261,6 +264,9 @@ fun CollectionDetailScreen(
                         onClick = { onPlayTrack(track, detailState.tracks) },
                         onLikeClick = { onToggleLike(track) },
                         onMoreClick = { onTrackOptions(track) },
+                        onSwipeRight = onPlayNext?.let { cb -> { cb(track) } },
+                        onSwipeLeft = onAddToQueue?.let { cb -> { cb(track) } },
+                        swipeLeftLabel = swipeQueueLabel,
                         modifier = Modifier.padding(horizontal = 12.dp)
                     )
                 }

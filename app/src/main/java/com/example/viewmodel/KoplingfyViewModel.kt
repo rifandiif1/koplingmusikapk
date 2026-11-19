@@ -1,6 +1,9 @@
 package com.example.viewmodel
 
 import android.app.Application
+import android.content.Context
+import android.net.ConnectivityManager
+import android.net.NetworkCapabilities
 import android.net.Uri
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
@@ -84,7 +87,11 @@ data class PlayerUiState(
     val sleepAfterCurrentTrack: Boolean = false,
     val streamSourceLabel: String = "YOUTUBE MUSIC • FULL",
     val audioError: String? = null,
-    val requiresYouTubeLogin: Boolean = false
+    val requiresYouTubeLogin: Boolean = false,
+    val lyricsOffsetMs: Long = 0L,
+    val abLoopStartMs: Long? = null,
+    val abLoopEndMs: Long? = null,
+    val isDrivingMode: Boolean = false
 )
 
 data class CollectionDetailState(
@@ -352,6 +359,7 @@ class KoplingfyViewModel(application: Application) : AndroidViewModel(applicatio
     fun playTrack(track: Track, queue: List<Track> = listOf(track), expandPlayer: Boolean = false) {
         val safeQueue = if (queue.any { it.id == track.id }) queue else listOf(track) + queue
         val idx = safeQueue.indexOfFirst { it.id == track.id }.coerceAtLeast(0)
+        audioEngine.setAbLoop(null, null)
         _playerState.update {
             it.copy(
                 currentTrack = track,
@@ -364,12 +372,31 @@ class KoplingfyViewModel(application: Application) : AndroidViewModel(applicatio
                 isPlayerExpanded = expandPlayer || it.isPlayerExpanded,
                 lyricsState = LyricsState(isLoading = true),
                 audioError = null,
-                requiresYouTubeLogin = false
+                requiresYouTubeLogin = false,
+                lyricsOffsetMs = 0L,
+                abLoopStartMs = null,
+                abLoopEndMs = null
             )
         }
         resolveAndPlayTrack(track)
         viewModelScope.launch { repository.recordPlay(track) }
         fetchLyricsForTrack(track)
+    }
+
+    private fun isOnWifi(): Boolean {
+        val cm = getApplication<Application>().getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager
+            ?: return false
+        val caps = cm.getNetworkCapabilities(cm.activeNetwork) ?: return false
+        return caps.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) ||
+            caps.hasTransport(NetworkCapabilities.TRANSPORT_ETHERNET)
+    }
+
+    private fun isOnCellular(): Boolean {
+        val cm = getApplication<Application>().getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager
+            ?: return false
+        val caps = cm.getNetworkCapabilities(cm.activeNetwork) ?: return false
+        return caps.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR) &&
+            !caps.hasTransport(NetworkCapabilities.TRANSPORT_WIFI)
     }
 
     private fun resolveAndPlayTrack(track: Track) {
@@ -378,13 +405,18 @@ class KoplingfyViewModel(application: Application) : AndroidViewModel(applicatio
             _playerState.update {
                 it.copy(isBuffering = true, audioError = null, requiresYouTubeLogin = false)
             }
-            when (val result = repository.resolveFullAudioStream(track, settings.value.audioQuality)) {
+            val useDataSaver = settings.value.dataSaverCellular && isOnCellular()
+            val effectiveQuality = if (useDataSaver) AudioQuality.LOW else settings.value.audioQuality
+            when (val result = repository.resolveFullAudioStream(track, effectiveQuality)) {
                 is StreamResolveResult.Success -> {
                     val stream = result.stream
+                    val sourceTag = if (useDataSaver && !track.isLocal && !track.isDownloaded) {
+                        "${stream.sourceLabel} • HEMAT KUOTA"
+                    } else stream.sourceLabel
                     _playerState.update {
                         it.copy(
                             durationMs = stream.durationMs?.takeIf { d -> d > 0L } ?: it.durationMs,
-                            streamSourceLabel = stream.sourceLabel,
+                            streamSourceLabel = sourceTag,
                             audioError = null,
                             requiresYouTubeLogin = false
                         )
@@ -446,6 +478,7 @@ class KoplingfyViewModel(application: Application) : AndroidViewModel(applicatio
 
     fun togglePlayPause() {
         val current = _playerState.value.currentTrack ?: return
+        audioEngine.setSleepFadeMultiplier(1.0f)
         if (_playerState.value.audioError != null) {
             resolveAndPlayTrack(current)
         } else {
@@ -628,8 +661,66 @@ class KoplingfyViewModel(application: Application) : AndroidViewModel(applicatio
         }
     }
 
+    fun saveTracksAsPlaylist(name: String, description: String, tracks: List<Track>) {
+        if (name.isBlank() || tracks.isEmpty()) {
+            showMessage("Tidak ada lagu untuk disimpan ke playlist")
+            return
+        }
+        viewModelScope.launch {
+            repository.createPlaylistWithTracks(name, description, tracks.distinctBy { it.id })
+            showMessage("\"$name\" (${tracks.distinctBy { it.id }.size} lagu) disimpan ke Koleksi!")
+        }
+    }
+
     fun setPlayerExpanded(expanded: Boolean) {
-        _playerState.update { it.copy(isPlayerExpanded = expanded) }
+        _playerState.update {
+            it.copy(
+                isPlayerExpanded = expanded,
+                isDrivingMode = if (!expanded) false else it.isDrivingMode
+            )
+        }
+    }
+
+    fun setDrivingMode(enabled: Boolean) {
+        _playerState.update { it.copy(isDrivingMode = enabled) }
+    }
+
+    fun nudgeLyricsOffset(deltaMs: Long) {
+        _playerState.update { state ->
+            val next = (state.lyricsOffsetMs + deltaMs).coerceIn(-10_000L, 10_000L)
+            state.copy(lyricsOffsetMs = next)
+        }
+    }
+
+    fun resetLyricsOffset() {
+        _playerState.update { it.copy(lyricsOffsetMs = 0L) }
+    }
+
+    fun setAbLoopPointA() {
+        val pos = _playerState.value.positionMs
+        val currentB = _playerState.value.abLoopEndMs
+        val validB = if (currentB != null && currentB > pos + 500L) currentB else null
+        _playerState.update { it.copy(abLoopStartMs = pos, abLoopEndMs = validB) }
+        audioEngine.setAbLoop(pos, validB)
+        showMessage("Titik A diatur pada ${pos / 1000}d")
+    }
+
+    fun setAbLoopPointB() {
+        val pos = _playerState.value.positionMs
+        val currentA = _playerState.value.abLoopStartMs ?: 0L
+        if (pos <= currentA + 500L) {
+            showMessage("Titik B harus berada setelah Titik A")
+            return
+        }
+        _playerState.update { it.copy(abLoopStartMs = currentA, abLoopEndMs = pos) }
+        audioEngine.setAbLoop(currentA, pos)
+        showMessage("A-B Loop aktif!")
+    }
+
+    fun clearAbLoop() {
+        _playerState.update { it.copy(abLoopStartMs = null, abLoopEndMs = null) }
+        audioEngine.setAbLoop(null, null)
+        showMessage("A-B Loop dimatikan")
     }
 
     private fun fetchLyricsForTrack(track: Track) {
@@ -645,6 +736,10 @@ class KoplingfyViewModel(application: Application) : AndroidViewModel(applicatio
     fun downloadTrack(track: Track) {
         if (track.isLocal) {
             showMessage("Lagu lokal sudah tersimpan di perangkat")
+            return
+        }
+        if (settings.value.downloadWifiOnly && !isOnWifi()) {
+            showMessage("Unduh Khusus Wi-Fi aktif — sambungkan ke Wi-Fi untuk mengunduh")
             return
         }
         if (activeDownloads.value.containsKey(track.id)) return
@@ -769,31 +864,38 @@ class KoplingfyViewModel(application: Application) : AndroidViewModel(applicatio
         }
     }
 
-    // ---- Sleep Timer ----
+    // ---- Sleep Timer with smooth 10-second volume fade-out ----
     fun setSleepTimerMinutes(minutes: Int) {
         sleepTimerJob?.cancel()
+        audioEngine.setSleepFadeMultiplier(1.0f)
         if (minutes <= 0) {
             _playerState.update { it.copy(sleepTimerRemainingSec = null, sleepAfterCurrentTrack = false) }
             showMessage("Timer tidur dimatikan")
             return
         }
         _playerState.update { it.copy(sleepAfterCurrentTrack = false, sleepTimerRemainingSec = minutes * 60) }
-        showMessage("Timer tidur diatur $minutes menit")
+        showMessage("Timer tidur diatur $minutes menit (fade-out halus 10d terakhir)")
         sleepTimerJob = viewModelScope.launch {
             var remaining = minutes * 60
             while (remaining > 0) {
                 delay(1_000L)
                 remaining -= 1
                 _playerState.update { it.copy(sleepTimerRemainingSec = remaining) }
+                if (remaining in 1..10) {
+                    val fade = (remaining / 10f).coerceIn(0.08f, 1.0f)
+                    audioEngine.setSleepFadeMultiplier(fade)
+                }
             }
             audioEngine.pause()
+            audioEngine.setSleepFadeMultiplier(1.0f)
             _playerState.update { it.copy(sleepTimerRemainingSec = null) }
-            showMessage("Timer tidur selesai — musik dijeda")
+            showMessage("Timer tidur selesai — musik dijeda lembut")
         }
     }
 
     fun setSleepAfterCurrentTrack() {
         sleepTimerJob?.cancel()
+        audioEngine.setSleepFadeMultiplier(1.0f)
         _playerState.update { it.copy(sleepTimerRemainingSec = null, sleepAfterCurrentTrack = true) }
         showMessage("Musik akan berhenti setelah lagu ini selesai")
     }
@@ -1050,6 +1152,8 @@ class KoplingfyViewModel(application: Application) : AndroidViewModel(applicatio
     fun setGaplessPlayback(enabled: Boolean) = viewModelScope.launch { preferences.setGaplessPlayback(enabled) }
     fun setDynamicArtworkColor(enabled: Boolean) = viewModelScope.launch { preferences.setDynamicArtworkColor(enabled) }
     fun setCrossfadeSeconds(seconds: Int) = viewModelScope.launch { preferences.setCrossfadeSeconds(seconds) }
+    fun setDataSaverCellular(enabled: Boolean) = viewModelScope.launch { preferences.setDataSaverCellular(enabled) }
+    fun setDownloadWifiOnly(enabled: Boolean) = viewModelScope.launch { preferences.setDownloadWifiOnly(enabled) }
 
     fun showMessage(msg: String) {
         _snackbarMessage.value = msg

@@ -6,10 +6,14 @@ import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
+import androidx.compose.animation.core.Spring
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.spring
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -63,6 +67,12 @@ import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Shape
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.runtime.rememberUpdatedState
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.stringResource
@@ -235,27 +245,102 @@ fun TrackRowItem(
     onLikeClick: () -> Unit,
     onMoreClick: () -> Unit,
     modifier: Modifier = Modifier,
-    rankNumber: Int? = null
+    rankNumber: Int? = null,
+    onSwipeRight: (() -> Unit)? = null,
+    onSwipeLeft: (() -> Unit)? = null,
+    swipeLeftLabel: String = "Antrean"
 ) {
     val activeBg = if (isCurrent) {
         MaterialTheme.colorScheme.primary.copy(alpha = 0.11f)
     } else {
-        Color.Transparent
+        MaterialTheme.colorScheme.background
     }
     val borderStroke = if (isCurrent) {
         BorderStroke(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.35f))
     } else null
 
-    Surface(
+    val haptic = LocalHapticFeedback.current
+    var dragOffsetX by remember(track.id) { mutableFloatStateOf(0f) }
+    val animatedOffsetX by animateFloatAsState(
+        targetValue = dragOffsetX,
+        animationSpec = spring(dampingRatio = Spring.DampingRatioMediumBouncy, stiffness = Spring.StiffnessMedium),
+        label = "track_swipe_x"
+    )
+    val latestSwipeRight by rememberUpdatedState(onSwipeRight)
+    val latestSwipeLeft by rememberUpdatedState(onSwipeLeft)
+    val swipeEnabled = onSwipeRight != null || onSwipeLeft != null
+
+    Box(
         modifier = modifier
             .fillMaxWidth()
             .clip(RoundedCornerShape(16.dp))
-            .clickable(onClick = onClick)
-            .testTag("track_row_${track.id}"),
-        color = activeBg,
-        shape = RoundedCornerShape(16.dp),
-        border = borderStroke
     ) {
+        if (swipeEnabled && (animatedOffsetX > 6f || animatedOffsetX < -6f)) {
+            val swipingRight = animatedOffsetX > 0f
+            Row(
+                modifier = Modifier
+                    .matchParentSize()
+                    .background(
+                        if (swipingRight) MaterialTheme.colorScheme.primary.copy(alpha = 0.24f)
+                        else MaterialTheme.colorScheme.secondary.copy(alpha = 0.24f)
+                    )
+                    .padding(horizontal = 18.dp),
+                horizontalArrangement = if (swipingRight) Arrangement.Start else Arrangement.End,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Icon(
+                    imageVector = if (swipingRight) Icons.Rounded.PlaylistPlay else Icons.AutoMirrored.Rounded.QueueMusic,
+                    contentDescription = null,
+                    tint = if (swipingRight) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.secondary,
+                    modifier = Modifier.size(20.dp)
+                )
+                Spacer(modifier = Modifier.width(6.dp))
+                Text(
+                    text = if (swipingRight) "Putar Berikutnya" else swipeLeftLabel,
+                    style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Bold),
+                    color = if (swipingRight) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.secondary
+                )
+            }
+        }
+
+        Surface(
+            modifier = Modifier
+                .fillMaxWidth()
+                .graphicsLayer { translationX = animatedOffsetX }
+                .then(
+                    if (swipeEnabled) {
+                        Modifier.pointerInput(track.id, onSwipeRight != null, onSwipeLeft != null) {
+                            detectHorizontalDragGestures(
+                                onDragEnd = {
+                                    when {
+                                        dragOffsetX >= 110f && latestSwipeRight != null -> {
+                                            haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                                            latestSwipeRight?.invoke()
+                                        }
+                                        dragOffsetX <= -110f && latestSwipeLeft != null -> {
+                                            haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                                            latestSwipeLeft?.invoke()
+                                        }
+                                    }
+                                    dragOffsetX = 0f
+                                },
+                                onDragCancel = { dragOffsetX = 0f },
+                                onHorizontalDrag = { _, dragAmount ->
+                                    val minDrag = if (latestSwipeLeft != null) -170f else 0f
+                                    val maxDrag = if (latestSwipeRight != null) 170f else 0f
+                                    dragOffsetX = (dragOffsetX + dragAmount).coerceIn(minDrag, maxDrag)
+                                }
+                            )
+                        }
+                    } else Modifier
+                )
+                .clip(RoundedCornerShape(16.dp))
+                .clickable(onClick = onClick)
+                .testTag("track_row_${track.id}"),
+            color = activeBg,
+            shape = RoundedCornerShape(16.dp),
+            border = borderStroke
+        ) {
         Row(
             modifier = Modifier
                 .fillMaxWidth()
@@ -389,6 +474,7 @@ fun TrackRowItem(
                     modifier = Modifier.size(20.dp)
                 )
             }
+        }
         }
     }
 }

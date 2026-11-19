@@ -100,7 +100,8 @@ fun ListenTogetherScreenHost(
     onSyncPlayerNext: () -> Unit,
     onForceResyncFromRoom: (ListenRoom) -> Unit,
     onPlayRoomTrackLocally: (Track, List<Track>) -> Unit,
-    onQuickSearchTracks: suspend (String) -> List<Track>
+    onQuickSearchTracks: suspend (String) -> List<Track>,
+    onSaveRoomAsPlaylist: (name: String, tracks: List<Track>) -> Unit = { _, _ -> }
 ) {
     BackHandler(onBack = onBack)
 
@@ -131,7 +132,8 @@ fun ListenTogetherScreenHost(
                     onSyncPlayerNext = onSyncPlayerNext,
                     onForceResyncFromRoom = onForceResyncFromRoom,
                     onPlayRoomTrackLocally = onPlayRoomTrackLocally,
-                    onQuickSearchTracks = onQuickSearchTracks
+                    onQuickSearchTracks = onQuickSearchTracks,
+                    onSaveRoomAsPlaylist = onSaveRoomAsPlaylist
                 )
             }
         }
@@ -368,7 +370,8 @@ private fun ListenTogetherSignedInScreen(
     onSyncPlayerNext: () -> Unit,
     onForceResyncFromRoom: (ListenRoom) -> Unit,
     onPlayRoomTrackLocally: (Track, List<Track>) -> Unit,
-    onQuickSearchTracks: suspend (String) -> List<Track>
+    onQuickSearchTracks: suspend (String) -> List<Track>,
+    onSaveRoomAsPlaylist: (name: String, tracks: List<Track>) -> Unit = { _, _ -> }
 ) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
@@ -418,7 +421,11 @@ private fun ListenTogetherSignedInScreen(
                 onSendReaction = { emoji -> listenViewModel.sendReaction(emoji) },
                 onQuickSearchTracks = onQuickSearchTracks,
                 onLeaveOrEnd = { listenViewModel.leaveOrEndCurrentRoom() },
-                onShowSnackbar = onShowSnackbar
+                onShowSnackbar = onShowSnackbar,
+                jukeboxAutoSort = sessionState.jukeboxAutoSort,
+                onToggleJukeboxAutoSort = { listenViewModel.toggleJukeboxAutoSort(it) },
+                onSortSharedQueueByVotes = { listenViewModel.sortRoomQueueByVotes() },
+                onSaveRoomAsPlaylist = onSaveRoomAsPlaylist
             )
         } else {
             ListenTogetherLobbyContent(

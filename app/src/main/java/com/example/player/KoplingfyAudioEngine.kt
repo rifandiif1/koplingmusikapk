@@ -60,6 +60,9 @@ class KoplingfyAudioEngine(
     private var currentBassStrength: Float = 0f
     private var normalizeAudio: Boolean = true
     private var crossfadeSeconds: Int = 0
+    private var sleepFadeMultiplier: Float = 1.0f
+    private var abLoopStartMs: Long? = null
+    private var abLoopEndMs: Long? = null
     private var isDucked: Boolean = false
     private var pendingStartPositionMs: Long = 0L
     private var pendingAutoStart: Boolean = true
@@ -144,7 +147,7 @@ class KoplingfyAudioEngine(
                     pendingStartPositionMs = 0L
                     pendingAutoStart = true
                     if (shouldStart) {
-                        val initVol = if (crossfadeSeconds > 0 && safeStartPos < 1_000L && !isDucked) 0.12f else if (isDucked) 0.3f else 1.0f
+                        val initVol = ((if (crossfadeSeconds > 0 && safeStartPos < 1_000L && !isDucked) 0.12f else if (isDucked) 0.3f else 1.0f) * sleepFadeMultiplier).coerceIn(0.05f, 1.0f)
                         runCatching { player.setVolume(initVol, initVol) }
                         player.start()
                         startProgressPolling()
@@ -275,8 +278,23 @@ class KoplingfyAudioEngine(
     fun updateCrossfadeSeconds(seconds: Int) {
         crossfadeSeconds = seconds.coerceIn(0, 10)
         if (crossfadeSeconds == 0 && !isDucked) {
-            runCatching { mediaPlayer?.setVolume(1.0f, 1.0f) }
+            val vol = (1.0f * sleepFadeMultiplier).coerceIn(0.05f, 1.0f)
+            runCatching { mediaPlayer?.setVolume(vol, vol) }
         }
+    }
+
+    fun setSleepFadeMultiplier(multiplier: Float) {
+        sleepFadeMultiplier = multiplier.coerceIn(0.05f, 1.0f)
+        val mp = mediaPlayer ?: return
+        runCatching {
+            val maxVol = (if (isDucked) 0.3f else 1.0f) * sleepFadeMultiplier
+            mp.setVolume(maxVol, maxVol)
+        }
+    }
+
+    fun setAbLoop(startMs: Long?, endMs: Long?) {
+        abLoopStartMs = startMs
+        abLoopEndMs = endMs
     }
 
     private fun applyPlaybackParams(mp: MediaPlayer) {
@@ -380,8 +398,14 @@ class KoplingfyAudioEngine(
                 if (mp != null) {
                     try {
                         if (mp.isPlaying) {
-                            val pos = mp.currentPosition.toLong()
+                            var pos = mp.currentPosition.toLong()
                             val dur = mp.duration.toLong().coerceAtLeast(_state.value.durationMs)
+                            val loopA = abLoopStartMs
+                            val loopB = abLoopEndMs
+                            if (loopA != null && loopB != null && loopB > loopA + 500L && pos >= loopB) {
+                                runCatching { mp.seekTo(loopA.toInt()) }
+                                pos = loopA
+                            }
                             applyCrossfadeVolume(mp, pos, dur)
                             _state.value = _state.value.copy(
                                 isPlaying = true,
@@ -398,7 +422,7 @@ class KoplingfyAudioEngine(
     }
 
     private fun applyCrossfadeVolume(mp: MediaPlayer, positionMs: Long, durationMs: Long) {
-        val maxVol = if (isDucked) 0.3f else 1.0f
+        val maxVol = (if (isDucked) 0.3f else 1.0f) * sleepFadeMultiplier
         if (crossfadeSeconds <= 0 || durationMs <= 12_000L) {
             runCatching { mp.setVolume(maxVol, maxVol) }
             return
@@ -410,7 +434,7 @@ class KoplingfyAudioEngine(
             remainingMs < fadeWindowMs -> (remainingMs.toFloat() / fadeWindowMs.toFloat()).coerceIn(0.08f, 1.0f)
             else -> 1.0f
         }
-        val vol = (maxVol * factor).coerceIn(0.05f, 1.0f)
+        val vol = (maxVol * factor).coerceIn(0.04f, 1.0f)
         runCatching { mp.setVolume(vol, vol) }
     }
 

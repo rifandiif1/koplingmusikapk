@@ -27,7 +27,8 @@ data class ListenSessionUiState(
     val statusMessage: String? = null,
     val errorMessage: String? = null,
     val showQrCardModal: Boolean = false,
-    val lastSyncedSequence: Long = 0L
+    val lastSyncedSequence: Long = 0L,
+    val jukeboxAutoSort: Boolean = true
 ) {
     fun isHost(uid: String): Boolean = activeRoom?.hostUid == uid
     fun canControl(uid: String): Boolean {
@@ -307,11 +308,35 @@ class ListenTogetherViewModel(
         }
     }
 
-    fun upvoteRoomQueueTrack(index: Int) {
+    fun toggleJukeboxAutoSort(enabled: Boolean) {
+        _sessionState.update { it.copy(jukeboxAutoSort = enabled) }
+        if (enabled) {
+            sortRoomQueueByVotes()
+        }
+    }
+
+    fun sortRoomQueueByVotes() {
         val room = _sessionState.value.activeRoom ?: return
         if (room.status != "active" || currentUserId !in room.memberUids) return
         viewModelScope.launch {
-            val res = repository.toggleUpvoteSharedQueueTrack(room, currentUserName, index)
+            val res = repository.sortSharedQueueByVotes(room, currentUserName)
+            res.onFailure { err ->
+                _sessionState.update { it.copy(errorMessage = err.message ?: "Gagal mengurutkan antrian via vote") }
+            }
+        }
+    }
+
+    fun upvoteRoomQueueTrack(index: Int) {
+        val room = _sessionState.value.activeRoom ?: return
+        if (room.status != "active" || currentUserId !in room.memberUids) return
+        val autoSort = _sessionState.value.jukeboxAutoSort
+        viewModelScope.launch {
+            val res = repository.toggleUpvoteSharedQueueTrack(
+                room = room,
+                actorName = currentUserName,
+                index = index,
+                autoSortByVotes = autoSort
+            )
             res.onFailure { err ->
                 _sessionState.update { it.copy(errorMessage = err.message ?: "Gagal memberi vote lagu") }
             }

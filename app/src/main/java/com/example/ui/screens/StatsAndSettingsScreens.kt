@@ -532,6 +532,8 @@ fun SettingsScreen(
     onGaplessChange: (Boolean) -> Unit,
     onDynamicArtworkColorChange: (Boolean) -> Unit = {},
     onCrossfadeSecondsChange: (Int) -> Unit = {},
+    onDataSaverCellularChange: (Boolean) -> Unit = {},
+    onDownloadWifiOnlyChange: (Boolean) -> Unit = {},
     onClearCache: () -> Unit,
     onClearDownloads: () -> Unit,
     onExportBackup: () -> Unit,
@@ -775,6 +777,18 @@ fun SettingsScreen(
                 }
 
                 Spacer(modifier = Modifier.height(6.dp))
+                SettingsToggleRow(
+                    title = "Hemat Kuota Seluler",
+                    subtitle = "Otomatis pakai kualitas Hemat Data saat menggunakan jaringan seluler",
+                    checked = settings.dataSaverCellular,
+                    onCheckedChange = onDataSaverCellularChange
+                )
+                SettingsToggleRow(
+                    title = "Unduh Khusus Wi-Fi",
+                    subtitle = "Cegah unduhan offline saat memakai data seluler",
+                    checked = settings.downloadWifiOnly,
+                    onCheckedChange = onDownloadWifiOnlyChange
+                )
                 SettingsToggleRow(
                     title = "Normalisasi Volume Audio",
                     subtitle = "Aktifkan LoudnessEnhancer agar volume stabil antar lagu",

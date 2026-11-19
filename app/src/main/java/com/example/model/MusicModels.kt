@@ -159,7 +159,9 @@ data class AudioSettings(
     val highQualityStream: Boolean = true,
     val gaplessPlayback: Boolean = true,
     val dynamicArtworkColor: Boolean = true,
-    val crossfadeSeconds: Int = 0
+    val crossfadeSeconds: Int = 0,
+    val dataSaverCellular: Boolean = false,
+    val downloadWifiOnly: Boolean = false
 )
 
 @Immutable

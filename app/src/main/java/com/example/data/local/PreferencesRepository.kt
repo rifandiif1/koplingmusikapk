@@ -41,6 +41,8 @@ class PreferencesRepository(private val context: Context) {
         val GAPLESS = booleanPreferencesKey("gapless")
         val DYNAMIC_ARTWORK_COLOR = booleanPreferencesKey("dynamic_artwork_color")
         val CROSSFADE_SECONDS = intPreferencesKey("crossfade_seconds")
+        val DATA_SAVER_CELLULAR = booleanPreferencesKey("data_saver_cellular")
+        val DOWNLOAD_WIFI_ONLY = booleanPreferencesKey("download_wifi_only")
 
         // YouTube Music Account (Metrolist InnerTube auth)
         val YTM_COOKIE = stringPreferencesKey("ytm_cookie")
@@ -87,7 +89,9 @@ class PreferencesRepository(private val context: Context) {
             highQualityStream = prefs[Keys.HIGH_QUALITY] ?: true,
             gaplessPlayback = prefs[Keys.GAPLESS] ?: true,
             dynamicArtworkColor = prefs[Keys.DYNAMIC_ARTWORK_COLOR] ?: true,
-            crossfadeSeconds = (prefs[Keys.CROSSFADE_SECONDS] ?: 0).coerceIn(0, 10)
+            crossfadeSeconds = (prefs[Keys.CROSSFADE_SECONDS] ?: 0).coerceIn(0, 10),
+            dataSaverCellular = prefs[Keys.DATA_SAVER_CELLULAR] ?: false,
+            downloadWifiOnly = prefs[Keys.DOWNLOAD_WIFI_ONLY] ?: false
         )
     }
 
@@ -206,5 +210,13 @@ class PreferencesRepository(private val context: Context) {
 
     suspend fun setCrossfadeSeconds(seconds: Int) {
         context.koplingfyDataStore.edit { it[Keys.CROSSFADE_SECONDS] = seconds.coerceIn(0, 10) }
+    }
+
+    suspend fun setDataSaverCellular(enabled: Boolean) {
+        context.koplingfyDataStore.edit { it[Keys.DATA_SAVER_CELLULAR] = enabled }
+    }
+
+    suspend fun setDownloadWifiOnly(enabled: Boolean) {
+        context.koplingfyDataStore.edit { it[Keys.DOWNLOAD_WIFI_ONLY] = enabled }
     }
 }

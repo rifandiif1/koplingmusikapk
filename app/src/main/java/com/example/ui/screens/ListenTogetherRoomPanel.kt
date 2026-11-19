@@ -51,9 +51,11 @@ import androidx.compose.material.icons.rounded.Person
 import androidx.compose.material.icons.rounded.PlayArrow
 import androidx.compose.material.icons.rounded.QrCode2
 import androidx.compose.material.icons.rounded.QueuePlayNext
+import androidx.compose.material.icons.rounded.Save
 import androidx.compose.material.icons.rounded.Search
 import androidx.compose.material.icons.rounded.Share
 import androidx.compose.material.icons.rounded.SkipNext
+import androidx.compose.material.icons.rounded.Sort
 import androidx.compose.material.icons.rounded.Sync
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
@@ -97,6 +99,7 @@ import coil.compose.AsyncImage
 import com.example.listentogether.ListenRoom
 import com.example.listentogether.QrCodeUtils
 import com.example.model.Track
+import com.example.ui.components.FloatingReactionsOverlay
 import com.example.viewmodel.PlayerUiState
 import kotlinx.coroutines.launch
 
@@ -125,7 +128,11 @@ fun ListenTogetherActiveRoomContent(
     onSendReaction: (String) -> Unit,
     onQuickSearchTracks: suspend (String) -> List<Track>,
     onLeaveOrEnd: () -> Unit,
-    onShowSnackbar: (String) -> Unit
+    onShowSnackbar: (String) -> Unit,
+    jukeboxAutoSort: Boolean = true,
+    onToggleJukeboxAutoSort: (Boolean) -> Unit = {},
+    onSortSharedQueueByVotes: () -> Unit = {},
+    onSaveRoomAsPlaylist: (name: String, tracks: List<Track>) -> Unit = { _, _ -> }
 ) {
     val context = LocalContext.current
     val isHost = room.hostUid == currentUserId
@@ -161,6 +168,7 @@ fun ListenTogetherActiveRoomContent(
         runCatching { context.startActivity(Intent.createChooser(intent, "Bagikan Undangan Ruang")) }
     }
 
+    Box(modifier = Modifier.fillMaxSize()) {
     LazyColumn(
         modifier = Modifier
             .fillMaxSize()
@@ -645,6 +653,85 @@ fun ListenTogetherActiveRoomContent(
                             }
                         }
                     }
+
+                    // Mode Jukebox (Auto-Sort by Upvote) & Save Session as Playlist controls
+                    Surface(
+                        shape = RoundedCornerShape(16.dp),
+                        color = MaterialTheme.colorScheme.surfaceContainer,
+                        border = BorderStroke(0.8.dp, MaterialTheme.colorScheme.outlineVariant),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Column(
+                            modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp),
+                            verticalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.SpaceBetween
+                            ) {
+                                Column(modifier = Modifier.weight(1f)) {
+                                    Text(
+                                        text = "Mode Jukebox (Auto-Sort Vote)",
+                                        style = MaterialTheme.typography.labelLarge,
+                                        fontWeight = FontWeight.Bold
+                                    )
+                                    Text(
+                                        text = "Lagu dengan vote terbanyak otomatis naik ke atas",
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+                                }
+                                Switch(
+                                    checked = jukeboxAutoSort,
+                                    onCheckedChange = onToggleJukeboxAutoSort,
+                                    modifier = Modifier.testTag("room_jukebox_auto_sort_switch")
+                                )
+                            }
+
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                            ) {
+                                if (sharedQueue.size > 1) {
+                                    OutlinedButton(
+                                        onClick = onSortSharedQueueByVotes,
+                                        shape = RoundedCornerShape(12.dp),
+                                        contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp),
+                                        modifier = Modifier.weight(1f).testTag("room_sort_by_vote_button")
+                                    ) {
+                                        Icon(Icons.Rounded.Sort, contentDescription = null, modifier = Modifier.size(15.dp))
+                                        Spacer(modifier = Modifier.width(5.dp))
+                                        Text("Urutkan Vote", style = MaterialTheme.typography.labelMedium, maxLines = 1)
+                                    }
+                                }
+
+                                val sessionTracks = remember(room.currentTrackId, sharedQueue) {
+                                    buildList {
+                                        room.currentTrackOrNull()?.let { add(it) }
+                                        addAll(sharedQueue.map { it.toTrack() })
+                                    }.distinctBy { it.id }
+                                }
+                                if (sessionTracks.isNotEmpty()) {
+                                    OutlinedButton(
+                                        onClick = {
+                                            onSaveRoomAsPlaylist(
+                                                "Sesi ${room.roomName}",
+                                                sessionTracks
+                                            )
+                                        },
+                                        shape = RoundedCornerShape(12.dp),
+                                        contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp),
+                                        modifier = Modifier.weight(1f).testTag("room_save_as_playlist_button")
+                                    ) {
+                                        Icon(Icons.Rounded.Save, contentDescription = null, modifier = Modifier.size(15.dp))
+                                        Spacer(modifier = Modifier.width(5.dp))
+                                        Text("Simpan Playlist", style = MaterialTheme.typography.labelMedium, maxLines = 1)
+                                    }
+                                }
+                            }
+                        }
+                    }
                 }
             }
         }
@@ -1013,6 +1100,13 @@ fun ListenTogetherActiveRoomContent(
                 }
             }
         }
+    }
+
+    FloatingReactionsOverlay(
+        triggerKey = "${room.updatedAt?.seconds}_${room.lastActionBy}",
+        reactionText = room.lastActionBy,
+        modifier = Modifier.fillMaxSize()
+    )
     }
 
     if (showAddQueueSearchSheet) {

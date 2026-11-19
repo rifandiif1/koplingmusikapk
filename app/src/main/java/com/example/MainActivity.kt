@@ -373,6 +373,23 @@ fun KoplingfyAppRoot(
         }
     }
 
+    val swipePlayNext: (Track) -> Unit = { track ->
+        if (isActiveRoomMember && !track.isLocal) {
+            listenViewModel?.addTrackToRoomQueue(track, playNext = true)
+        } else {
+            viewModel.addToQueueNext(track)
+        }
+    }
+
+    val swipeAddToQueue: (Track) -> Unit = { track ->
+        if (isActiveRoomMember && !track.isLocal) {
+            listenViewModel?.addTrackToRoomQueue(track, playNext = false)
+        } else {
+            viewModel.addToQueueEnd(track)
+        }
+    }
+    val swipeQueueLabel = if (isActiveRoomMember) "Antrian+" else "Antrean"
+
     // Zero-permission SAF launchers
     val localAudioPicker = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.OpenMultipleDocuments()
@@ -530,7 +547,14 @@ fun KoplingfyAppRoot(
                                         onPlayRoomTrackLocally = { track, queue ->
                                             viewModel.playTrack(track, queue, expandPlayer = false)
                                         },
-                                        onQuickSearchTracks = viewModel::quickSearchTracksForSharedQueue
+                                        onQuickSearchTracks = viewModel::quickSearchTracksForSharedQueue,
+                                        onSaveRoomAsPlaylist = { name, tracks ->
+                                            viewModel.saveTracksAsPlaylist(
+                                                name = name,
+                                                description = "Disimpan dari sesi Play Bersama",
+                                                tracks = tracks
+                                            )
+                                        }
                                     )
                                 }
                                 OverlayPage.YOUTUBE_LOGIN -> {
@@ -571,7 +595,10 @@ fun KoplingfyAppRoot(
                                         onToggleLike = viewModel::toggleLike,
                                         onTrackOptions = { optionsTrack = it },
                                         onImportLocalAudio = { localAudioPicker.launch(arrayOf("audio/*")) },
-                                        onClearHistory = viewModel::clearPlayHistory
+                                        onClearHistory = viewModel::clearPlayHistory,
+                                        onPlayNext = swipePlayNext,
+                                        onAddToQueue = swipeAddToQueue,
+                                        swipeQueueLabel = swipeQueueLabel
                                     )
                                 }
                                 OverlayPage.SETTINGS -> {
@@ -598,6 +625,8 @@ fun KoplingfyAppRoot(
                                         onGaplessChange = viewModel::setGaplessPlayback,
                                         onDynamicArtworkColorChange = viewModel::setDynamicArtworkColor,
                                         onCrossfadeSecondsChange = viewModel::setCrossfadeSeconds,
+                                        onDataSaverCellularChange = viewModel::setDataSaverCellular,
+                                        onDownloadWifiOnlyChange = viewModel::setDownloadWifiOnly,
                                         onClearCache = viewModel::clearAppCache,
                                         onClearDownloads = viewModel::clearAllDownloads,
                                         onExportBackup = { backupExportLauncher.launch("koplingfy_backup.json") },
@@ -636,7 +665,10 @@ fun KoplingfyAppRoot(
                                             onOpenListenTogether = openListenTogether,
                                             activeRoomCode = activeRoomCode,
                                             onOpenSettings = { overlayPage = OverlayPage.SETTINGS },
-                                            onOpenStats = { overlayPage = OverlayPage.STATS }
+                                            onOpenStats = { overlayPage = OverlayPage.STATS },
+                                            onPlayNext = swipePlayNext,
+                                            onAddToQueue = swipeAddToQueue,
+                                            swipeQueueLabel = swipeQueueLabel
                                         )
                                         1 -> ExploreScreen(
                                             homeState = homeState,
@@ -649,7 +681,10 @@ fun KoplingfyAppRoot(
                                             onPlayTrack = { track, list -> playTrackWithRoomSync(track, list, false) },
                                             onPlayAll = { list, shuffle -> viewModel.playAll(list, shuffle) },
                                             onToggleLike = viewModel::toggleLike,
-                                            onTrackOptions = { optionsTrack = it }
+                                            onTrackOptions = { optionsTrack = it },
+                                            onPlayNext = swipePlayNext,
+                                            onAddToQueue = swipeAddToQueue,
+                                            swipeQueueLabel = swipeQueueLabel
                                         )
                                         2 -> SearchScreen(
                                             searchState = searchState,
@@ -669,7 +704,11 @@ fun KoplingfyAppRoot(
                                             onTrackOptions = { optionsTrack = it },
                                             onAlbumClick = { openCollection(CollectionDetailType.AlbumCollection(it)) },
                                             onArtistClick = { openCollection(CollectionDetailType.ArtistCollection(it)) },
-                                            onRemotePlaylistClick = { openCollection(CollectionDetailType.RemotePlaylistCollection(it)) }
+                                            onRemotePlaylistClick = { openCollection(CollectionDetailType.RemotePlaylistCollection(it)) },
+                                            onPlayNext = swipePlayNext,
+                                            onAddToQueue = swipeAddToQueue,
+                                            swipeQueueLabel = swipeQueueLabel,
+                                            onShowSnackbar = viewModel::showMessage
                                         )
                                         else -> LibraryScreen(
                                             likedCount = likedTracks.size,
@@ -691,7 +730,12 @@ fun KoplingfyAppRoot(
                                                 savingQueueAsPlaylist = false
                                                 showCreatePlaylistDialog = true
                                             },
-                                            onDeletePlaylist = viewModel::deletePlaylist
+                                            onDeletePlaylist = viewModel::deletePlaylist,
+                                            topPlayedTracks = listeningStats.topTracks.map { it.track },
+                                            likedTracks = likedTracks,
+                                            recentTracks = playHistory,
+                                            downloadedTracks = downloadedTracks,
+                                            onPlaySmartMix = { tracks, shuffle -> viewModel.playAll(tracks, shuffle) }
                                         )
                                     }
                                 }
@@ -851,7 +895,14 @@ fun KoplingfyAppRoot(
                                 onNormalizeAudioChange = viewModel::setNormalizeAudio,
                                 onSpeedChange = viewModel::setPlaybackSpeed,
                                 onPitchChange = viewModel::setPlaybackPitch,
-                                onCrossfadeChange = viewModel::setCrossfadeSeconds
+                                onCrossfadeChange = viewModel::setCrossfadeSeconds,
+                                onToggleDrivingMode = viewModel::setDrivingMode,
+                                onNudgeLyricsOffset = viewModel::nudgeLyricsOffset,
+                                onResetLyricsOffset = viewModel::resetLyricsOffset,
+                                onSetAbPointA = viewModel::setAbLoopPointA,
+                                onSetAbPointB = viewModel::setAbLoopPointB,
+                                onClearAbLoop = viewModel::clearAbLoop,
+                                onShowSnackbar = viewModel::showMessage
                             )
                         }
                     }

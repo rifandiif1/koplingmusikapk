@@ -25,8 +25,11 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
+import androidx.compose.foundation.BorderStroke
+import androidx.compose.material3.OutlinedButton
 import com.example.model.AudioSettings
 import com.example.model.EqPreset
+import com.example.ui.components.formatDuration
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -110,7 +113,12 @@ fun AudioFxBottomSheet(
     onNormalizeAudioChange: (Boolean) -> Unit,
     onSpeedChange: (Float) -> Unit,
     onPitchChange: (Float) -> Unit,
-    onCrossfadeChange: (Int) -> Unit = {}
+    onCrossfadeChange: (Int) -> Unit = {},
+    abLoopStartMs: Long? = null,
+    abLoopEndMs: Long? = null,
+    onSetAbPointA: () -> Unit = {},
+    onSetAbPointB: () -> Unit = {},
+    onClearAbLoop: () -> Unit = {}
 ) {
     val freqLabels = listOf("60Hz", "230Hz", "910Hz", "3.6kHz", "14kHz")
 
@@ -287,6 +295,79 @@ fun AudioFxBottomSheet(
                     valueRange = 0f..10f,
                     steps = 9
                 )
+            }
+
+            // A-B Loop section
+            Surface(
+                shape = RoundedCornerShape(18.dp),
+                color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f),
+                border = BorderStroke(
+                    1.dp,
+                    if (abLoopStartMs != null && abLoopEndMs != null) MaterialTheme.colorScheme.primary
+                    else MaterialTheme.colorScheme.outlineVariant
+                ),
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Column(
+                    modifier = Modifier.padding(14.dp),
+                    verticalArrangement = Arrangement.spacedBy(10.dp)
+                ) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                text = "A-B Loop (Ulang Bagian Lagu)",
+                                style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold)
+                            )
+                            Text(
+                                text = when {
+                                    abLoopStartMs != null && abLoopEndMs != null ->
+                                        "Aktif: ${formatDuration(abLoopStartMs)} → ${formatDuration(abLoopEndMs)}"
+                                    abLoopStartMs != null ->
+                                        "Titik A: ${formatDuration(abLoopStartMs)} — ketuk Atur B untuk mulai loop"
+                                    else -> "Ulangi bagian reff atau solo gitar favoritmu"
+                                },
+                                style = MaterialTheme.typography.bodySmall,
+                                color = if (abLoopStartMs != null && abLoopEndMs != null) MaterialTheme.colorScheme.primary
+                                else MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                        if (abLoopStartMs != null || abLoopEndMs != null) {
+                            TextButton(onClick = onClearAbLoop) {
+                                Text("Reset", color = MaterialTheme.colorScheme.error)
+                            }
+                        }
+                    }
+
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        OutlinedButton(
+                            onClick = onSetAbPointA,
+                            shape = RoundedCornerShape(12.dp),
+                            modifier = Modifier.weight(1f)
+                        ) {
+                            Text(
+                                text = abLoopStartMs?.let { "A: ${formatDuration(it)}" } ?: "Atur Titik A",
+                                maxLines = 1
+                            )
+                        }
+                        OutlinedButton(
+                            onClick = onSetAbPointB,
+                            shape = RoundedCornerShape(12.dp),
+                            modifier = Modifier.weight(1f)
+                        ) {
+                            Text(
+                                text = abLoopEndMs?.let { "B: ${formatDuration(it)}" } ?: "Atur Titik B",
+                                maxLines = 1
+                            )
+                        }
+                    }
+                }
             }
         }
     }
