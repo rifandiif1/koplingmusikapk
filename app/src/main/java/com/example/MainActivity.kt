@@ -32,13 +32,17 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.Explore
+import androidx.compose.material.icons.outlined.Groups
 import androidx.compose.material.icons.outlined.Home
 import androidx.compose.material.icons.outlined.LibraryMusic
 import androidx.compose.material.icons.outlined.Search
 import androidx.compose.material.icons.rounded.Explore
+import androidx.compose.material.icons.rounded.Groups
 import androidx.compose.material.icons.rounded.Home
 import androidx.compose.material.icons.rounded.LibraryMusic
 import androidx.compose.material.icons.rounded.Search
+import androidx.compose.material3.Badge
+import androidx.compose.material3.BadgedBox
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.NavigationBar
@@ -71,6 +75,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.ViewModelProvider.AndroidViewModelFactory.Companion.APPLICATION_KEY
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -121,11 +126,12 @@ private val koplingfyTabs = listOf(
     NavTab("home", "Beranda", Icons.Rounded.Home, Icons.Outlined.Home),
     NavTab("explore", "Jelajah", Icons.Rounded.Explore, Icons.Outlined.Explore),
     NavTab("search", "Cari", Icons.Rounded.Search, Icons.Outlined.Search),
+    NavTab("listen_together", "Bersama", Icons.Rounded.Groups, Icons.Outlined.Groups),
     NavTab("library", "Koleksi", Icons.Rounded.LibraryMusic, Icons.Outlined.LibraryMusic)
 )
 
 private enum class OverlayPage {
-    NONE, COLLECTION_DETAIL, SETTINGS, STATS, YOUTUBE_LOGIN, LISTEN_TOGETHER
+    NONE, COLLECTION_DETAIL, SETTINGS, STATS, YOUTUBE_LOGIN
 }
 
 class MainActivity : ComponentActivity() {
@@ -517,7 +523,8 @@ fun KoplingfyAppRoot(
 
     val openListenTogether: () -> Unit = {
         viewModel.setPlayerExpanded(false)
-        overlayPage = OverlayPage.LISTEN_TOGETHER
+        overlayPage = OverlayPage.NONE
+        selectedTab = 3
     }
 
     KoplingfyTheme(
@@ -574,12 +581,25 @@ fun KoplingfyAppRoot(
                                             overlayPage = OverlayPage.NONE
                                         },
                                         icon = {
-                                            Icon(
-                                                imageVector = if (selected) tab.selectedIcon else tab.unselectedIcon,
-                                                contentDescription = tab.label
-                                            )
+                                            if (tab.route == "listen_together" && activeRoomCode != null) {
+                                                BadgedBox(
+                                                    badge = {
+                                                        Badge(containerColor = MaterialTheme.colorScheme.primary)
+                                                    }
+                                                ) {
+                                                    Icon(
+                                                        imageVector = if (selected) tab.selectedIcon else tab.unselectedIcon,
+                                                        contentDescription = tab.label
+                                                    )
+                                                }
+                                            } else {
+                                                Icon(
+                                                    imageVector = if (selected) tab.selectedIcon else tab.unselectedIcon,
+                                                    contentDescription = tab.label
+                                                )
+                                            }
                                         },
-                                        label = { Text(tab.label) },
+                                        label = { Text(tab.label, maxLines = 1, overflow = TextOverflow.Ellipsis) },
                                         colors = NavigationRailItemDefaults.colors(
                                             selectedIconColor = MaterialTheme.colorScheme.onPrimary,
                                             selectedTextColor = MaterialTheme.colorScheme.primary,
@@ -594,44 +614,6 @@ fun KoplingfyAppRoot(
                         // Main screen area
                         Box(modifier = Modifier.weight(1f).fillMaxHeight()) {
                             when (overlayPage) {
-                                OverlayPage.LISTEN_TOGETHER -> {
-                                    ListenTogetherScreenHost(
-                                        currentUser = currentGoogleUser,
-                                        listenViewModel = listenViewModel,
-                                        sessionState = listenSessionState,
-                                        myActiveRoomsState = myActiveRoomsState,
-                                        recentRoomsState = recentRoomsState,
-                                        playerState = playerState,
-                                        bottomContentPadding = bottomListPadding,
-                                        onBack = { overlayPage = OverlayPage.NONE },
-                                        onShowSnackbar = viewModel::showMessage,
-                                        onSyncPlayerTogglePlayPause = togglePlayPauseWithRoomSync,
-                                        onSyncPlayerNext = skipNextWithRoomSync,
-                                        onForceResyncFromRoom = { room ->
-                                            val track = room.currentTrackOrNull()
-                                            if (track != null) {
-                                                viewModel.applyRemoteRoomSync(
-                                                    track = track,
-                                                    shouldPlay = room.playing,
-                                                    targetPositionMs = room.effectivePositionMs(),
-                                                    roomQueue = room.parsedQueue().map { it.toTrack() }
-                                                )
-                                                viewModel.showMessage("Pemutaran disinkronkan dengan ruang ${room.roomCode}")
-                                            }
-                                        },
-                                        onPlayRoomTrackLocally = { track, queue ->
-                                            viewModel.playTrack(track, queue, expandPlayer = false)
-                                        },
-                                        onQuickSearchTracks = viewModel::quickSearchTracksForSharedQueue,
-                                        onSaveRoomAsPlaylist = { name, tracks ->
-                                            viewModel.saveTracksAsPlaylist(
-                                                name = name,
-                                                description = "Disimpan dari sesi Play Bersama",
-                                                tracks = tracks
-                                            )
-                                        }
-                                    )
-                                }
                                 OverlayPage.YOUTUBE_LOGIN -> {
                                     YouTubeLoginScreen(
                                         isVerifying = isSyncingAccount,
@@ -790,6 +772,42 @@ fun KoplingfyAppRoot(
                                             swipeQueueLabel = swipeQueueLabel,
                                             onShowSnackbar = viewModel::showMessage
                                         )
+                                        3 -> ListenTogetherScreenHost(
+                                            currentUser = currentGoogleUser,
+                                            listenViewModel = listenViewModel,
+                                            sessionState = listenSessionState,
+                                            myActiveRoomsState = myActiveRoomsState,
+                                            recentRoomsState = recentRoomsState,
+                                            playerState = playerState,
+                                            bottomContentPadding = bottomListPadding,
+                                            onBack = { selectedTab = 0 },
+                                            onShowSnackbar = viewModel::showMessage,
+                                            onSyncPlayerTogglePlayPause = togglePlayPauseWithRoomSync,
+                                            onSyncPlayerNext = skipNextWithRoomSync,
+                                            onForceResyncFromRoom = { room ->
+                                                val track = room.currentTrackOrNull()
+                                                if (track != null) {
+                                                    viewModel.applyRemoteRoomSync(
+                                                        track = track,
+                                                        shouldPlay = room.playing,
+                                                        targetPositionMs = room.effectivePositionMs(),
+                                                        roomQueue = room.parsedQueue().map { it.toTrack() }
+                                                    )
+                                                    viewModel.showMessage("Pemutaran disinkronkan dengan ruang ${room.roomCode}")
+                                                }
+                                            },
+                                            onPlayRoomTrackLocally = { track, queue ->
+                                                viewModel.playTrack(track, queue, expandPlayer = false)
+                                            },
+                                            onQuickSearchTracks = viewModel::quickSearchTracksForSharedQueue,
+                                            onSaveRoomAsPlaylist = { name, tracks ->
+                                                viewModel.saveTracksAsPlaylist(
+                                                    name = name,
+                                                    description = "Disimpan dari sesi Play Bersama",
+                                                    tracks = tracks
+                                                )
+                                            }
+                                        )
                                         else -> LibraryScreen(
                                             likedCount = likedTracks.size,
                                             downloadedCount = downloadedTracks.size,
@@ -870,15 +888,31 @@ fun KoplingfyAppRoot(
                                                     overlayPage = OverlayPage.NONE
                                                 },
                                                 icon = {
-                                                    Icon(
-                                                        imageVector = if (selected) tab.selectedIcon else tab.unselectedIcon,
-                                                        contentDescription = tab.label
-                                                    )
+                                                    if (tab.route == "listen_together" && activeRoomCode != null) {
+                                                        BadgedBox(
+                                                            badge = {
+                                                                Badge(containerColor = MaterialTheme.colorScheme.primary)
+                                                            }
+                                                        ) {
+                                                            Icon(
+                                                                imageVector = if (selected) tab.selectedIcon else tab.unselectedIcon,
+                                                                contentDescription = tab.label
+                                                            )
+                                                        }
+                                                    } else {
+                                                        Icon(
+                                                            imageVector = if (selected) tab.selectedIcon else tab.unselectedIcon,
+                                                            contentDescription = tab.label
+                                                        )
+                                                    }
                                                 },
                                                 label = {
                                                     Text(
                                                         text = tab.label,
-                                                        style = MaterialTheme.typography.labelSmall
+                                                        style = MaterialTheme.typography.labelSmall,
+                                                        maxLines = 1,
+                                                        softWrap = false,
+                                                        overflow = TextOverflow.Ellipsis
                                                     )
                                                 },
                                                 colors = NavigationBarItemDefaults.colors(
