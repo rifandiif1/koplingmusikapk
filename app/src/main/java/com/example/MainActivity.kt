@@ -101,6 +101,7 @@ import com.example.ui.screens.YouTubeLoginScreen
 import com.example.ui.theme.KoplingfyTheme
 import com.example.viewmodel.KoplingfyViewModel
 import com.google.firebase.Firebase
+import com.google.firebase.FirebaseApp
 import com.google.firebase.auth.FirebaseUser
 import com.google.firebase.auth.auth
 import com.google.firebase.firestore.FirebaseFirestore
@@ -141,6 +142,20 @@ class MainActivity : ComponentActivity() {
  */
 @Composable
 private fun KoplingfyAuthScopedRoot(viewModel: KoplingfyViewModel) {
+    val context = LocalContext.current
+    val isFirebaseReady = remember(context) { FirebaseApp.getApps(context).isNotEmpty() }
+    if (!isFirebaseReady) {
+        KoplingfyAppRoot(
+            viewModel = viewModel,
+            currentGoogleUser = null,
+            listenViewModel = null,
+            listenSessionState = ListenSessionUiState(),
+            myActiveRoomsState = ListenUiState.Success(emptyList()),
+            recentRoomsState = ListenUiState.Success(emptyList())
+        )
+        return
+    }
+
     val auth = remember { Firebase.auth }
     val currentGoogleUser by auth.authStateFlow().collectAsStateWithLifecycle(initialValue = auth.currentUser)
 
