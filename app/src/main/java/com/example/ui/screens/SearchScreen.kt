@@ -155,14 +155,13 @@ fun SearchScreen(
                     style = MaterialTheme.typography.headlineMedium,
                     color = MaterialTheme.colorScheme.onBackground
                 )
-                // Metrolist Dual Scope Switcher: Online YTM / Koleksi
+                // Clean YouTube Music / Koleksi Scope Switcher
                 Surface(
                     shape = RoundedCornerShape(50),
-                    color = MaterialTheme.colorScheme.surface,
-                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant)
+                    color = MaterialTheme.colorScheme.surfaceContainerHigh
                 ) {
                     Row(modifier = Modifier.padding(3.dp)) {
-                        ScopePill("YouTube Music", !searchState.localOnly) { onToggleScope(false) }
+                        ScopePill("YouTube", !searchState.localOnly) { onToggleScope(false) }
                         ScopePill("Koleksi", searchState.localOnly) { onToggleScope(true) }
                     }
                 }
@@ -173,7 +172,7 @@ fun SearchScreen(
                 onValueChange = onQueryChange,
                 placeholder = {
                     Text(
-                        text = if (searchState.localOnly) "Cari lagu di koleksi & unduhan…" else stringResource(R.string.search_placeholder),
+                        text = if (searchState.localOnly) "Cari di koleksi & unduhan…" else stringResource(R.string.search_placeholder),
                         style = MaterialTheme.typography.bodyMedium,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
@@ -182,7 +181,7 @@ fun SearchScreen(
                     Icon(
                         imageVector = Icons.Rounded.Search,
                         contentDescription = null,
-                        tint = MaterialTheme.colorScheme.primary
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant
                     )
                 },
                 trailingIcon = {
@@ -206,18 +205,18 @@ fun SearchScreen(
                             Icon(
                                 imageVector = Icons.Rounded.Mic,
                                 contentDescription = "Pencarian suara",
-                                tint = MaterialTheme.colorScheme.primary
+                                tint = MaterialTheme.colorScheme.onSurface
                             )
                         }
                     }
                 },
                 singleLine = true,
-                shape = RoundedCornerShape(18.dp),
+                shape = RoundedCornerShape(14.dp),
                 colors = OutlinedTextFieldDefaults.colors(
-                    focusedContainerColor = MaterialTheme.colorScheme.surfaceContainer,
-                    unfocusedContainerColor = MaterialTheme.colorScheme.surface,
-                    focusedBorderColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.85f),
-                    unfocusedBorderColor = MaterialTheme.colorScheme.outlineVariant
+                    focusedContainerColor = MaterialTheme.colorScheme.surfaceContainerHigh,
+                    unfocusedContainerColor = MaterialTheme.colorScheme.surfaceContainer,
+                    focusedBorderColor = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.25f),
+                    unfocusedBorderColor = androidx.compose.ui.graphics.Color.Transparent
                 ),
                 keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
                 keyboardActions = KeyboardActions(
@@ -239,9 +238,8 @@ fun SearchScreen(
                                 keyboard?.hide()
                                 onSubmitSearch(suggestion)
                             },
-                            shape = RoundedCornerShape(50),
-                            color = MaterialTheme.colorScheme.surface,
-                            border = BorderStroke(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.35f))
+                            shape = RoundedCornerShape(8.dp),
+                            color = MaterialTheme.colorScheme.surfaceContainerHigh
                         ) {
                             Row(
                                 modifier = Modifier.padding(horizontal = 12.dp, vertical = 7.dp),
@@ -250,7 +248,7 @@ fun SearchScreen(
                                 Icon(
                                     imageVector = Icons.Rounded.Search,
                                     contentDescription = null,
-                                    tint = MaterialTheme.colorScheme.primary,
+                                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
                                     modifier = Modifier.size(14.dp)
                                 )
                                 Spacer(modifier = Modifier.width(6.dp))
@@ -271,15 +269,15 @@ fun SearchScreen(
                         val selected = searchState.selectedFilter == idx
                         Surface(
                             onClick = { onFilterChange(idx) },
-                            shape = RoundedCornerShape(50),
-                            color = if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.surfaceVariant,
+                            shape = RoundedCornerShape(8.dp),
+                            color = if (selected) MaterialTheme.colorScheme.onBackground else MaterialTheme.colorScheme.surfaceContainerHigh,
                             modifier = Modifier.testTag("search_filter_$idx")
                         ) {
                             Text(
                                 text = filters[idx],
                                 style = MaterialTheme.typography.labelLarge,
-                                color = if (selected) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurface,
-                                modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp)
+                                color = if (selected) MaterialTheme.colorScheme.background else MaterialTheme.colorScheme.onSurface,
+                                modifier = Modifier.padding(horizontal = 14.dp, vertical = 8.dp)
                             )
                         }
                     }
@@ -296,65 +294,58 @@ fun SearchScreen(
             if (searchState.query.isBlank()) {
                 if (searchHistory.isNotEmpty()) {
                     item {
-                        Surface(
+                        Column(
                             modifier = Modifier
                                 .fillMaxWidth()
                                 .padding(horizontal = 20.dp),
-                            shape = RoundedCornerShape(20.dp),
-                            color = MaterialTheme.colorScheme.surface,
-                            border = BorderStroke(0.8.dp, MaterialTheme.colorScheme.outlineVariant)
+                            verticalArrangement = Arrangement.spacedBy(2.dp)
                         ) {
-                            Column(
-                                modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp),
-                                verticalArrangement = Arrangement.spacedBy(2.dp)
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
                             ) {
+                                Text(text = "Pencarian Terakhir", style = MaterialTheme.typography.titleMedium)
+                                TextButton(onClick = onClearHistory) {
+                                    Text("Hapus Semua", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                }
+                            }
+                            searchHistory.forEach { historyQuery ->
                                 Row(
-                                    modifier = Modifier.fillMaxWidth(),
-                                    horizontalArrangement = Arrangement.SpaceBetween,
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .clip(RoundedCornerShape(10.dp))
+                                        .clickable {
+                                            keyboard?.hide()
+                                            onSubmitSearch(historyQuery)
+                                        }
+                                        .padding(horizontal = 4.dp, vertical = 8.dp),
                                     verticalAlignment = Alignment.CenterVertically
                                 ) {
-                                    Text(text = "Pencarian Terakhir", style = MaterialTheme.typography.titleMedium)
-                                    TextButton(onClick = onClearHistory) {
-                                        Text("Hapus Semua", color = MaterialTheme.colorScheme.primary)
-                                    }
-                                }
-                                searchHistory.forEach { historyQuery ->
-                                    Row(
-                                        modifier = Modifier
-                                            .fillMaxWidth()
-                                            .clip(RoundedCornerShape(12.dp))
-                                            .clickable {
-                                                keyboard?.hide()
-                                                onSubmitSearch(historyQuery)
-                                            }
-                                            .padding(horizontal = 6.dp, vertical = 8.dp),
-                                        verticalAlignment = Alignment.CenterVertically
+                                    Icon(
+                                        imageVector = Icons.Rounded.History,
+                                        contentDescription = null,
+                                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        modifier = Modifier.size(19.dp)
+                                    )
+                                    Spacer(modifier = Modifier.width(12.dp))
+                                    Text(
+                                        text = historyQuery,
+                                        style = MaterialTheme.typography.bodyMedium,
+                                        modifier = Modifier.weight(1f),
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis
+                                    )
+                                    IconButton(
+                                        onClick = { onDeleteHistoryItem(historyQuery) },
+                                        modifier = Modifier.size(36.dp)
                                     ) {
                                         Icon(
-                                            imageVector = Icons.Rounded.History,
-                                            contentDescription = null,
+                                            imageVector = Icons.Rounded.Close,
+                                            contentDescription = "Hapus riwayat",
                                             tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                                            modifier = Modifier.size(19.dp)
+                                            modifier = Modifier.size(16.dp)
                                         )
-                                        Spacer(modifier = Modifier.width(12.dp))
-                                        Text(
-                                            text = historyQuery,
-                                            style = MaterialTheme.typography.bodyMedium,
-                                            modifier = Modifier.weight(1f),
-                                            maxLines = 1,
-                                            overflow = TextOverflow.Ellipsis
-                                        )
-                                        IconButton(
-                                            onClick = { onDeleteHistoryItem(historyQuery) },
-                                            modifier = Modifier.size(36.dp)
-                                        ) {
-                                            Icon(
-                                                imageVector = Icons.Rounded.Close,
-                                                contentDescription = "Hapus riwayat",
-                                                tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                                                modifier = Modifier.size(16.dp)
-                                            )
-                                        }
                                     }
                                 }
                             }
@@ -367,16 +358,7 @@ fun SearchScreen(
                         modifier = Modifier.padding(horizontal = 20.dp),
                         verticalArrangement = Arrangement.spacedBy(12.dp)
                     ) {
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            Icon(
-                                imageVector = Icons.Rounded.Whatshot,
-                                contentDescription = null,
-                                tint = MaterialTheme.colorScheme.secondary,
-                                modifier = Modifier.size(20.dp)
-                            )
-                            Spacer(modifier = Modifier.width(8.dp))
-                            Text(text = "Populer Dicari", style = MaterialTheme.typography.titleMedium)
-                        }
+                        Text(text = "Populer Dicari", style = MaterialTheme.typography.titleMedium)
                         FlowRow(
                             horizontalArrangement = Arrangement.spacedBy(8.dp),
                             verticalArrangement = Arrangement.spacedBy(8.dp)
@@ -387,14 +369,13 @@ fun SearchScreen(
                                         keyboard?.hide()
                                         onSubmitSearch(term)
                                     },
-                                    shape = RoundedCornerShape(50),
-                                    color = MaterialTheme.colorScheme.surface,
-                                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant)
+                                    shape = RoundedCornerShape(8.dp),
+                                    color = MaterialTheme.colorScheme.surfaceContainerHigh
                                 ) {
                                     Text(
                                         text = term,
                                         style = MaterialTheme.typography.bodyMedium,
-                                        modifier = Modifier.padding(horizontal = 16.dp, vertical = 9.dp)
+                                        modifier = Modifier.padding(horizontal = 14.dp, vertical = 8.dp)
                                     )
                                 }
                             }
@@ -464,29 +445,35 @@ fun SearchScreen(
                             SectionHeader(title = "Album", modifier = Modifier.padding(horizontal = 20.dp))
                             LazyRow(
                                 contentPadding = PaddingValues(horizontal = 20.dp),
-                                horizontalArrangement = Arrangement.spacedBy(12.dp)
+                                horizontalArrangement = Arrangement.spacedBy(14.dp)
                             ) {
                                 items(searchState.albums, key = { it.id }) { album ->
-                                    Surface(
-                                        onClick = { onAlbumClick(album) },
-                                        modifier = Modifier.width(142.dp),
-                                        shape = RoundedCornerShape(18.dp),
-                                        color = MaterialTheme.colorScheme.surface,
-                                        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant)
+                                    Column(
+                                        modifier = Modifier
+                                            .width(136.dp)
+                                            .clip(RoundedCornerShape(10.dp))
+                                            .clickable { onAlbumClick(album) }
                                     ) {
-                                        Column(modifier = Modifier.padding(8.dp)) {
-                                            AlbumArtImage(
-                                                url = album.artworkUrl,
-                                                contentDescription = album.title,
-                                                modifier = Modifier
-                                                    .fillMaxWidth()
-                                                    .height(124.dp),
-                                                shape = RoundedCornerShape(12.dp)
-                                            )
-                                            Spacer(modifier = Modifier.height(8.dp))
-                                            Text(album.title, style = MaterialTheme.typography.titleSmall, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                                            Text(album.artist, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                                        }
+                                        AlbumArtImage(
+                                            url = album.artworkUrl,
+                                            contentDescription = album.title,
+                                            modifier = Modifier.size(136.dp),
+                                            shape = RoundedCornerShape(10.dp)
+                                        )
+                                        Spacer(modifier = Modifier.height(7.dp))
+                                        Text(
+                                            text = album.title,
+                                            style = MaterialTheme.typography.titleSmall,
+                                            maxLines = 1,
+                                            overflow = TextOverflow.Ellipsis
+                                        )
+                                        Text(
+                                            text = album.artist,
+                                            style = MaterialTheme.typography.bodySmall,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                            maxLines = 1,
+                                            overflow = TextOverflow.Ellipsis
+                                        )
                                     }
                                 }
                             }
@@ -500,27 +487,35 @@ fun SearchScreen(
                             SectionHeader(title = "Playlist Komunitas", modifier = Modifier.padding(horizontal = 20.dp))
                             LazyRow(
                                 contentPadding = PaddingValues(horizontal = 20.dp),
-                                horizontalArrangement = Arrangement.spacedBy(12.dp)
+                                horizontalArrangement = Arrangement.spacedBy(14.dp)
                             ) {
                                 items(searchState.playlists, key = { "rpl_${it.id}" }) { pl ->
-                                    Surface(
-                                        onClick = { onRemotePlaylistClick(pl) },
-                                        modifier = Modifier.width(150.dp),
-                                        shape = RoundedCornerShape(18.dp),
-                                        color = MaterialTheme.colorScheme.surface,
-                                        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant)
+                                    Column(
+                                        modifier = Modifier
+                                            .width(136.dp)
+                                            .clip(RoundedCornerShape(10.dp))
+                                            .clickable { onRemotePlaylistClick(pl) }
                                     ) {
-                                        Column(modifier = Modifier.padding(8.dp)) {
-                                            AlbumArtImage(
-                                                url = pl.artworkUrl,
-                                                contentDescription = pl.title,
-                                                modifier = Modifier.fillMaxWidth().height(126.dp),
-                                                shape = RoundedCornerShape(12.dp)
-                                            )
-                                            Spacer(modifier = Modifier.height(8.dp))
-                                            Text(pl.title, style = MaterialTheme.typography.titleSmall, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                                            Text(pl.author, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                                        }
+                                        AlbumArtImage(
+                                            url = pl.artworkUrl,
+                                            contentDescription = pl.title,
+                                            modifier = Modifier.size(136.dp),
+                                            shape = RoundedCornerShape(10.dp)
+                                        )
+                                        Spacer(modifier = Modifier.height(7.dp))
+                                        Text(
+                                            text = pl.title,
+                                            style = MaterialTheme.typography.titleSmall,
+                                            maxLines = 1,
+                                            overflow = TextOverflow.Ellipsis
+                                        )
+                                        Text(
+                                            text = pl.author,
+                                            style = MaterialTheme.typography.bodySmall,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                            maxLines = 1,
+                                            overflow = TextOverflow.Ellipsis
+                                        )
                                     }
                                 }
                             }
@@ -610,12 +605,12 @@ private fun ScopePill(label: String, selected: Boolean, onClick: () -> Unit) {
     Surface(
         onClick = onClick,
         shape = RoundedCornerShape(50),
-        color = if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.surface
+        color = if (selected) MaterialTheme.colorScheme.onBackground else androidx.compose.ui.graphics.Color.Transparent
     ) {
         Text(
             text = label,
-            style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold),
-            color = if (selected) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurfaceVariant,
+            style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.SemiBold),
+            color = if (selected) MaterialTheme.colorScheme.background else MaterialTheme.colorScheme.onSurfaceVariant,
             modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp)
         )
     }

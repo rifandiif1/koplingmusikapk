@@ -35,6 +35,7 @@ import androidx.compose.material.icons.rounded.DeleteOutline
 import androidx.compose.material.icons.rounded.Download
 import androidx.compose.material.icons.rounded.Favorite
 import androidx.compose.material.icons.rounded.FavoriteBorder
+import androidx.compose.material.icons.rounded.GraphicEq
 import androidx.compose.material.icons.rounded.Groups
 import androidx.compose.material.icons.rounded.MoreVert
 import androidx.compose.material.icons.rounded.MusicNote
@@ -97,7 +98,7 @@ fun AlbumArtImage(
     url: String?,
     contentDescription: String?,
     modifier: Modifier = Modifier,
-    shape: Shape = RoundedCornerShape(14.dp)
+    shape: Shape = RoundedCornerShape(10.dp)
 ) {
     Box(
         modifier = modifier
@@ -226,17 +227,14 @@ fun SectionHeader(
         }
         if (actionLabel != null && onActionClick != null) {
             Spacer(modifier = Modifier.width(10.dp))
-            Surface(
+            TextButton(
                 onClick = onActionClick,
-                shape = RoundedCornerShape(50),
-                color = MaterialTheme.colorScheme.primary.copy(alpha = 0.12f),
-                border = BorderStroke(0.8.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.28f))
+                contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 10.dp, vertical = 4.dp)
             ) {
                 Text(
                     text = actionLabel,
-                    style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.SemiBold),
-                    color = MaterialTheme.colorScheme.primary,
-                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 7.dp)
+                    style = MaterialTheme.typography.labelLarge.copy(fontWeight = FontWeight.SemiBold),
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
             }
         }
@@ -259,13 +257,11 @@ fun TrackRowItem(
     swipeLeftLabel: String = "Antrean"
 ) {
     val activeBg = if (isCurrent) {
-        MaterialTheme.colorScheme.primary.copy(alpha = 0.12f)
+        MaterialTheme.colorScheme.onSurface.copy(alpha = 0.07f)
     } else {
         Color.Transparent
     }
-    val borderStroke = if (isCurrent) {
-        BorderStroke(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.32f))
-    } else null
+    val borderStroke: BorderStroke? = null
 
     val haptic = LocalHapticFeedback.current
     var dragOffsetX by remember(track.id) { mutableFloatStateOf(0f) }
@@ -370,25 +366,25 @@ fun TrackRowItem(
                 )
             }
 
-            Box(modifier = Modifier.size(54.dp)) {
+            Box(modifier = Modifier.size(52.dp)) {
                 AlbumArtImage(
                     url = track.artworkUrl,
                     contentDescription = stringResource(R.string.cd_album_art),
                     modifier = Modifier.fillMaxSize(),
-                    shape = RoundedCornerShape(13.dp)
+                    shape = RoundedCornerShape(8.dp)
                 )
                 if (isCurrent) {
                     Box(
                         modifier = Modifier
                             .fillMaxSize()
-                            .clip(RoundedCornerShape(12.dp))
-                            .background(Color.Black.copy(alpha = 0.55f)),
+                            .clip(RoundedCornerShape(8.dp))
+                            .background(Color.Black.copy(alpha = 0.52f)),
                         contentAlignment = Alignment.Center
                     ) {
                         AudioVisualizerBars(
                             isPlaying = isPlaying,
                             color = MaterialTheme.colorScheme.primary,
-                            maxHeight = 16.dp
+                            maxHeight = 15.dp
                         )
                     }
                 }
@@ -499,25 +495,25 @@ fun GlassActionPill(
         onClick = onClick,
         modifier = modifier,
         shape = RoundedCornerShape(50),
-        color = if (highlighted) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.78f),
-        border = if (highlighted) null else BorderStroke(0.9.dp, MaterialTheme.colorScheme.outlineVariant)
+        color = if (highlighted) MaterialTheme.colorScheme.onBackground else MaterialTheme.colorScheme.surfaceVariant,
+        border = null
     ) {
         Row(
-            modifier = Modifier.padding(horizontal = 16.dp, vertical = 10.dp),
+            modifier = Modifier.padding(horizontal = 18.dp, vertical = 10.dp),
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.Center
         ) {
             Icon(
                 imageVector = icon,
                 contentDescription = null,
-                tint = if (highlighted) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurface,
+                tint = if (highlighted) MaterialTheme.colorScheme.background else MaterialTheme.colorScheme.onSurface,
                 modifier = Modifier.size(18.dp)
             )
             Spacer(modifier = Modifier.width(6.dp))
             Text(
                 text = label,
                 style = MaterialTheme.typography.labelLarge.copy(fontWeight = FontWeight.SemiBold),
-                color = if (highlighted) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurface,
+                color = if (highlighted) MaterialTheme.colorScheme.background else MaterialTheme.colorScheme.onSurface,
                 maxLines = 1
             )
         }
@@ -540,6 +536,7 @@ fun TrackOptionsBottomSheet(
     onAddToPlaylist: () -> Unit,
     onOpenArtist: () -> Unit,
     onShare: () -> Unit,
+    onShowTechStats: (() -> Unit)? = null,
     onAddToListenRoom: (() -> Unit)? = null,
     onRemoveAction: (() -> Unit)? = null,
     removeActionLabel: String = "Hapus"
@@ -629,6 +626,11 @@ fun TrackOptionsBottomSheet(
             }
             SheetOptionRow(Icons.Rounded.Share, "Bagikan Lagu") {
                 onShare(); onDismiss()
+            }
+            if (onShowTechStats != null) {
+                SheetOptionRow(Icons.Rounded.GraphicEq, "Info Teknis (Stats for Nerds)") {
+                    onDismiss(); onShowTechStats()
+                }
             }
             if (onRemoveAction != null) {
                 SheetOptionRow(

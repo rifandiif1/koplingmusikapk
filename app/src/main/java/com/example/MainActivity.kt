@@ -1,22 +1,31 @@
 package com.example
 
 import android.Manifest
+import android.app.PictureInPictureParams
 import android.content.Intent
+import android.content.pm.ActivityInfo
 import android.content.pm.PackageManager
+import android.content.res.Configuration
 import android.os.Build
 import android.os.Bundle
+import android.util.Rational
+import android.view.TextureView
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.core.content.ContextCompat
+import androidx.core.view.WindowCompat
+import androidx.core.view.WindowInsetsCompat
+import androidx.core.view.WindowInsetsControllerCompat
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.slideInVertically
 import androidx.compose.animation.slideOutVertically
 import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
@@ -77,11 +86,13 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.viewinterop.AndroidView
 import androidx.lifecycle.ViewModelProvider.AndroidViewModelFactory.Companion.APPLICATION_KEY
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.lifecycle.viewmodel.initializer
 import androidx.lifecycle.viewmodel.viewModelFactory
+import com.example.ai.configureAppCheck
 import com.example.listentogether.ListenRoom
 import com.example.listentogether.ListenSessionUiState
 import com.example.listentogether.ListenTogetherRepository
@@ -97,6 +108,7 @@ import com.example.ui.components.CreatePlaylistDialog
 import com.example.ui.components.TrackOptionsBottomSheet
 import com.example.ui.player.FloatingMiniPlayer
 import com.example.ui.player.FullScreenPlayerModal
+import com.example.ui.player.StreamTechStatsDialog
 import com.example.ui.screens.CollectionDetailScreen
 import com.example.ui.screens.ExploreScreen
 import com.example.ui.screens.HomeScreen
@@ -135,12 +147,72 @@ private enum class OverlayPage {
 }
 
 class MainActivity : ComponentActivity() {
+    private var isInPipModeState by mutableStateOf(false)
+    private var isVideoFullscreenState by mutableStateOf(false)
+    private var canAutoEnterPip: Boolean = false
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        // Configure Firebase App Check before UI, ViewModels, or any Firebase call
+        configureAppCheck(this, intent)
         enableEdgeToEdge()
         setContent {
             val viewModel: KoplingfyViewModel = viewModel()
-            KoplingfyAuthScopedRoot(viewModel = viewModel)
+            KoplingfyAuthScopedRoot(
+                viewModel = viewModel,
+                isInPipMode = isInPipModeState,
+                isVideoFullscreen = isVideoFullscreenState,
+                onVideoPipEligibilityChange = { eligible -> canAutoEnterPip = eligible },
+                onEnterPipMode = { enterVideoPipMode() },
+                onToggleVideoFullscreen = { enabled -> setLandscapeVideoFullscreen(enabled) }
+            )
+        }
+    }
+
+    override fun onPictureInPictureModeChanged(
+        isInPictureInPictureMode: Boolean,
+        newConfig: Configuration
+    ) {
+        super.onPictureInPictureModeChanged(isInPictureInPictureMode, newConfig)
+        isInPipModeState = isInPictureInPictureMode
+        if (isInPictureInPictureMode && isVideoFullscreenState) {
+            setLandscapeVideoFullscreen(false)
+        }
+    }
+
+    override fun onUserLeaveHint() {
+        super.onUserLeaveHint()
+        if (canAutoEnterPip && !isInPipModeState) {
+            enterVideoPipMode()
+        }
+    }
+
+    fun enterVideoPipMode() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O &&
+            packageManager.hasSystemFeature(PackageManager.FEATURE_PICTURE_IN_PICTURE)
+        ) {
+            runCatching {
+                val params = PictureInPictureParams.Builder()
+                    .setAspectRatio(Rational(16, 9))
+                    .build()
+                enterPictureInPictureMode(params)
+            }
+        }
+    }
+
+    fun setLandscapeVideoFullscreen(enabled: Boolean) {
+        isVideoFullscreenState = enabled
+        requestedOrientation = if (enabled) {
+            ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
+        } else {
+            ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
+        }
+        val controller = WindowCompat.getInsetsController(window, window.decorView)
+        controller.systemBarsBehavior = WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+        if (enabled) {
+            controller.hide(WindowInsetsCompat.Type.systemBars())
+        } else {
+            controller.show(WindowInsetsCompat.Type.systemBars())
         }
     }
 }
@@ -151,7 +223,14 @@ class MainActivity : ComponentActivity() {
  * cleanly tear down all Firestore listeners.
  */
 @Composable
-private fun KoplingfyAuthScopedRoot(viewModel: KoplingfyViewModel) {
+private fun KoplingfyAuthScopedRoot(
+    viewModel: KoplingfyViewModel,
+    isInPipMode: Boolean,
+    isVideoFullscreen: Boolean,
+    onVideoPipEligibilityChange: (Boolean) -> Unit,
+    onEnterPipMode: () -> Unit,
+    onToggleVideoFullscreen: (Boolean) -> Unit
+) {
     val context = LocalContext.current
     val isFirebaseReady = remember(context) { FirebaseApp.getApps(context).isNotEmpty() }
     // Hoisted above auth branches so signing in or out never resets the active tab (e.g. Bersama tab!)
@@ -170,7 +249,12 @@ private fun KoplingfyAuthScopedRoot(viewModel: KoplingfyViewModel) {
             onSelectedTabChange = { selectedTab = it },
             overlayPage = overlayPage,
             onOverlayPageChange = { overlayPage = it },
-            onAuthStateChanged = {}
+            onAuthStateChanged = {},
+            isInPipMode = isInPipMode,
+            isVideoFullscreen = isVideoFullscreen,
+            onVideoPipEligibilityChange = onVideoPipEligibilityChange,
+            onEnterPipMode = onEnterPipMode,
+            onToggleVideoFullscreen = onToggleVideoFullscreen
         )
         return
     }
@@ -198,7 +282,12 @@ private fun KoplingfyAuthScopedRoot(viewModel: KoplingfyViewModel) {
             onSelectedTabChange = { selectedTab = it },
             overlayPage = overlayPage,
             onOverlayPageChange = { overlayPage = it },
-            onAuthStateChanged = { currentGoogleUser = auth.currentUser }
+            onAuthStateChanged = { currentGoogleUser = auth.currentUser },
+            isInPipMode = isInPipMode,
+            isVideoFullscreen = isVideoFullscreen,
+            onVideoPipEligibilityChange = onVideoPipEligibilityChange,
+            onEnterPipMode = onEnterPipMode,
+            onToggleVideoFullscreen = onToggleVideoFullscreen
         )
     } else {
         key(user.uid) {
@@ -266,7 +355,12 @@ private fun KoplingfyAuthScopedRoot(viewModel: KoplingfyViewModel) {
                 onSelectedTabChange = { selectedTab = it },
                 overlayPage = overlayPage,
                 onOverlayPageChange = { overlayPage = it },
-                onAuthStateChanged = { currentGoogleUser = auth.currentUser }
+                onAuthStateChanged = { currentGoogleUser = auth.currentUser },
+                isInPipMode = isInPipMode,
+                isVideoFullscreen = isVideoFullscreen,
+                onVideoPipEligibilityChange = onVideoPipEligibilityChange,
+                onEnterPipMode = onEnterPipMode,
+                onToggleVideoFullscreen = onToggleVideoFullscreen
             )
         }
     }
@@ -284,7 +378,12 @@ private fun KoplingfyAppRoot(
     onSelectedTabChange: (Int) -> Unit,
     overlayPage: OverlayPage,
     onOverlayPageChange: (OverlayPage) -> Unit,
-    onAuthStateChanged: () -> Unit
+    onAuthStateChanged: () -> Unit,
+    isInPipMode: Boolean,
+    isVideoFullscreen: Boolean,
+    onVideoPipEligibilityChange: (Boolean) -> Unit,
+    onEnterPipMode: () -> Unit,
+    onToggleVideoFullscreen: (Boolean) -> Unit
 ) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
@@ -294,6 +393,7 @@ private fun KoplingfyAppRoot(
     val youtubeAccount by viewModel.youtubeAccount.collectAsStateWithLifecycle()
     val isSyncingAccount by viewModel.isSyncingAccount.collectAsStateWithLifecycle()
     val storageStats by viewModel.storageStats.collectAsStateWithLifecycle()
+    val cloudSyncState by viewModel.cloudSyncState.collectAsStateWithLifecycle()
 
     val homeState by viewModel.homeState.collectAsStateWithLifecycle()
     val searchState by viewModel.searchState.collectAsStateWithLifecycle()
@@ -316,6 +416,42 @@ private fun KoplingfyAppRoot(
     var addToPlaylistTrack by remember { mutableStateOf<Track?>(null) }
     var showCreatePlaylistDialog by remember { mutableStateOf(false) }
     var savingQueueAsPlaylist by remember { mutableStateOf(false) }
+    var showTechStatsTrack by remember { mutableStateOf<Track?>(null) }
+
+    // Keep MainActivity informed whether auto-PiP on Home press should trigger
+    LaunchedEffect(playerState.isVideoMode, playerState.isPlaying, playerState.isPlayerExpanded) {
+        onVideoPipEligibilityChange(playerState.isVideoMode && playerState.isPlaying && playerState.isPlayerExpanded)
+    }
+
+    // Auto-exit landscape video fullscreen if user switches back to Audio mode or collapses player
+    LaunchedEffect(playerState.isVideoMode, playerState.isPlayerExpanded) {
+        if (isVideoFullscreen && (!playerState.isVideoMode || !playerState.isPlayerExpanded)) {
+            onToggleVideoFullscreen(false)
+        }
+    }
+
+    // Dedicated clean Video-only Viewport when Android Picture-in-Picture is active
+    if (isInPipMode) {
+        var pipTextureRef by remember { mutableStateOf<TextureView?>(null) }
+        DisposableEffect(pipTextureRef) {
+            val tv = pipTextureRef
+            if (tv != null) viewModel.attachVideoTextureView(tv)
+            onDispose { if (tv != null) viewModel.clearVideoTextureView(tv) }
+        }
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .background(Color.Black),
+            contentAlignment = Alignment.Center
+        ) {
+            AndroidView(
+                factory = { ctx -> TextureView(ctx).also { pipTextureRef = it } },
+                update = { tv -> if (pipTextureRef !== tv) pipTextureRef = tv },
+                modifier = Modifier.fillMaxSize()
+            )
+        }
+        return
+    }
 
     val snackbarHostState = remember { SnackbarHostState() }
     val activeRoom = listenSessionState.activeRoom?.takeIf { it.status == "active" }
@@ -630,9 +766,9 @@ private fun KoplingfyAppRoot(
                                         },
                                         label = { Text(tab.label, maxLines = 1, overflow = TextOverflow.Ellipsis) },
                                         colors = NavigationRailItemDefaults.colors(
-                                            selectedIconColor = MaterialTheme.colorScheme.primary,
-                                            selectedTextColor = MaterialTheme.colorScheme.primary,
-                                            indicatorColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.16f),
+                                            selectedIconColor = MaterialTheme.colorScheme.onBackground,
+                                            selectedTextColor = MaterialTheme.colorScheme.onBackground,
+                                            indicatorColor = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.10f),
                                             unselectedIconColor = MaterialTheme.colorScheme.onSurfaceVariant,
                                             unselectedTextColor = MaterialTheme.colorScheme.onSurfaceVariant
                                         ),
@@ -682,13 +818,19 @@ private fun KoplingfyAppRoot(
                                         onTrackOptions = { optionsTrack = it },
                                         onImportLocalAudio = { localAudioPicker.launch(arrayOf("audio/*")) },
                                         onClearHistory = viewModel::clearPlayHistory,
+                                        onStartArtistRadio = viewModel::startArtistRadio,
                                         onPlayNext = swipePlayNext,
                                         onAddToQueue = swipeAddToQueue,
                                         swipeQueueLabel = swipeQueueLabel
                                     )
                                 }
                                 OverlayPage.SETTINGS -> {
-                                    LaunchedEffect(Unit) { viewModel.refreshStorageStats() }
+                                    LaunchedEffect(currentGoogleUser?.uid) {
+                                        viewModel.refreshStorageStats()
+                                        if (isFirebaseReady && currentGoogleUser != null) {
+                                            viewModel.refreshCloudSyncMeta()
+                                        }
+                                    }
                                     SettingsScreen(
                                         settings = settings,
                                         youtubeAccount = youtubeAccount,
@@ -706,6 +848,7 @@ private fun KoplingfyAppRoot(
                                         onAudioQualityChange = viewModel::setAudioQuality,
                                         onEqPresetChange = viewModel::setEqPreset,
                                         onNormalizeAudioChange = viewModel::setNormalizeAudio,
+                                        onSkipSilenceChange = viewModel::setSkipSilence,
                                         onAutoplayRadioChange = viewModel::setAutoplayRadio,
                                         onKeepScreenOnLyricsChange = viewModel::setKeepScreenOnLyrics,
                                         onGaplessChange = viewModel::setGaplessPlayback,
@@ -714,9 +857,14 @@ private fun KoplingfyAppRoot(
                                         onDataSaverCellularChange = viewModel::setDataSaverCellular,
                                         onDownloadWifiOnlyChange = viewModel::setDownloadWifiOnly,
                                         onClearCache = viewModel::clearAppCache,
+                                        onClearLyricsAiCache = viewModel::clearLyricsAiCache,
                                         onClearDownloads = viewModel::clearAllDownloads,
                                         onExportBackup = { backupExportLauncher.launch("koplingfy_backup.json") },
                                         onImportBackup = { backupImportLauncher.launch(arrayOf("application/json", "*/*")) },
+                                        cloudSyncState = cloudSyncState,
+                                        onUploadLibraryToCloud = viewModel::uploadLibraryToCloud,
+                                        onRestoreLibraryFromCloud = viewModel::restoreLibraryFromCloud,
+                                        onImportYouTubePlaylistUrl = viewModel::importYouTubePlaylistUrl,
                                         isFirebaseReady = isFirebaseReady,
                                         firebaseUserName = currentGoogleUser?.displayName?.takeIf { it.isNotBlank() }
                                             ?: currentGoogleUser?.email?.substringBefore("@"),
@@ -913,9 +1061,9 @@ private fun KoplingfyAppRoot(
 
                             if (!isExpandedWidth) {
                                 Surface(
-                                    color = MaterialTheme.colorScheme.surface.copy(alpha = 0.97f),
-                                    border = BorderStroke(0.6.dp, MaterialTheme.colorScheme.outlineVariant),
-                                    shadowElevation = 16.dp
+                                    color = MaterialTheme.colorScheme.background.copy(alpha = 0.96f),
+                                    border = BorderStroke(0.5.dp, MaterialTheme.colorScheme.outlineVariant),
+                                    shadowElevation = 0.dp
                                 ) {
                                     NavigationBar(
                                         containerColor = Color.Transparent,
@@ -958,9 +1106,9 @@ private fun KoplingfyAppRoot(
                                                     )
                                                 },
                                                 colors = NavigationBarItemDefaults.colors(
-                                                    selectedIconColor = MaterialTheme.colorScheme.primary,
-                                                    selectedTextColor = MaterialTheme.colorScheme.primary,
-                                                    indicatorColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.16f),
+                                                    selectedIconColor = MaterialTheme.colorScheme.onBackground,
+                                                    selectedTextColor = MaterialTheme.colorScheme.onBackground,
+                                                    indicatorColor = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.10f),
                                                     unselectedIconColor = MaterialTheme.colorScheme.onSurfaceVariant,
                                                     unselectedTextColor = MaterialTheme.colorScheme.onSurfaceVariant
                                                 ),
@@ -1049,6 +1197,9 @@ private fun KoplingfyAppRoot(
                                 onCustomBand = viewModel::setCustomBand,
                                 onBassBoostChange = viewModel::setBassBoost,
                                 onNormalizeAudioChange = viewModel::setNormalizeAudio,
+                                onSkipSilenceChange = viewModel::setSkipSilence,
+                                onReverbChange = viewModel::setReverbEnabled,
+                                onApplyVibePreset = viewModel::applyAudioVibePreset,
                                 onSpeedChange = viewModel::setPlaybackSpeed,
                                 onPitchChange = viewModel::setPlaybackPitch,
                                 onCrossfadeChange = viewModel::setCrossfadeSeconds,
@@ -1058,6 +1209,15 @@ private fun KoplingfyAppRoot(
                                 onSetAbPointA = viewModel::setAbLoopPointA,
                                 onSetAbPointB = viewModel::setAbLoopPointB,
                                 onClearAbLoop = viewModel::clearAbLoop,
+                                onSetVideoMode = viewModel::setVideoMode,
+                                onSelectVideoCandidate = viewModel::selectVideoCandidate,
+                                onAttachVideoTextureView = viewModel::attachVideoTextureView,
+                                onClearVideoTextureView = viewModel::clearVideoTextureView,
+                                isVideoFullscreen = isVideoFullscreen,
+                                onToggleVideoFullscreen = onToggleVideoFullscreen,
+                                onEnterPipMode = onEnterPipMode,
+                                onToggleLyricsTranslation = viewModel::toggleLyricsTranslation,
+                                onToggleLyricsRomanization = viewModel::toggleLyricsRomanization,
                                 onShowSnackbar = viewModel::showMessage
                             )
                         }
@@ -1117,9 +1277,27 @@ private fun KoplingfyAppRoot(
                     )
                 },
                 onShare = { shareTrack(activeOptionTrack) },
+                onShowTechStats = { showTechStatsTrack = activeOptionTrack },
                 onAddToListenRoom = addToListenRoomLambda,
                 onRemoveAction = removeLambda,
                 removeActionLabel = removeLabel
+            )
+        }
+
+        // ---- Info Teknis Stream (Stats for Nerds) Dialog ----
+        val techTrack = showTechStatsTrack
+        if (techTrack != null) {
+            StreamTechStatsDialog(
+                track = techTrack,
+                streamSourceLabel = if (techTrack.id == playerState.currentTrack?.id) {
+                    playerState.streamSourceLabel
+                } else if (techTrack.isLocal) "AUDIO LOKAL" else "YOUTUBE MUSIC",
+                techStats = if (techTrack.id == playerState.currentTrack?.id) {
+                    playerState.streamTechStats
+                } else com.example.model.StreamTechStats(),
+                settings = settings,
+                isVideoMode = techTrack.id == playerState.currentTrack?.id && playerState.isVideoMode,
+                onDismiss = { showTechStatsTrack = null }
             )
         }
 

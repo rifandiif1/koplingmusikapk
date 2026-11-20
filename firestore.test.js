@@ -359,3 +359,66 @@ test("User-scoped recent_rooms enforces strict per-user isolation", async () => 
     guestDb.collection("users").doc(HOST_UID).collection("recent_rooms").doc(ROOM_CODE).delete()
   );
 });
+
+test("User-scoped library_sync snapshot enforces ownership, schema bounds, and immutability", async () => {
+  const unauthDb = testEnv.unauthenticatedContext().firestore();
+  const hostDb = testEnv.authenticatedContext(HOST_UID).firestore();
+  const guestDb = testEnv.authenticatedContext(GUEST_UID).firestore();
+  const created = new Date(Date.now() - 4000);
+
+  const validSnapshot = {
+    userId: HOST_UID,
+    payloadJson: JSON.stringify({ likedTracks: [], playlists: [] }),
+    likedCount: 12,
+    playlistCount: 3,
+    deviceLabel: "Pixel 9",
+    createdAt: created,
+    updatedAt: created,
+  };
+
+  // Unauthenticated blocked
+  await assertFails(
+    unauthDb.collection("users").doc(HOST_UID).collection("library_sync").doc("snapshot").set(validSnapshot)
+  );
+
+  // Wrong docId blocked
+  await assertFails(
+    hostDb.collection("users").doc(HOST_UID).collection("library_sync").doc("other").set(validSnapshot)
+  );
+
+  // Owner create succeeds
+  await assertSucceeds(
+    hostDb.collection("users").doc(HOST_UID).collection("library_sync").doc("snapshot").set(validSnapshot)
+  );
+
+  // Owner read & partial update succeed
+  await assertSucceeds(
+    hostDb.collection("users").doc(HOST_UID).collection("library_sync").doc("snapshot").get()
+  );
+  await assertSucceeds(
+    hostDb.collection("users").doc(HOST_UID).collection("library_sync").doc("snapshot").update({
+      payloadJson: JSON.stringify({ likedTracks: [{ id: "yt_1" }], playlists: [] }),
+      likedCount: 13,
+      playlistCount: 3,
+      deviceLabel: "Pixel 9",
+      updatedAt: new Date(Date.now() - 1000),
+    })
+  );
+
+  // Tampering createdAt rejected
+  await assertFails(
+    hostDb.collection("users").doc(HOST_UID).collection("library_sync").doc("snapshot").update({
+      createdAt: new Date(Date.now() - 1000),
+      updatedAt: new Date(Date.now() - 500),
+    })
+  );
+
+  // Cross-user read/write/delete rejected
+  await assertFails(
+    guestDb.collection("users").doc(HOST_UID).collection("library_sync").doc("snapshot").get()
+  );
+  await assertFails(
+    guestDb.collection("users").doc(HOST_UID).collection("library_sync").doc("snapshot").delete()
+  );
+});
+

@@ -5,6 +5,7 @@ import com.example.model.ArtistSummary
 import com.example.model.AudioQuality
 import com.example.model.RemotePlaylistSummary
 import com.example.model.Track
+import com.example.model.VideoCandidate
 import com.example.model.YouTubeAccount
 import okhttp3.Call
 import okhttp3.ConnectionPool
@@ -45,6 +46,21 @@ sealed interface StreamResolveResult {
     data class Success(val stream: ResolvedStream) : StreamResolveResult
     data class LoginRequired(val reason: String) : StreamResolveResult
     data class Unavailable(val reason: String) : StreamResolveResult
+}
+
+data class ResolvedVideoStream(
+    val videoUrl: String,
+    val audioUrl: String? = null,
+    val userAgent: String? = null,
+    val cookie: String? = null,
+    val durationMs: Long? = null,
+    val qualityLabel: String = "Video",
+    val isMuxed: Boolean = true
+)
+
+sealed interface VideoStreamResolveResult {
+    data class Success(val stream: ResolvedVideoStream) : VideoStreamResolveResult
+    data class Unavailable(val reason: String) : VideoStreamResolveResult
 }
 
 /**
@@ -111,7 +127,14 @@ object InnerTubeClient {
         val expiresAtMs: Long
     )
 
+    private data class CachedVideoStreamEntry(
+        val stream: ResolvedVideoStream,
+        val expiresAtMs: Long
+    )
+
     private val streamUrlCache = ConcurrentHashMap<String, CachedStreamEntry>()
+    private val videoStreamUrlCache = ConcurrentHashMap<String, CachedVideoStreamEntry>()
+    private val lyricVideoSearchCache = ConcurrentHashMap<String, List<VideoCandidate>>()
 
     @Volatile
     private var lastWinningUnauthProfile: String? = null
@@ -145,6 +168,7 @@ object InnerTubeClient {
 
     fun clearStreamCache() {
         streamUrlCache.clear()
+        videoStreamUrlCache.clear()
     }
 
     private fun streamCacheKey(videoId: String, quality: AudioQuality): String =
@@ -1074,6 +1098,321 @@ object InnerTubeClient {
         val durationMs: Long?,
         val contentLength: Long?
     )
+
+    private data class VideoFmtCandidate(
+        val url: String,
+        val mime: String,
+        val height: Int,
+        val bitrate: Int,
+        val qualityLabel: String,
+        val durationMs: Long?
+    )
+
+    /**
+     * Metrolist-style Video Discovery prioritizing Official Lyric Videos FIRST,
+     * followed by other Lyric Videos, Official Music Videos, and the track's own videoId.
+     */
+    fun searchLyricVideosForTrack(
+        title: String,
+        artist: String,
+        originalVideoId: String? = null
+    ): List<VideoCandidate> {
+        val cacheKey = "${title.lowercase().trim()}|${artist.lowercase().trim()}|${originalVideoId.orEmpty()}"
+        lyricVideoSearchCache[cacheKey]?.let { cached ->
+            if (cached.isNotEmpty()) return cached
+        }
+
+        val cleanTitle = title
+            .replace(Regex("""\s*\([^)]*\)"""), "")
+            .replace(Regex("""\s*\[[^\]]*]"""), "")
+            .trim()
+        val cleanArtist = artist.split(",", "&", "feat.", "ft.", ignoreCase = true)
+            .firstOrNull()?.trim().orEmpty()
+
+        val vd = getOrFetchVisitorData()
+        val rawVideos = mutableListOf<Track>()
+
+        // 1. Primary search explicitly targeting Lyric Video
+        val lyricQuery = "$cleanTitle $cleanArtist lyric video".trim()
+        runCatching {
+            val payload = JSONObject().apply {
+                put("context", webRemixContext(vd))
+                put("query", lyricQuery)
+                put("params", PARAMS_VIDEOS)
+            }
+            val root = postJson(
+                url = "$YTM_ORIGIN/youtubei/v1/search?prettyPrint=false",
+                body = payload,
+                visitorData = vd
+            )
+            if (root != null) {
+                walkRenderers(root, rawVideos, mutableListOf(), mutableListOf(), mutableListOf(), "Video Musik", null)
+            }
+        }
+
+        // 2. Secondary search for official music video / alternate uploads so user can switch
+        val mvQuery = "$cleanTitle $cleanArtist official video".trim()
+        runCatching {
+            val payload = JSONObject().apply {
+                put("context", webRemixContext(vd))
+                put("query", mvQuery)
+                put("params", PARAMS_VIDEOS)
+            }
+            val root = postJson(
+                url = "$YTM_ORIGIN/youtubei/v1/search?prettyPrint=false",
+                body = payload,
+                visitorData = vd
+            )
+            if (root != null) {
+                val mvList = mutableListOf<Track>()
+                walkRenderers(root, mvList, mutableListOf(), mutableListOf(), mutableListOf(), "Video Musik", null)
+                rawVideos.addAll(mvList.take(4))
+            }
+        }
+
+        val lyricKeywords = listOf("lyric", "lyrics", "lirik", "kata-kata", "sub indo", "terjemahan")
+        val scored = rawVideos
+            .distinctBy { it.id }
+            .mapNotNull { t ->
+                val vid = t.id.removePrefix("yt_").takeIf { it.length >= 6 } ?: return@mapNotNull null
+                val lowerTitle = t.title.lowercase()
+                val lowerArtist = t.artist.lowercase()
+                val isLyric = lyricKeywords.any { kw -> lowerTitle.contains(kw) }
+                val matchesTitle = cleanTitle.length >= 3 && lowerTitle.contains(cleanTitle.lowercase().take(12))
+                val matchesArtist = cleanArtist.length >= 2 &&
+                    (lowerTitle.contains(cleanArtist.lowercase()) || lowerArtist.contains(cleanArtist.lowercase()))
+                val isOfficial = lowerTitle.contains("official") || lowerArtist.contains("vevo")
+
+                var score = 0
+                if (isLyric) score += 120
+                if (isLyric && isOfficial) score += 45
+                if (matchesTitle) score += 35
+                if (matchesArtist) score += 25
+                if (lowerTitle.contains("cover") || lowerTitle.contains("karaoke") || lowerTitle.contains("8d")) {
+                    score -= 70
+                }
+                if (lowerTitle.contains("shorts") || (t.durationMs in 1L..50_000L)) {
+                    score -= 60
+                }
+                val durLabel = if (t.durationMs > 0L) {
+                    val totalSec = t.durationMs / 1000L
+                    "%d:%02d".format(totalSec / 60L, totalSec % 60L)
+                } else ""
+
+                score to VideoCandidate(
+                    videoId = vid,
+                    title = t.title,
+                    channel = t.artist,
+                    thumbnailUrl = t.artworkUrl ?: "https://i.ytimg.com/vi/$vid/hqdefault.jpg",
+                    durationLabel = durLabel,
+                    isLyricVideo = isLyric
+                )
+            }
+            .sortedByDescending { it.first }
+            .map { it.second }
+            .take(8)
+            .toMutableList()
+
+        // Ensure original track videoId is available as fallback option if not already in the list
+        if (!originalVideoId.isNullOrBlank() && scored.none { it.videoId == originalVideoId }) {
+            scored.add(
+                VideoCandidate(
+                    videoId = originalVideoId,
+                    title = "$title (Video Bawaan)",
+                    channel = artist,
+                    thumbnailUrl = "https://i.ytimg.com/vi/$originalVideoId/hqdefault.jpg",
+                    isLyricVideo = false
+                )
+            )
+        }
+
+        if (scored.isNotEmpty()) {
+            if (lyricVideoSearchCache.size > 60) {
+                lyricVideoSearchCache.clear()
+            }
+            lyricVideoSearchCache[cacheKey] = scored
+        }
+
+        return scored
+    }
+
+    /**
+     * Resolves a playable YouTube video stream for the selected videoId:
+     * 1) Prefers fast muxed progressive MP4 (itag 22 / 18) for instant startup & zero A/V drift.
+     * 2) Falls back to adaptive H.264 video (<=720p) + best audio for ExoPlayer MergingMediaSource.
+     */
+    fun resolveVideoStream(videoId: String, forceRefresh: Boolean = false): VideoStreamResolveResult {
+        val vCacheKey = "$videoId|${isAuthenticated()}"
+        if (!forceRefresh) {
+            videoStreamUrlCache[vCacheKey]?.let { entry ->
+                if (System.currentTimeMillis() < entry.expiresAtMs) {
+                    return VideoStreamResolveResult.Success(entry.stream)
+                }
+                videoStreamUrlCache.remove(vCacheKey)
+            }
+        }
+        val vd = cachedVisitorData ?: run {
+            warmupAsync()
+            null
+        }
+        val ordered = orderedProfilesForCurrentAuth()
+
+        for (profile in ordered) {
+            val resolved = runCatching {
+                val clientObj = JSONObject().apply {
+                    put("clientName", profile.clientName)
+                    put("clientVersion", profile.clientVersion)
+                    put("hl", "id")
+                    put("gl", "ID")
+                    if (!vd.isNullOrBlank()) put("visitorData", vd)
+                    if (profile.includeUserAgentInContext) put("userAgent", profile.userAgent)
+                    profile.osName?.let { put("osName", it) }
+                    profile.osVersion?.let { put("osVersion", it) }
+                    profile.deviceMake?.let { put("deviceMake", it) }
+                    profile.deviceModel?.let { put("deviceModel", it) }
+                    profile.androidSdkVersion?.let { put("androidSdkVersion", it) }
+                    profile.platform?.let { put("platform", it) }
+                }
+                val contextObj = JSONObject().put("client", clientObj)
+                if (profile.thirdPartyEmbedUrl != null) {
+                    contextObj.put("thirdParty", JSONObject().put("embedUrl", profile.thirdPartyEmbedUrl))
+                }
+                val payload = JSONObject().apply {
+                    put("context", contextObj)
+                    put("videoId", videoId)
+                    put("contentCheckOk", true)
+                    put("racyCheckOk", true)
+                }
+
+                val root = postJson(
+                    url = "$YTM_ORIGIN/youtubei/v1/player?prettyPrint=false",
+                    body = payload,
+                    userAgent = profile.userAgent,
+                    clientId = profile.clientId,
+                    clientVersion = profile.clientVersion,
+                    visitorData = vd,
+                    origin = YTM_ORIGIN,
+                    includeAuth = profile.useAuth,
+                    httpClient = playerClient
+                ) ?: return@runCatching null
+
+                val status = root.optJSONObject("playabilityStatus")?.optString("status").orEmpty()
+                if (status != "OK") return@runCatching null
+
+                val streamingData = root.optJSONObject("streamingData") ?: return@runCatching null
+                val fallbackDur = root.optJSONObject("videoDetails")
+                    ?.optString("lengthSeconds")
+                    ?.toLongOrNull()
+                    ?.times(1000L)
+
+                // 1. Check muxed progressive formats first (fast & rock-solid audio/video sync)
+                val muxedFormats = streamingData.optJSONArray("formats") ?: JSONArray()
+                val muxedCandidates = mutableListOf<VideoFmtCandidate>()
+                for (i in 0 until muxedFormats.length()) {
+                    val fmt = muxedFormats.optJSONObject(i) ?: continue
+                    val directUrl = fmt.optString("url")
+                    val mime = fmt.optString("mimeType")
+                    if (directUrl.isBlank() || !mime.startsWith("video/")) continue
+                    val h = fmt.optInt("height", 360)
+                    muxedCandidates.add(
+                        VideoFmtCandidate(
+                            url = directUrl,
+                            mime = mime,
+                            height = h,
+                            bitrate = fmt.optInt("bitrate", 0),
+                            qualityLabel = fmt.optString("qualityLabel").ifBlank { "${h}p" },
+                            durationMs = fmt.optString("approxDurationMs").toLongOrNull()
+                        )
+                    )
+                }
+                val bestMuxed = muxedCandidates
+                    .filter { it.mime.contains("mp4", ignoreCase = true) }
+                    .maxByOrNull { it.height }
+                    ?: muxedCandidates.maxByOrNull { it.height }
+
+                if (bestMuxed != null) {
+                    return@runCatching ResolvedVideoStream(
+                        videoUrl = bestMuxed.url,
+                        audioUrl = null,
+                        userAgent = profile.userAgent,
+                        cookie = if (profile.useAuth) authCookie else null,
+                        durationMs = bestMuxed.durationMs ?: fallbackDur,
+                        qualityLabel = bestMuxed.qualityLabel,
+                        isMuxed = true
+                    )
+                }
+
+                // 2. Fallback to adaptive video (H.264/MP4 <= 720p) + best audio for MergingMediaSource
+                val adaptive = streamingData.optJSONArray("adaptiveFormats") ?: JSONArray()
+                val videoAdaptive = mutableListOf<VideoFmtCandidate>()
+                val audioAdaptive = mutableListOf<AudioFmtCandidate>()
+
+                for (i in 0 until adaptive.length()) {
+                    val fmt = adaptive.optJSONObject(i) ?: continue
+                    val directUrl = fmt.optString("url")
+                    val mime = fmt.optString("mimeType")
+                    if (directUrl.isBlank()) continue
+                    if (mime.startsWith("video/mp4") || mime.startsWith("video/webm")) {
+                        val h = fmt.optInt("height", 360)
+                        if (h in 240..720) {
+                            videoAdaptive.add(
+                                VideoFmtCandidate(
+                                    url = directUrl,
+                                    mime = mime,
+                                    height = h,
+                                    bitrate = fmt.optInt("bitrate", 0),
+                                    qualityLabel = fmt.optString("qualityLabel").ifBlank { "${h}p" },
+                                    durationMs = fmt.optString("approxDurationMs").toLongOrNull()
+                                )
+                            )
+                        }
+                    } else if (mime.startsWith("audio/")) {
+                        audioAdaptive.add(
+                            AudioFmtCandidate(
+                                url = directUrl,
+                                mime = mime,
+                                itag = fmt.optInt("itag", 0),
+                                bitrate = fmt.optInt("bitrate", 0),
+                                durationMs = fmt.optString("approxDurationMs").toLongOrNull(),
+                                contentLength = fmt.optString("contentLength").toLongOrNull()
+                            )
+                        )
+                    }
+                }
+
+                val bestVideo = videoAdaptive
+                    .sortedWith(
+                        compareByDescending<VideoFmtCandidate> { it.mime.contains("avc1", ignoreCase = true) || it.mime.contains("mp4", ignoreCase = true) }
+                            .thenByDescending { it.height }
+                    )
+                    .firstOrNull()
+                val bestAudio = selectBestCandidate(audioAdaptive, AudioQuality.NORMAL)
+
+                if (bestVideo != null && bestAudio != null) {
+                    return@runCatching ResolvedVideoStream(
+                        videoUrl = bestVideo.url,
+                        audioUrl = bestAudio.url,
+                        userAgent = profile.userAgent,
+                        cookie = if (profile.useAuth) authCookie else null,
+                        durationMs = bestVideo.durationMs ?: bestAudio.durationMs ?: fallbackDur,
+                        qualityLabel = bestVideo.qualityLabel,
+                        isMuxed = false
+                    )
+                }
+                null
+            }.getOrNull()
+
+            if (resolved != null) {
+                videoStreamUrlCache[vCacheKey] = CachedVideoStreamEntry(
+                    stream = resolved,
+                    expiresAtMs = computeStreamExpiryMs(resolved.videoUrl)
+                )
+                return VideoStreamResolveResult.Success(resolved)
+            }
+        }
+
+        return VideoStreamResolveResult.Unavailable("Video tidak tersedia untuk lagu ini. Coba pilih video lain.")
+    }
 
     private fun findFirstObjectByKey(node: Any?, targetKey: String): JSONObject? {
         when (node) {

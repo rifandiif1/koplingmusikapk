@@ -161,6 +161,52 @@
         "createdAt",
         "updatedAt"
       ]
+    },
+    "CloudLibrarySnapshot": {
+      "title": "CloudLibrarySnapshot",
+      "description": "User-private cloud backup snapshot of liked tracks and custom playlists synchronized across devices.",
+      "type": "object",
+      "properties": {
+        "userId": {
+          "type": "string",
+          "description": "Owner Firebase UID matching path userId."
+        },
+        "payloadJson": {
+          "type": "string",
+          "description": "Serialized JSON backup containing liked tracks and custom playlists."
+        },
+        "likedCount": {
+          "type": "integer",
+          "description": "Total liked tracks in the cloud snapshot."
+        },
+        "playlistCount": {
+          "type": "integer",
+          "description": "Total custom playlists in the cloud snapshot."
+        },
+        "deviceLabel": {
+          "type": "string",
+          "description": "Human-friendly device model name that uploaded this snapshot."
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp (FieldValue.serverTimestamp()) when the snapshot was first created."
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp (FieldValue.serverTimestamp()) of the most recent sync."
+        }
+      },
+      "required": [
+        "userId",
+        "payloadJson",
+        "likedCount",
+        "playlistCount",
+        "deviceLabel",
+        "createdAt",
+        "updatedAt"
+      ]
     }
   },
   "firestore": {
@@ -175,6 +221,12 @@
         "$ref": "#/entities/RecentRoomEntry"
       },
       "description": "User-scoped private list of recently created or joined Play Bersama rooms."
+    },
+    "/users/{userId}/library_sync/{docId}": {
+      "schema": {
+        "$ref": "#/entities/CloudLibrarySnapshot"
+      },
+      "description": "User-scoped private cloud library snapshot (docId == 'snapshot') storing synced favorites and playlists."
     }
   }
 }

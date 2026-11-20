@@ -43,6 +43,8 @@ class PreferencesRepository(private val context: Context) {
         val CROSSFADE_SECONDS = intPreferencesKey("crossfade_seconds")
         val DATA_SAVER_CELLULAR = booleanPreferencesKey("data_saver_cellular")
         val DOWNLOAD_WIFI_ONLY = booleanPreferencesKey("download_wifi_only")
+        val SKIP_SILENCE = booleanPreferencesKey("skip_silence")
+        val REVERB_ENABLED = booleanPreferencesKey("reverb_enabled")
 
         // YouTube Music Account (Metrolist InnerTube auth)
         val YTM_COOKIE = stringPreferencesKey("ytm_cookie")
@@ -91,7 +93,9 @@ class PreferencesRepository(private val context: Context) {
             dynamicArtworkColor = prefs[Keys.DYNAMIC_ARTWORK_COLOR] ?: true,
             crossfadeSeconds = (prefs[Keys.CROSSFADE_SECONDS] ?: 0).coerceIn(0, 10),
             dataSaverCellular = prefs[Keys.DATA_SAVER_CELLULAR] ?: false,
-            downloadWifiOnly = prefs[Keys.DOWNLOAD_WIFI_ONLY] ?: false
+            downloadWifiOnly = prefs[Keys.DOWNLOAD_WIFI_ONLY] ?: false,
+            skipSilence = prefs[Keys.SKIP_SILENCE] ?: false,
+            reverbEnabled = prefs[Keys.REVERB_ENABLED] ?: false
         )
     }
 
@@ -218,5 +222,13 @@ class PreferencesRepository(private val context: Context) {
 
     suspend fun setDownloadWifiOnly(enabled: Boolean) {
         context.koplingfyDataStore.edit { it[Keys.DOWNLOAD_WIFI_ONLY] = enabled }
+    }
+
+    suspend fun setSkipSilence(enabled: Boolean) {
+        context.koplingfyDataStore.edit { it[Keys.SKIP_SILENCE] = enabled }
+    }
+
+    suspend fun setReverbEnabled(enabled: Boolean) {
+        context.koplingfyDataStore.edit { it[Keys.REVERB_ENABLED] = enabled }
     }
 }

@@ -4,7 +4,9 @@ import android.content.Context
 import android.media.audiofx.BassBoost
 import android.media.audiofx.Equalizer
 import android.media.audiofx.LoudnessEnhancer
+import android.media.audiofx.PresetReverb
 import android.net.Uri
+import android.view.TextureView
 import androidx.annotation.OptIn
 import androidx.media3.common.AudioAttributes
 import androidx.media3.common.C
@@ -12,6 +14,7 @@ import androidx.media3.common.MediaItem
 import androidx.media3.common.PlaybackException
 import androidx.media3.common.PlaybackParameters
 import androidx.media3.common.Player
+import androidx.media3.common.Tracks
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.database.StandaloneDatabaseProvider
 import androidx.media3.datasource.DefaultDataSource
@@ -23,8 +26,10 @@ import androidx.media3.datasource.cache.SimpleCache
 import androidx.media3.datasource.okhttp.OkHttpDataSource
 import androidx.media3.exoplayer.DefaultLoadControl
 import androidx.media3.exoplayer.ExoPlayer
+import androidx.media3.exoplayer.source.MergingMediaSource
 import androidx.media3.exoplayer.source.ProgressiveMediaSource
 import com.example.data.remote.InnerTubeClient
+import com.example.model.StreamTechStats
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -43,7 +48,8 @@ data class AudioEngineState(
     val isBuffering: Boolean = false,
     val positionMs: Long = 0L,
     val durationMs: Long = 0L,
-    val errorMessage: String? = null
+    val errorMessage: String? = null,
+    val streamTechStats: StreamTechStats = StreamTechStats()
 )
 
 /**
@@ -68,6 +74,7 @@ class KoplingfyAudioEngine(
     private var equalizer: Equalizer? = null
     private var bassBoost: BassBoost? = null
     private var loudnessEnhancer: LoudnessEnhancer? = null
+    private var presetReverb: PresetReverb? = null
     private var attachedAudioSessionId: Int = C.AUDIO_SESSION_ID_UNSET
     private var progressJob: Job? = null
 
@@ -76,12 +83,16 @@ class KoplingfyAudioEngine(
     private var currentBandsDb: List<Float> = listOf(0f, 0f, 0f, 0f, 0f)
     private var currentBassStrength: Float = 0f
     private var normalizeAudio: Boolean = true
+    private var skipSilenceEnabled: Boolean = false
+    private var reverbEnabled: Boolean = false
     private var crossfadeSeconds: Int = 0
     private var sleepFadeMultiplier: Float = 1.0f
     private var abLoopStartMs: Long? = null
     private var abLoopEndMs: Long? = null
     private var pendingStartPositionMs: Long = 0L
     private var pendingAutoStart: Boolean = true
+    private var activeCacheKey: String? = null
+    private var attachedTextureView: TextureView? = null
 
     private val _state = MutableStateFlow(AudioEngineState())
     val state: StateFlow<AudioEngineState> = _state.asStateFlow()
@@ -90,6 +101,12 @@ class KoplingfyAudioEngine(
         override fun onAudioSessionIdChanged(audioSessionId: Int) {
             if (audioSessionId != C.AUDIO_SESSION_ID_UNSET && audioSessionId != 0) {
                 attachAudioEffects(audioSessionId)
+            }
+        }
+
+        override fun onTracksChanged(tracks: Tracks) {
+            exoPlayer?.let { player ->
+                _state.value = _state.value.copy(streamTechStats = extractStreamTechStats(player))
             }
         }
 
@@ -121,7 +138,8 @@ class KoplingfyAudioEngine(
                         isBuffering = false,
                         positionMs = pos,
                         durationMs = totalDur,
-                        errorMessage = null
+                        errorMessage = null,
+                        streamTechStats = extractStreamTechStats(player)
                     )
                 }
                 Player.STATE_ENDED -> {
@@ -161,12 +179,23 @@ class KoplingfyAudioEngine(
 
         override fun onPlayerError(error: PlaybackException) {
             stopProgressPolling()
-            val cause = error.cause
-            val isExpiredHttp = (cause is HttpDataSource.InvalidResponseCodeException &&
-                (cause.responseCode == 403 || cause.responseCode == 410 || cause.responseCode == 404)) ||
-                error.errorCode == PlaybackException.ERROR_CODE_IO_BAD_HTTP_STATUS
+            // Evict potentially corrupt/partial cached stream before attempting recovery
+            activeCacheKey?.let { key ->
+                runCatching { sharedStreamCache?.removeResource(key) }
+            }
 
-            if (isExpiredHttp && onStreamExpiredError?.invoke() == true) {
+            val cause = error.cause
+            val isRecoverableStreamError = (cause is HttpDataSource.InvalidResponseCodeException &&
+                (cause.responseCode == 403 || cause.responseCode == 410 || cause.responseCode == 404 || cause.responseCode == 416)) ||
+                error.errorCode == PlaybackException.ERROR_CODE_IO_BAD_HTTP_STATUS ||
+                error.errorCode == PlaybackException.ERROR_CODE_IO_UNSPECIFIED ||
+                error.errorCode == PlaybackException.ERROR_CODE_IO_NETWORK_CONNECTION_FAILED ||
+                error.errorCode == PlaybackException.ERROR_CODE_IO_NETWORK_CONNECTION_TIMEOUT ||
+                error.errorCode == PlaybackException.ERROR_CODE_IO_READ_POSITION_OUT_OF_RANGE ||
+                error.errorCode == PlaybackException.ERROR_CODE_PARSING_CONTAINER_MALFORMED ||
+                error.errorCode == PlaybackException.ERROR_CODE_PARSING_CONTAINER_UNSUPPORTED
+
+            if (isRecoverableStreamError && onStreamExpiredError?.invoke() == true) {
                 _state.value = _state.value.copy(
                     isPlaying = false,
                     isBuffering = true,
@@ -208,10 +237,13 @@ class KoplingfyAudioEngine(
             .setLoadControl(loadControl)
             .setAudioAttributes(audioAttributes, /* handleAudioFocus = */ true)
             .setHandleAudioBecomingNoisy(true)
+            .setWakeMode(C.WAKE_MODE_NETWORK)
             .build()
             .apply {
                 addListener(playerListener)
                 playbackParameters = PlaybackParameters(currentSpeed, currentPitch)
+                this.skipSilenceEnabled = this@KoplingfyAudioEngine.skipSilenceEnabled
+                attachedTextureView?.let { setVideoTextureView(it) }
                 exoPlayer = this
             }
     }
@@ -251,6 +283,7 @@ class KoplingfyAudioEngine(
             val player = getOrCreatePlayer()
             val uri = Uri.parse(sourceUrl)
             val isLocalSource = isLocalUri || uri.scheme == "file" || uri.scheme == "content"
+            activeCacheKey = if (!isLocalSource) cacheKey else null
 
             val mediaItemBuilder = MediaItem.Builder().setUri(uri)
             if (!isLocalSource && !cacheKey.isNullOrBlank()) {
@@ -261,35 +294,7 @@ class KoplingfyAudioEngine(
             val dataSourceFactory = if (isLocalSource) {
                 DefaultDataSource.Factory(appContext)
             } else {
-                val headers = mutableMapOf<String, String>()
-                if (!cookie.isNullOrBlank()) {
-                    headers["Cookie"] = cookie
-                }
-                val okHttpFactory = OkHttpDataSource.Factory(InnerTubeClient.streamHttpClient).apply {
-                    if (!userAgent.isNullOrBlank()) {
-                        setUserAgent(userAgent)
-                    }
-                    if (headers.isNotEmpty()) {
-                        setDefaultRequestProperties(headers)
-                    }
-                }
-                val chunkedUpstream = YouTubeChunkedDataSource.Factory(
-                    upstreamFactory = okHttpFactory,
-                    chunkSize = YouTubeChunkedDataSource.DEFAULT_CHUNK_SIZE
-                )
-                val cache = getOrCreateStreamCache(appContext)
-                if (cache != null) {
-                    val cacheSinkFactory = CacheDataSink.Factory()
-                        .setCache(cache)
-                        .setFragmentSize(YouTubeChunkedDataSource.DEFAULT_CHUNK_SIZE)
-                    CacheDataSource.Factory()
-                        .setCache(cache)
-                        .setUpstreamDataSourceFactory(chunkedUpstream)
-                        .setCacheWriteDataSinkFactory(cacheSinkFactory)
-                        .setFlags(CacheDataSource.FLAG_IGNORE_CACHE_ON_ERROR)
-                } else {
-                    chunkedUpstream
-                }
+                buildRemoteDataSourceFactory(userAgent = userAgent, cookie = cookie, useCache = true)
             }
 
             val mediaSource = ProgressiveMediaSource.Factory(dataSourceFactory)
@@ -308,6 +313,116 @@ class KoplingfyAudioEngine(
                 isBuffering = false,
                 errorMessage = "Tidak dapat membuka sumber audio."
             )
+        }
+    }
+
+    /**
+     * Plays a Metrolist-style inline Lyric/Music Video directly inside the same ExoPlayer instance
+     * (either a muxed progressive MP4 or a MergingMediaSource combining adaptive H.264 video + audio).
+     */
+    fun playVideoSource(
+        videoUrl: String?,
+        audioUrl: String? = null,
+        userAgent: String? = null,
+        cookie: String? = null
+    ) {
+        if (videoUrl.isNullOrBlank()) {
+            _state.value = _state.value.copy(
+                isBuffering = false,
+                errorMessage = "Stream video tidak tersedia untuk pilihan ini."
+            )
+            return
+        }
+
+        val safeStartPos = pendingStartPositionMs.coerceAtLeast(0L)
+        val shouldAutoStart = pendingAutoStart
+        pendingStartPositionMs = 0L
+        pendingAutoStart = true
+        activeCacheKey = null
+
+        _state.value = AudioEngineState(
+            isPlaying = false,
+            isBuffering = true,
+            positionMs = safeStartPos,
+            durationMs = _state.value.durationMs,
+            errorMessage = null
+        )
+
+        try {
+            val player = getOrCreatePlayer()
+            val remoteFactory = buildRemoteDataSourceFactory(userAgent = userAgent, cookie = cookie, useCache = false)
+            val videoSource = ProgressiveMediaSource.Factory(remoteFactory)
+                .createMediaSource(MediaItem.fromUri(Uri.parse(videoUrl)))
+
+            val finalSource = if (!audioUrl.isNullOrBlank()) {
+                val audioSource = ProgressiveMediaSource.Factory(remoteFactory)
+                    .createMediaSource(MediaItem.fromUri(Uri.parse(audioUrl)))
+                MergingMediaSource(videoSource, audioSource)
+            } else {
+                videoSource
+            }
+
+            attachedTextureView?.let { player.setVideoTextureView(it) }
+            player.volume = sleepFadeMultiplier.coerceIn(0.05f, 1.0f)
+            player.playbackParameters = PlaybackParameters(currentSpeed, currentPitch)
+            player.setMediaSource(finalSource, safeStartPos)
+            player.playWhenReady = shouldAutoStart
+            player.prepare()
+        } catch (e: Exception) {
+            _state.value = _state.value.copy(
+                isPlaying = false,
+                isBuffering = false,
+                errorMessage = "Tidak dapat memutar stream video."
+            )
+        }
+    }
+
+    fun attachVideoTextureView(textureView: TextureView?) {
+        attachedTextureView = textureView
+        exoPlayer?.setVideoTextureView(textureView)
+    }
+
+    fun clearVideoTextureView(textureView: TextureView?) {
+        if (textureView == null || attachedTextureView == textureView) {
+            attachedTextureView = null
+        }
+        exoPlayer?.clearVideoTextureView(textureView)
+    }
+
+    private fun buildRemoteDataSourceFactory(
+        userAgent: String?,
+        cookie: String?,
+        useCache: Boolean
+    ): androidx.media3.datasource.DataSource.Factory {
+        val headers = mutableMapOf<String, String>()
+        if (!cookie.isNullOrBlank()) {
+            headers["Cookie"] = cookie
+        }
+        val okHttpFactory = OkHttpDataSource.Factory(InnerTubeClient.streamHttpClient).apply {
+            if (!userAgent.isNullOrBlank()) {
+                setUserAgent(userAgent)
+            }
+            if (headers.isNotEmpty()) {
+                setDefaultRequestProperties(headers)
+            }
+        }
+        val chunkedUpstream = YouTubeChunkedDataSource.Factory(
+            upstreamFactory = okHttpFactory,
+            chunkSize = YouTubeChunkedDataSource.DEFAULT_CHUNK_SIZE
+        )
+        if (!useCache) return chunkedUpstream
+        val cache = getOrCreateStreamCache(appContext)
+        return if (cache != null) {
+            val cacheSinkFactory = CacheDataSink.Factory()
+                .setCache(cache)
+                .setFragmentSize(YouTubeChunkedDataSource.DEFAULT_CHUNK_SIZE)
+            CacheDataSource.Factory()
+                .setCache(cache)
+                .setUpstreamDataSourceFactory(chunkedUpstream)
+                .setCacheWriteDataSinkFactory(cacheSinkFactory)
+                .setFlags(CacheDataSource.FLAG_IGNORE_CACHE_ON_ERROR)
+        } else {
+            chunkedUpstream
         }
     }
 
@@ -376,6 +491,13 @@ class KoplingfyAudioEngine(
         applyBassAndLoudness()
     }
 
+    fun updateSkipSilenceAndReverb(skipSilence: Boolean, reverb: Boolean) {
+        skipSilenceEnabled = skipSilence
+        reverbEnabled = reverb
+        exoPlayer?.skipSilenceEnabled = skipSilence
+        applyReverb()
+    }
+
     fun updateCrossfadeSeconds(seconds: Int) {
         crossfadeSeconds = seconds.coerceIn(0, 10)
         if (crossfadeSeconds == 0) {
@@ -418,7 +540,14 @@ class KoplingfyAudioEngine(
         runCatching {
             loudnessEnhancer = LoudnessEnhancer(audioSessionId).apply { enabled = normalizeAudio }
         }
+        runCatching {
+            presetReverb = PresetReverb(0, audioSessionId).apply {
+                preset = PresetReverb.PRESET_LARGEHALL
+                enabled = reverbEnabled
+            }
+        }
         applyBassAndLoudness()
+        applyReverb()
     }
 
     private fun applyEqualizerBands() {
@@ -448,6 +577,50 @@ class KoplingfyAudioEngine(
                 le.setTargetGain(if (normalizeAudio) 320 else 0)
             }
         }
+    }
+
+    private fun applyReverb() {
+        runCatching {
+            presetReverb?.let { pr ->
+                pr.preset = PresetReverb.PRESET_LARGEHALL
+                pr.enabled = reverbEnabled
+            }
+        }
+    }
+
+    private fun extractStreamTechStats(player: ExoPlayer): StreamTechStats {
+        val af = player.audioFormat
+        val vf = player.videoFormat
+        val rawMime = af?.sampleMimeType ?: af?.containerMimeType ?: ""
+        val codecLabel = when {
+            rawMime.contains("opus", ignoreCase = true) -> "Opus (WebM)"
+            rawMime.contains("mp4a", ignoreCase = true) || rawMime.contains("aac", ignoreCase = true) -> "AAC-LC (MP4)"
+            rawMime.contains("flac", ignoreCase = true) -> "FLAC Lossless"
+            rawMime.contains("mpeg", ignoreCase = true) -> "MP3"
+            af?.codecs?.isNotBlank() == true -> af.codecs.orEmpty()
+            rawMime.isNotBlank() -> rawMime.substringAfter("/").uppercase()
+            else -> "-"
+        }
+        val bitrateKbps = af?.bitrate?.takeIf { it > 0 }?.div(1000) ?: 0
+        val sampleRateHz = af?.sampleRate?.takeIf { it > 0 } ?: 0
+        val channelCount = af?.channelCount?.takeIf { it > 0 } ?: 0
+        val videoRes = if (vf != null && vf.width > 0 && vf.height > 0) "${vf.width}×${vf.height}" else ""
+        val videoCodec = vf?.sampleMimeType?.substringAfter("/")?.uppercase().orEmpty()
+        val bufferedPct = player.bufferedPercentage.coerceIn(0, 100)
+        val cachedNow = activeCacheKey?.let { key ->
+            runCatching { sharedStreamCache?.getCachedBytes(key, 0L, 1024L) ?: 0L }.getOrDefault(0L) > 0L
+        } ?: false
+        return StreamTechStats(
+            audioCodec = codecLabel,
+            bitrateKbps = bitrateKbps,
+            sampleRateHz = sampleRateHz,
+            channelCount = channelCount,
+            videoResolution = videoRes,
+            videoCodec = videoCodec,
+            bufferedPercent = bufferedPct,
+            isCached = cachedNow,
+            audioSessionId = player.audioSessionId
+        )
     }
 
     private fun startProgressPolling() {
@@ -503,9 +676,11 @@ class KoplingfyAudioEngine(
         runCatching { equalizer?.release() }
         runCatching { bassBoost?.release() }
         runCatching { loudnessEnhancer?.release() }
+        runCatching { presetReverb?.release() }
         equalizer = null
         bassBoost = null
         loudnessEnhancer = null
+        presetReverb = null
         attachedAudioSessionId = C.AUDIO_SESSION_ID_UNSET
     }
 

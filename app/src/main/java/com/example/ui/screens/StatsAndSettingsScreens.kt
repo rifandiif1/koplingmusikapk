@@ -32,12 +32,15 @@ import androidx.compose.material.icons.rounded.Backup
 import androidx.compose.material.icons.rounded.Check
 import androidx.compose.material.icons.rounded.CleaningServices
 import androidx.compose.material.icons.rounded.CloudDone
+import androidx.compose.material.icons.rounded.CloudDownload
+import androidx.compose.material.icons.rounded.CloudUpload
 import androidx.compose.material.icons.rounded.DeleteSweep
 import androidx.compose.material.icons.rounded.Download
 import androidx.compose.material.icons.rounded.Equalizer
 import androidx.compose.material.icons.rounded.GraphicEq
 import androidx.compose.material.icons.rounded.Groups
 import androidx.compose.material.icons.rounded.HighQuality
+import androidx.compose.material.icons.rounded.Link
 import androidx.compose.material.icons.rounded.Login
 import androidx.compose.material.icons.rounded.Logout
 import androidx.compose.material.icons.rounded.Palette
@@ -45,16 +48,19 @@ import androidx.compose.material.icons.rounded.Restore
 import androidx.compose.material.icons.rounded.Share
 import androidx.compose.material.icons.rounded.Storage
 import androidx.compose.material.icons.rounded.Sync
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Slider
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -91,10 +97,14 @@ import com.example.model.YouTubeAccount
 import com.example.ui.components.AlbumArtImage
 import com.example.ui.components.RecapCardGenerator
 import com.example.ui.components.SectionHeader
+import com.example.viewmodel.CloudSyncUiState
 import com.example.viewmodel.StorageStats
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 
 @Composable
 fun StatsScreen(
@@ -128,9 +138,8 @@ fun StatsScreen(
                 modifier = Modifier
                     .fillMaxWidth()
                     .padding(horizontal = 20.dp),
-                shape = RoundedCornerShape(26.dp),
-                border = BorderStroke(1.2.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.45f)),
-                shadowElevation = 10.dp
+                shape = RoundedCornerShape(22.dp),
+                color = MaterialTheme.colorScheme.surfaceContainerLow
             ) {
                 Box(
                     modifier = Modifier
@@ -300,9 +309,8 @@ fun StatsScreen(
                 modifier = Modifier
                     .fillMaxWidth()
                     .padding(horizontal = 20.dp),
-                shape = RoundedCornerShape(24.dp),
-                color = MaterialTheme.colorScheme.surface,
-                border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant)
+                shape = RoundedCornerShape(20.dp),
+                color = MaterialTheme.colorScheme.surfaceContainerLow
             ) {
                 Column(modifier = Modifier.padding(18.dp)) {
                     Text(
@@ -387,9 +395,8 @@ fun StatsScreen(
                     modifier = Modifier
                         .fillMaxWidth()
                         .padding(horizontal = 20.dp),
-                    shape = RoundedCornerShape(18.dp),
-                    color = MaterialTheme.colorScheme.surface,
-                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant)
+                    shape = RoundedCornerShape(16.dp),
+                    color = MaterialTheme.colorScheme.surfaceContainerLow
                 ) {
                     Row(
                         modifier = Modifier.padding(12.dp),
@@ -435,9 +442,8 @@ fun StatsScreen(
                     modifier = Modifier
                         .fillMaxWidth()
                         .padding(horizontal = 20.dp),
-                    shape = RoundedCornerShape(18.dp),
-                    color = MaterialTheme.colorScheme.surface,
-                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant)
+                    shape = RoundedCornerShape(16.dp),
+                    color = MaterialTheme.colorScheme.surfaceContainerLow
                 ) {
                     Row(
                         modifier = Modifier.padding(12.dp),
@@ -487,9 +493,8 @@ fun StatsScreen(
 private fun MetricTile(label: String, value: String, accent: Color, modifier: Modifier = Modifier) {
     Surface(
         modifier = modifier,
-        shape = RoundedCornerShape(20.dp),
-        color = MaterialTheme.colorScheme.surface,
-        border = BorderStroke(1.dp, accent.copy(alpha = 0.3f))
+        shape = RoundedCornerShape(16.dp),
+        color = MaterialTheme.colorScheme.surfaceContainerLow
     ) {
         Column(
             modifier = Modifier.padding(14.dp),
@@ -529,6 +534,7 @@ fun SettingsScreen(
     onAudioQualityChange: (AudioQuality) -> Unit,
     onEqPresetChange: (EqPreset) -> Unit,
     onNormalizeAudioChange: (Boolean) -> Unit,
+    onSkipSilenceChange: (Boolean) -> Unit = {},
     onAutoplayRadioChange: (Boolean) -> Unit,
     onKeepScreenOnLyricsChange: (Boolean) -> Unit,
     onGaplessChange: (Boolean) -> Unit,
@@ -537,9 +543,14 @@ fun SettingsScreen(
     onDataSaverCellularChange: (Boolean) -> Unit = {},
     onDownloadWifiOnlyChange: (Boolean) -> Unit = {},
     onClearCache: () -> Unit,
+    onClearLyricsAiCache: () -> Unit = {},
     onClearDownloads: () -> Unit,
     onExportBackup: () -> Unit,
     onImportBackup: () -> Unit,
+    cloudSyncState: CloudSyncUiState = CloudSyncUiState(),
+    onUploadLibraryToCloud: () -> Unit = {},
+    onRestoreLibraryFromCloud: () -> Unit = {},
+    onImportYouTubePlaylistUrl: (String, String?, (Boolean) -> Unit) -> Unit = { _, _, _ -> },
     isFirebaseReady: Boolean = false,
     firebaseUserName: String? = null,
     firebaseUserEmail: String? = null,
@@ -549,6 +560,7 @@ fun SettingsScreen(
 ) {
     BackHandler(onBack = onBack)
     val firestoreDbId = stringResource(R.string.firestore_database_id)
+    var showImportPlaylistDialog by remember { mutableStateOf(false) }
 
     LazyColumn(
         modifier = Modifier
@@ -756,6 +768,76 @@ fun SettingsScreen(
                         }
                     }
                 }
+
+                // ---- Cloud Library Sync (Favorit & Playlist ke Firestore) ----
+                if (isFirebaseReady && !firebaseUserName.isNullOrBlank()) {
+                    Spacer(modifier = Modifier.height(14.dp))
+                    Surface(
+                        shape = RoundedCornerShape(14.dp),
+                        color = MaterialTheme.colorScheme.surfaceContainerHigh.copy(alpha = 0.65f),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Column(
+                            modifier = Modifier.padding(12.dp),
+                            verticalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            Text(
+                                text = "Sinkronisasi Koleksi Cloud",
+                                style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold)
+                            )
+                            val syncStatusLabel = remember(cloudSyncState.lastSyncedAtMillis, cloudSyncState.cloudLikedCount, cloudSyncState.cloudPlaylistCount) {
+                                val ts = cloudSyncState.lastSyncedAtMillis
+                                if (ts != null) {
+                                    val formatted = SimpleDateFormat("dd MMM HH:mm", Locale.getDefault()).format(Date(ts))
+                                    val likedStr = cloudSyncState.cloudLikedCount?.let { "$it disukai" }.orEmpty()
+                                    val plStr = cloudSyncState.cloudPlaylistCount?.let { "$it playlist" }.orEmpty()
+                                    val counts = listOf(likedStr, plStr).filter { it.isNotBlank() }.joinToString(" • ")
+                                    if (counts.isNotBlank()) "Terakhir: $formatted ($counts)" else "Terakhir: $formatted"
+                                } else {
+                                    "Simpan & pulihkan Lagu Disukai serta Playlist lintas perangkat"
+                                }
+                            }
+                            Text(
+                                text = syncStatusLabel,
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                            ) {
+                                Button(
+                                    onClick = onUploadLibraryToCloud,
+                                    enabled = !cloudSyncState.isSyncing,
+                                    shape = RoundedCornerShape(12.dp),
+                                    modifier = Modifier.weight(1f).testTag("settings_cloud_upload")
+                                ) {
+                                    if (cloudSyncState.isSyncing) {
+                                        CircularProgressIndicator(
+                                            modifier = Modifier.size(16.dp),
+                                            strokeWidth = 2.dp,
+                                            color = MaterialTheme.colorScheme.onPrimary
+                                        )
+                                    } else {
+                                        Icon(Icons.Rounded.CloudUpload, contentDescription = null, modifier = Modifier.size(16.dp))
+                                    }
+                                    Spacer(modifier = Modifier.width(6.dp))
+                                    Text("Unggah", maxLines = 1)
+                                }
+                                OutlinedButton(
+                                    onClick = onRestoreLibraryFromCloud,
+                                    enabled = !cloudSyncState.isSyncing,
+                                    shape = RoundedCornerShape(12.dp),
+                                    modifier = Modifier.weight(1f).testTag("settings_cloud_restore")
+                                ) {
+                                    Icon(Icons.Rounded.CloudDownload, contentDescription = null, modifier = Modifier.size(16.dp))
+                                    Spacer(modifier = Modifier.width(6.dp))
+                                    Text("Pulihkan", maxLines = 1)
+                                }
+                            }
+                        }
+                    }
+                }
             }
         }
 
@@ -915,6 +997,12 @@ fun SettingsScreen(
                     onCheckedChange = onDownloadWifiOnlyChange
                 )
                 SettingsToggleRow(
+                    title = "Lewati Bagian Hening (Skip Silence)",
+                    subtitle = "Otomatis percepat intro atau jeda sunyi panjang pada audio",
+                    checked = settings.skipSilence,
+                    onCheckedChange = onSkipSilenceChange
+                )
+                SettingsToggleRow(
                     title = "Normalisasi Volume Audio",
                     subtitle = "Aktifkan LoudnessEnhancer agar volume stabil antar lagu",
                     checked = settings.normalizeAudio,
@@ -994,50 +1082,78 @@ fun SettingsScreen(
             }
         }
 
-        // ---- Storage, Cache & Backup / Restore (Metrolist feature) ----
+        // ---- Storage, Cache, YouTube Playlist Importer & Backup / Restore ----
         item {
-            SettingsSectionCard(title = "Penyimpanan & Cadangan", icon = Icons.Rounded.Storage) {
+            SettingsSectionCard(title = "Penyimpanan, Impor & Cadangan", icon = Icons.Rounded.Storage) {
                 val dlMb = storageStats.downloadsBytes / (1024.0 * 1024.0)
                 val cacheMb = storageStats.cacheBytes / (1024.0 * 1024.0)
+                val lyricsKb = storageStats.lyricsAiCacheBytes / 1024.0
+                val lyricsSizeLabel = if (lyricsKb >= 1024.0) "%.1f MB".format(lyricsKb / 1024.0) else "%.0f KB".format(lyricsKb)
 
                 Row(
                     modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(10.dp)
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
                     MetricTile("Unduhan", "%.1f MB".format(dlMb), MaterialTheme.colorScheme.primary, Modifier.weight(1f))
-                    MetricTile("Cache", "%.1f MB".format(cacheMb), MaterialTheme.colorScheme.secondary, Modifier.weight(1f))
+                    MetricTile("Cache Audio", "%.1f MB".format(cacheMb), MaterialTheme.colorScheme.secondary, Modifier.weight(1f))
+                    MetricTile("Lirik AI", lyricsSizeLabel, MaterialTheme.colorScheme.tertiary, Modifier.weight(1f))
                 }
 
                 Spacer(modifier = Modifier.height(12.dp))
                 Row(
                     modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(10.dp)
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
                     OutlinedButton(
                         onClick = onClearCache,
+                        shape = RoundedCornerShape(12.dp),
                         modifier = Modifier.weight(1f).testTag("settings_clear_cache")
                     ) {
                         Icon(Icons.Rounded.CleaningServices, contentDescription = null, modifier = Modifier.size(16.dp))
                         Spacer(modifier = Modifier.width(6.dp))
-                        Text("Hapus Cache", maxLines = 1)
+                        Text("Cache Audio", maxLines = 1, overflow = TextOverflow.Ellipsis)
                     }
                     OutlinedButton(
-                        onClick = onClearDownloads,
-                        modifier = Modifier.weight(1f).testTag("settings_clear_downloads")
+                        onClick = onClearLyricsAiCache,
+                        shape = RoundedCornerShape(12.dp),
+                        modifier = Modifier.weight(1f).testTag("settings_clear_lyrics_cache")
                     ) {
-                        Icon(Icons.Rounded.DeleteSweep, contentDescription = null, modifier = Modifier.size(16.dp))
+                        Icon(Icons.Rounded.CleaningServices, contentDescription = null, modifier = Modifier.size(16.dp))
                         Spacer(modifier = Modifier.width(6.dp))
-                        Text("Hapus Unduh", maxLines = 1)
+                        Text("Cache Lirik", maxLines = 1, overflow = TextOverflow.Ellipsis)
                     }
                 }
 
+                Spacer(modifier = Modifier.height(8.dp))
+                OutlinedButton(
+                    onClick = onClearDownloads,
+                    shape = RoundedCornerShape(12.dp),
+                    modifier = Modifier.fillMaxWidth().testTag("settings_clear_downloads")
+                ) {
+                    Icon(Icons.Rounded.DeleteSweep, contentDescription = null, modifier = Modifier.size(16.dp))
+                    Spacer(modifier = Modifier.width(6.dp))
+                    Text("Hapus Semua Unduhan Offline", maxLines = 1)
+                }
+
                 Spacer(modifier = Modifier.height(10.dp))
+                Button(
+                    onClick = { showImportPlaylistDialog = true },
+                    shape = RoundedCornerShape(12.dp),
+                    modifier = Modifier.fillMaxWidth().testTag("settings_import_yt_playlist")
+                ) {
+                    Icon(Icons.Rounded.Link, contentDescription = null, modifier = Modifier.size(18.dp))
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text("Impor Link Playlist YouTube / YTM", maxLines = 1)
+                }
+
+                Spacer(modifier = Modifier.height(8.dp))
                 Row(
                     modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(10.dp)
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
-                    Button(
+                    OutlinedButton(
                         onClick = onExportBackup,
+                        shape = RoundedCornerShape(12.dp),
                         modifier = Modifier.weight(1f).testTag("settings_export_backup")
                     ) {
                         Icon(Icons.Rounded.Backup, contentDescription = null, modifier = Modifier.size(16.dp))
@@ -1046,6 +1162,7 @@ fun SettingsScreen(
                     }
                     OutlinedButton(
                         onClick = onImportBackup,
+                        shape = RoundedCornerShape(12.dp),
                         modifier = Modifier.weight(1f).testTag("settings_import_backup")
                     ) {
                         Icon(Icons.Rounded.Restore, contentDescription = null, modifier = Modifier.size(16.dp))
@@ -1062,9 +1179,8 @@ fun SettingsScreen(
                 modifier = Modifier
                     .fillMaxWidth()
                     .padding(horizontal = 20.dp),
-                shape = RoundedCornerShape(24.dp),
-                color = MaterialTheme.colorScheme.surface,
-                border = BorderStroke(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.3f))
+                shape = RoundedCornerShape(20.dp),
+                color = MaterialTheme.colorScheme.surfaceContainerLow
             ) {
                 Row(
                     modifier = Modifier.padding(18.dp),
@@ -1072,26 +1188,26 @@ fun SettingsScreen(
                 ) {
                     Box(
                         modifier = Modifier
-                            .size(50.dp)
-                            .clip(RoundedCornerShape(16.dp))
-                            .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.18f)),
+                            .size(48.dp)
+                            .clip(RoundedCornerShape(14.dp))
+                            .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.16f)),
                         contentAlignment = Alignment.Center
                     ) {
                         Icon(
                             imageVector = Icons.Rounded.HighQuality,
                             contentDescription = null,
                             tint = MaterialTheme.colorScheme.primary,
-                            modifier = Modifier.size(28.dp)
+                            modifier = Modifier.size(26.dp)
                         )
                     }
                     Spacer(modifier = Modifier.width(14.dp))
                     Column {
                         Text(
-                            text = "Koplingfy Studio v2.0",
-                            style = MaterialTheme.typography.titleMedium
+                            text = "Koplingfy Studio",
+                            style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold)
                         )
                         Text(
-                            text = "Full InnerTube YTM Engine • Tanpa Preview • Offline Download • Lirik LRCLIB & YTM • DSP EQ",
+                            text = "Full InnerTube YTM • Lyric Video + PiP • Lirik ID & Romaji • Cloud Sync • Visual DSP EQ",
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
@@ -1100,6 +1216,90 @@ fun SettingsScreen(
             }
         }
     }
+
+    if (showImportPlaylistDialog) {
+        ImportYouTubePlaylistDialog(
+            isImporting = cloudSyncState.isImportingPlaylist,
+            onDismiss = { if (!cloudSyncState.isImportingPlaylist) showImportPlaylistDialog = false },
+            onImport = { rawUrl, customName ->
+                onImportYouTubePlaylistUrl(rawUrl, customName) { success ->
+                    if (success) showImportPlaylistDialog = false
+                }
+            }
+        )
+    }
+}
+
+@Composable
+private fun ImportYouTubePlaylistDialog(
+    isImporting: Boolean,
+    onDismiss: () -> Unit,
+    onImport: (rawUrl: String, customName: String?) -> Unit
+) {
+    var playlistUrl by remember { mutableStateOf("") }
+    var customName by remember { mutableStateOf("") }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        containerColor = MaterialTheme.colorScheme.surface,
+        title = {
+            Text(
+                text = "Impor Playlist YouTube",
+                style = MaterialTheme.typography.titleLarge.copy(fontWeight = FontWeight.Bold)
+            )
+        },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                Text(
+                    text = "Tempel link playlist publik dari YouTube atau YouTube Music (contoh: https://music.youtube.com/playlist?list=PL...)",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                OutlinedTextField(
+                    value = playlistUrl,
+                    onValueChange = { playlistUrl = it },
+                    label = { Text("Link atau ID Playlist") },
+                    placeholder = { Text("https://music.youtube.com/playlist?list=...") },
+                    singleLine = true,
+                    enabled = !isImporting,
+                    modifier = Modifier.fillMaxWidth().testTag("import_yt_playlist_url_input")
+                )
+                OutlinedTextField(
+                    value = customName,
+                    onValueChange = { customName = it },
+                    label = { Text("Nama Playlist (Opsional)") },
+                    placeholder = { Text("Otomatis dari YouTube jika kosong") },
+                    singleLine = true,
+                    enabled = !isImporting,
+                    modifier = Modifier.fillMaxWidth().testTag("import_yt_playlist_name_input")
+                )
+            }
+        },
+        confirmButton = {
+            Button(
+                onClick = { onImport(playlistUrl, customName.takeIf { it.isNotBlank() }) },
+                enabled = !isImporting && playlistUrl.isNotBlank(),
+                modifier = Modifier.testTag("confirm_import_yt_playlist_button")
+            ) {
+                if (isImporting) {
+                    CircularProgressIndicator(
+                        modifier = Modifier.size(16.dp),
+                        strokeWidth = 2.dp,
+                        color = MaterialTheme.colorScheme.onPrimary
+                    )
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text("Mengimpor…")
+                } else {
+                    Text("Impor")
+                }
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss, enabled = !isImporting) {
+                Text("Batal")
+            }
+        }
+    )
 }
 
 @Composable
@@ -1135,9 +1335,8 @@ private fun SettingsSectionCard(
         modifier = Modifier
             .fillMaxWidth()
             .padding(horizontal = 20.dp),
-        shape = RoundedCornerShape(24.dp),
-        color = MaterialTheme.colorScheme.surface,
-        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant)
+        shape = RoundedCornerShape(20.dp),
+        color = MaterialTheme.colorScheme.surfaceContainerLow
     ) {
         Column(modifier = Modifier.padding(18.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
@@ -1148,7 +1347,7 @@ private fun SettingsSectionCard(
                     modifier = Modifier.size(20.dp)
                 )
                 Spacer(modifier = Modifier.width(10.dp))
-                Text(text = title, style = MaterialTheme.typography.titleMedium)
+                Text(text = title, style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.SemiBold))
             }
             Spacer(modifier = Modifier.height(12.dp))
             content()
@@ -1172,8 +1371,7 @@ private fun SubScreenTopBar(
         Surface(
             onClick = onBack,
             shape = CircleShape,
-            color = MaterialTheme.colorScheme.surface,
-            border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
+            color = MaterialTheme.colorScheme.surfaceContainerLow,
             modifier = Modifier.size(44.dp).testTag("subscreen_back_button")
         ) {
             Box(contentAlignment = Alignment.Center) {
@@ -1186,7 +1384,7 @@ private fun SubScreenTopBar(
         }
         Spacer(modifier = Modifier.width(14.dp))
         Column {
-            Text(text = title, style = MaterialTheme.typography.headlineSmall)
+            Text(text = title, style = MaterialTheme.typography.headlineSmall.copy(fontWeight = FontWeight.Bold))
             Text(text = subtitle, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
         }
     }

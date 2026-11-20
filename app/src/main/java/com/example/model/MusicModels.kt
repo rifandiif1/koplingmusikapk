@@ -79,13 +79,34 @@ data class LyricLine(
 )
 
 @Immutable
+data class VideoCandidate(
+    val videoId: String,
+    val title: String,
+    val channel: String,
+    val thumbnailUrl: String?,
+    val durationLabel: String = "",
+    val isLyricVideo: Boolean = false
+)
+
+@Immutable
 data class LyricsState(
     val isLoading: Boolean = false,
     val syncedLines: List<LyricLine> = emptyList(),
     val plainLyrics: String? = null,
     val providerName: String = "",
     val isInstrumental: Boolean = false,
-    val error: String? = null
+    val error: String? = null,
+    val translatedSyncedLines: List<String> = emptyList(),
+    val translatedPlainLines: List<String> = emptyList(),
+    val showTranslation: Boolean = false,
+    val isTranslating: Boolean = false,
+    val translationError: String? = null,
+    val romanizedSyncedLines: List<String> = emptyList(),
+    val romanizedPlainLines: List<String> = emptyList(),
+    val showRomanization: Boolean = false,
+    val isRomanizing: Boolean = false,
+    val romanizationError: String? = null,
+    val romanizationScriptLabel: String = ""
 )
 
 @Immutable
@@ -142,6 +163,21 @@ enum class EqPreset(val label: String, val bandsDb: List<Float>) {
 }
 
 @Immutable
+data class StreamTechStats(
+    val audioCodec: String = "—",
+    val bitrateKbps: Int = 0,
+    val sampleRateHz: Int = 0,
+    val channelCount: Int = 0,
+    val videoCodec: String = "",
+    val videoResolution: String = "",
+    val bufferedPercent: Int = 0,
+    val isCached: Boolean = false,
+    val isLocal: Boolean = false,
+    val containerLabel: String = "",
+    val audioSessionId: Int = 0
+)
+
+@Immutable
 data class AudioSettings(
     val themeMode: ThemeMode = ThemeMode.DARK,
     val accentPreset: AccentPreset = AccentPreset.EMERALD,
@@ -162,7 +198,9 @@ data class AudioSettings(
     val dynamicArtworkColor: Boolean = true,
     val crossfadeSeconds: Int = 0,
     val dataSaverCellular: Boolean = false,
-    val downloadWifiOnly: Boolean = false
+    val downloadWifiOnly: Boolean = false,
+    val skipSilence: Boolean = false,
+    val reverbEnabled: Boolean = false
 )
 
 @Immutable

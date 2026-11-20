@@ -16,6 +16,7 @@ import com.example.data.remote.KoplingfyNetwork
 import com.example.data.remote.LrcParser
 import com.example.data.remote.ResolvedStream
 import com.example.data.remote.StreamResolveResult
+import com.example.data.remote.VideoStreamResolveResult
 import com.example.model.AlbumSummary
 import com.example.model.ArtistStatItem
 import com.example.model.ArtistSummary
@@ -26,6 +27,7 @@ import com.example.model.PlaylistSummary
 import com.example.model.RemotePlaylistSummary
 import com.example.model.Track
 import com.example.model.TrackStatItem
+import com.example.model.VideoCandidate
 import com.example.model.YouTubeAccount
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
@@ -202,6 +204,74 @@ class MusicRepository(
         if (tracks.isNotEmpty()) tracks else fetchTracksByQuery(playlist.title, limit = 20)
     }
 
+    /**
+     * Imports any public YouTube / YouTube Music playlist URL or list ID (PL..., RDCLAK..., OLAK...)
+     * directly into a new local Koplingfy playlist.
+     */
+    suspend fun importYouTubePlaylistByUrl(
+        rawInput: String,
+        customPlaylistName: String? = null
+    ): Result<Pair<String, Int>> = withContext(Dispatchers.IO) {
+        runCatching {
+            val trimmed = rawInput.trim()
+            if (trimmed.isEmpty()) throw IllegalArgumentException("Tempelkan link atau ID playlist YouTube terlebih dahulu.")
+
+            val extractedListId = extractYouTubePlaylistId(trimmed)
+                ?: throw IllegalArgumentException("Link tidak valid. Gunakan link playlist YouTube/YTM yang mengandung '?list=...'")
+
+            val browseId = if (extractedListId.startsWith("VL") || extractedListId.startsWith("MPREb_")) {
+                extractedListId
+            } else {
+                "VL$extractedListId"
+            }
+
+            var tracks = runCatching {
+                InnerTubeClient.browseCollection(browseId = browseId)
+            }.getOrDefault(emptyList())
+
+            if (tracks.isEmpty() && browseId.startsWith("VL")) {
+                tracks = runCatching {
+                    InnerTubeClient.browseCollection(browseId = extractedListId)
+                }.getOrDefault(emptyList())
+            }
+
+            if (tracks.isEmpty()) {
+                throw IllegalStateException("Playlist kosong, bersifat pribadi, atau tidak dapat diakses dari YouTube Music.")
+            }
+
+            val finalName = customPlaylistName?.trim()?.takeIf { it.isNotEmpty() }
+                ?: tracks.firstOrNull()?.album?.takeIf {
+                    it.isNotBlank() && !it.equals("YouTube Music", ignoreCase = true) && !it.equals("Single", ignoreCase = true)
+                }
+                ?: "Impor YouTube (${extractedListId.take(8)})"
+
+            val playlistId = dao.insertPlaylist(
+                PlaylistEntity(
+                    name = finalName,
+                    description = "Diimpor dari YouTube Music • ${tracks.size} lagu",
+                    coverUrl = tracks.firstOrNull()?.artworkUrl
+                )
+            )
+            tracks.forEach { track ->
+                val existing = dao.getTrackById(track.id)
+                if (existing == null) {
+                    dao.upsertTrack(SavedTrackEntity.fromTrack(track))
+                }
+                dao.addTrackToPlaylist(PlaylistTrackCrossRef(playlistId = playlistId, trackId = track.id))
+            }
+            finalName to tracks.size
+        }
+    }
+
+    private fun extractYouTubePlaylistId(input: String): String? {
+        val listParamMatch = Regex("""[?&]list=([a-zA-Z0-9_\-]+)""").find(input)
+        if (listParamMatch != null) return listParamMatch.groupValues[1]
+        if (Regex("""^(VL|PL|RD|OLAK|UU|LL|FL)[a-zA-Z0-9_\-]{6,}$""").matches(input)) {
+            return input
+        }
+        return null
+    }
+
     // ---- Radio & Autoplay Queue ----
     suspend fun fetchRadioQueue(track: Track): List<Track> = withContext(Dispatchers.IO) {
         val videoId = if (track.id.startsWith("yt_")) {
@@ -292,17 +362,59 @@ class MusicRepository(
     }
 
     /**
-     * Silently resolves & caches the next track's InnerTube stream URL in the background
-     * so skipping or auto-advancing begins playback immediately like Metrolist.
+     * Silently resolves & caches the next track's InnerTube audio (and optionally Lyric Video)
+     * stream URL in the background so skipping or auto-advancing begins playback immediately.
      */
-    suspend fun prefetchTrackStream(track: Track, quality: AudioQuality = AudioQuality.HIGH) = withContext(Dispatchers.IO) {
-        if (track.isLocal || track.isDownloaded) return@withContext
-        if (!track.id.startsWith("yt_")) return@withContext
-        val videoId = track.id.removePrefix("yt_")
-        if (videoId.isBlank()) return@withContext
-        if (InnerTubeClient.getCachedStream(videoId, quality) != null) return@withContext
+    suspend fun prefetchTrackStream(
+        track: Track,
+        quality: AudioQuality = AudioQuality.HIGH,
+        prefetchVideo: Boolean = false
+    ) = withContext(Dispatchers.IO) {
+        if (track.isLocal) return@withContext
+        val videoId = if (track.id.startsWith("yt_")) {
+            track.id.removePrefix("yt_")
+        } else {
+            runCatching {
+                InnerTubeClient.searchSongs("${track.title} ${track.artist}")
+                    .firstOrNull()?.id?.removePrefix("yt_")
+            }.getOrNull()
+        }
+
+        if (!track.isDownloaded && !videoId.isNullOrBlank()) {
+            if (InnerTubeClient.getCachedStream(videoId, quality) == null) {
+                runCatching {
+                    InnerTubeClient.resolveAudioStream(videoId, quality, forceRefresh = false)
+                }
+            }
+        }
+
+        if (prefetchVideo) {
+            runCatching {
+                val candidates = searchLyricVideosForTrack(track)
+                val firstVid = candidates.firstOrNull()?.videoId
+                if (!firstVid.isNullOrBlank()) {
+                    InnerTubeClient.resolveVideoStream(firstVid, forceRefresh = false)
+                }
+            }
+        }
+    }
+
+    suspend fun searchLyricVideosForTrack(track: Track): List<VideoCandidate> = withContext(Dispatchers.IO) {
+        val originalVideoId = if (track.id.startsWith("yt_")) track.id.removePrefix("yt_") else null
         runCatching {
-            InnerTubeClient.resolveAudioStream(videoId, quality, forceRefresh = false)
+            InnerTubeClient.searchLyricVideosForTrack(
+                title = track.title,
+                artist = track.artist,
+                originalVideoId = originalVideoId
+            )
+        }.getOrDefault(emptyList())
+    }
+
+    suspend fun resolveVideoStream(videoId: String, forceRefresh: Boolean = false): VideoStreamResolveResult = withContext(Dispatchers.IO) {
+        runCatching {
+            InnerTubeClient.resolveVideoStream(videoId, forceRefresh = forceRefresh)
+        }.getOrElse {
+            VideoStreamResolveResult.Unavailable("Gagal memuat stream video.")
         }
     }
 

@@ -212,9 +212,9 @@ fun LibraryScreen(
                 modifier = Modifier
                     .fillMaxWidth()
                     .padding(horizontal = 20.dp),
-                shape = RoundedCornerShape(22.dp),
+                shape = RoundedCornerShape(14.dp),
                 color = MaterialTheme.colorScheme.surface,
-                border = BorderStroke(0.9.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.3f))
+                border = BorderStroke(0.6.dp, MaterialTheme.colorScheme.outlineVariant)
             ) {
                 Row(
                     modifier = Modifier
@@ -395,34 +395,38 @@ fun LibraryScreen(
                     )
                 }
 
-                // Full-width Stats banner tile
+                // Full-width Stats banner tile (clean matte)
                 Surface(
                     onClick = onOpenStats,
-                    shape = RoundedCornerShape(20.dp),
+                    shape = RoundedCornerShape(14.dp),
                     color = MaterialTheme.colorScheme.surface,
-                    border = BorderStroke(1.dp, Color(0xFFFF6B7A).copy(alpha = 0.3f)),
+                    border = BorderStroke(0.6.dp, MaterialTheme.colorScheme.outlineVariant),
                     modifier = Modifier.fillMaxWidth().testTag("tile_stats")
                 ) {
                     Row(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .background(Brush.horizontalGradient(listOf(Color(0xFFFF6B7A).copy(alpha = 0.16f), Color.Transparent)))
                             .padding(14.dp),
                         verticalAlignment = Alignment.CenterVertically
                     ) {
                         Box(
                             modifier = Modifier
-                                .size(40.dp)
-                                .clip(RoundedCornerShape(12.dp))
-                                .background(Color(0xFFFF6B7A).copy(alpha = 0.2f)),
+                                .size(38.dp)
+                                .clip(RoundedCornerShape(10.dp))
+                                .background(MaterialTheme.colorScheme.surfaceVariant),
                             contentAlignment = Alignment.Center
                         ) {
-                            Icon(Icons.Rounded.AutoGraph, contentDescription = null, tint = Color(0xFFFF6B7A))
+                            Icon(
+                                Icons.Rounded.AutoGraph,
+                                contentDescription = null,
+                                tint = MaterialTheme.colorScheme.onSurface,
+                                modifier = Modifier.size(20.dp)
+                            )
                         }
                         Spacer(modifier = Modifier.width(12.dp))
                         Column(modifier = Modifier.weight(1f)) {
-                            Text("Statistik Mendengar", style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold))
-                            Text("$totalPlays total pemutaran • Grafik 7 hari & artis teratas", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            Text("Statistik Mendengar", style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.SemiBold))
+                            Text("$totalPlays total pemutaran • Riwayat 7 hari & artis teratas", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                         }
                     }
                 }
@@ -685,54 +689,38 @@ private fun SmartLibraryTile(
 ) {
     Surface(
         onClick = onClick,
-        modifier = modifier.height(104.dp),
-        shape = RoundedCornerShape(22.dp),
+        modifier = modifier.height(92.dp),
+        shape = RoundedCornerShape(14.dp),
         color = MaterialTheme.colorScheme.surface,
-        border = BorderStroke(1.dp, accent.copy(alpha = 0.28f))
+        border = BorderStroke(0.6.dp, MaterialTheme.colorScheme.outlineVariant)
     ) {
-        Box(
+        Column(
             modifier = Modifier
                 .fillMaxSize()
-                .background(
-                    Brush.linearGradient(
-                        listOf(accent.copy(alpha = 0.16f), Color.Transparent)
-                    )
-                )
-                .padding(14.dp)
+                .padding(14.dp),
+            verticalArrangement = Arrangement.SpaceBetween
         ) {
-            Column(
-                modifier = Modifier.fillMaxSize(),
-                verticalArrangement = Arrangement.SpaceBetween
-            ) {
-                Box(
-                    modifier = Modifier
-                        .size(36.dp)
-                        .clip(RoundedCornerShape(10.dp))
-                        .background(accent.copy(alpha = 0.2f)),
-                    contentAlignment = Alignment.Center
-                ) {
-                    Icon(
-                        imageVector = icon,
-                        contentDescription = null,
-                        tint = accent,
-                        modifier = Modifier.size(20.dp)
-                    )
-                }
-                Column {
-                    Text(
-                        text = title,
-                        style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold),
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis
-                    )
-                    Text(
-                        text = subtitle,
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis
-                    )
-                }
+            Icon(
+                imageVector = icon,
+                contentDescription = null,
+                tint = accent,
+                modifier = Modifier.size(22.dp)
+            )
+            Column {
+                Text(
+                    text = title,
+                    style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.SemiBold),
+                    color = MaterialTheme.colorScheme.onSurface,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+                Text(
+                    text = subtitle,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
             }
         }
     }
@@ -743,88 +731,80 @@ private fun SmartMixCard(
     mix: SmartMixItem,
     onClick: () -> Unit
 ) {
-    Surface(
-        onClick = onClick,
-        shape = RoundedCornerShape(22.dp),
-        border = BorderStroke(1.dp, mix.startColor.copy(alpha = 0.45f)),
+    val coverUrl = mix.tracks.firstOrNull { !it.artworkUrl.isNullOrBlank() }?.artworkUrl
+    Column(
         modifier = Modifier
-            .width(172.dp)
-            .height(142.dp)
+            .width(146.dp)
+            .clip(RoundedCornerShape(10.dp))
+            .clickable(onClick = onClick)
             .testTag("smart_mix_${mix.id}")
     ) {
         Box(
             modifier = Modifier
-                .fillMaxSize()
-                .background(Brush.linearGradient(listOf(mix.startColor, mix.endColor)))
-                .padding(14.dp)
+                .size(146.dp)
+                .clip(RoundedCornerShape(10.dp))
+                .background(MaterialTheme.colorScheme.surfaceVariant)
         ) {
-            Column(
-                modifier = Modifier.fillMaxSize(),
-                verticalArrangement = Arrangement.SpaceBetween
-            ) {
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    val coverUrl = mix.tracks.firstOrNull { !it.artworkUrl.isNullOrBlank() }?.artworkUrl
-                    if (coverUrl != null) {
-                        AlbumArtImage(
-                            url = coverUrl,
-                            contentDescription = mix.title,
-                            modifier = Modifier.size(44.dp),
-                            shape = RoundedCornerShape(12.dp)
-                        )
-                    } else {
-                        Box(
-                            modifier = Modifier
-                                .size(44.dp)
-                                .clip(RoundedCornerShape(12.dp))
-                                .background(Color.White.copy(alpha = 0.22f)),
-                            contentAlignment = Alignment.Center
-                        ) {
-                            Icon(
-                                imageVector = mix.icon,
-                                contentDescription = null,
-                                tint = Color.White,
-                                modifier = Modifier.size(22.dp)
+            if (coverUrl != null) {
+                AlbumArtImage(
+                    url = coverUrl,
+                    contentDescription = mix.title,
+                    modifier = Modifier.fillMaxSize(),
+                    shape = RoundedCornerShape(10.dp)
+                )
+                Box(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .background(
+                            Brush.verticalGradient(
+                                listOf(Color.Transparent, Color.Black.copy(alpha = 0.55f))
                             )
-                        }
-                    }
-
-                    Box(
-                        modifier = Modifier
-                            .size(36.dp)
-                            .clip(CircleShape)
-                            .background(Color.Black.copy(alpha = 0.34f)),
-                        contentAlignment = Alignment.Center
-                    ) {
-                        Icon(
-                            imageVector = Icons.Rounded.PlayArrow,
-                            contentDescription = "Putar ${mix.title}",
-                            tint = Color.White,
-                            modifier = Modifier.size(20.dp)
                         )
-                    }
-                }
-
-                Column {
-                    Text(
-                        text = mix.title,
-                        style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.ExtraBold),
-                        color = Color.White,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis
-                    )
-                    Text(
-                        text = mix.subtitle,
-                        style = MaterialTheme.typography.bodySmall,
-                        color = Color.White.copy(alpha = 0.86f),
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis
+                )
+            } else {
+                Box(
+                    modifier = Modifier.fillMaxSize(),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Icon(
+                        imageVector = mix.icon,
+                        contentDescription = null,
+                        tint = mix.startColor,
+                        modifier = Modifier.size(34.dp)
                     )
                 }
             }
+            Box(
+                modifier = Modifier
+                    .align(Alignment.BottomEnd)
+                    .padding(10.dp)
+                    .size(34.dp)
+                    .clip(CircleShape)
+                    .background(Color.White),
+                contentAlignment = Alignment.Center
+            ) {
+                Icon(
+                    imageVector = Icons.Rounded.PlayArrow,
+                    contentDescription = "Putar ${mix.title}",
+                    tint = Color(0xFF0A0A0C),
+                    modifier = Modifier.size(20.dp)
+                )
+            }
         }
+        Spacer(modifier = Modifier.height(8.dp))
+        Text(
+            text = mix.title,
+            style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.SemiBold),
+            color = MaterialTheme.colorScheme.onBackground,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis
+        )
+        Text(
+            text = mix.subtitle,
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis
+        )
     }
 }

@@ -92,6 +92,18 @@ service cloud.firestore {
              data.updatedAt is timestamp;
     }
 
+    function isValidLibrarySync(data, userId) {
+      return data.keys().hasAll(['userId', 'payloadJson', 'likedCount', 'playlistCount', 'deviceLabel', 'createdAt', 'updatedAt']) &&
+             data.keys().hasOnly(['userId', 'payloadJson', 'likedCount', 'playlistCount', 'deviceLabel', 'createdAt', 'updatedAt']) &&
+             data.userId == userId &&
+             data.payloadJson is string && data.payloadJson.size() >= 2 && data.payloadJson.size() <= 750000 &&
+             data.likedCount is int && data.likedCount >= 0 && data.likedCount <= 10000 &&
+             data.playlistCount is int && data.playlistCount >= 0 && data.playlistCount <= 500 &&
+             data.deviceLabel is string && data.deviceLabel.size() >= 1 && data.deviceLabel.size() <= 80 &&
+             data.createdAt is timestamp &&
+             data.updatedAt is timestamp;
+    }
+
     // ---- Collection: /listen_rooms/{roomCode} ----
     match /listen_rooms/{roomCode} {
       // Direct lookup by secret 6-char room code (via code input or QR scan)
@@ -234,6 +246,35 @@ service cloud.firestore {
       allow delete: if isSignedIn() &&
                        isValidId(userId) &&
                        isValidRoomCode(roomCode) &&
+                       request.auth.uid == userId;
+    }
+
+    // ---- Collection: /users/{userId}/library_sync/{docId} ----
+    match /users/{userId}/library_sync/{docId} {
+      allow get: if isSignedIn() && isValidId(userId) && docId == 'snapshot' && request.auth.uid == userId;
+      allow list: if isSignedIn() && request.auth.uid == userId;
+
+      allow create: if isSignedIn() &&
+                       isValidId(userId) &&
+                       docId == 'snapshot' &&
+                       request.auth.uid == userId &&
+                       isValidLibrarySync(incoming(), userId) &&
+                       incoming().createdAt <= request.time &&
+                       incoming().updatedAt <= request.time;
+
+      allow update: if isSignedIn() &&
+                       isValidId(userId) &&
+                       docId == 'snapshot' &&
+                       request.auth.uid == userId &&
+                       isValidLibrarySync(incoming(), userId) &&
+                       incoming().userId == existing().userId &&
+                       incoming().createdAt == existing().createdAt &&
+                       incoming().updatedAt <= request.time &&
+                       incoming().diff(existing()).affectedKeys().hasOnly(['payloadJson', 'likedCount', 'playlistCount', 'deviceLabel', 'updatedAt']);
+
+      allow delete: if isSignedIn() &&
+                       isValidId(userId) &&
+                       docId == 'snapshot' &&
                        request.auth.uid == userId;
     }
   }

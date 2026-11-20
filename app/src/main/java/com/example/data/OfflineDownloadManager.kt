@@ -196,8 +196,8 @@ class OfflineDownloadManager(
         return total
     }
 
-    // ---- Backup & Restore Library to/from JSON via SAF ----
-    suspend fun exportBackupToUri(uri: Uri): Result<Int> = withContext(Dispatchers.IO) {
+    // ---- Backup & Restore Library to/from JSON (Shared by SAF & Cloud Library Sync) ----
+    suspend fun buildBackupJsonPayload(): Result<Triple<String, Int, Int>> = withContext(Dispatchers.IO) {
         runCatching {
             val liked = dao.getLikedTracksOnce()
             val playlists = dao.getAllPlaylistsOnce()
@@ -242,22 +242,12 @@ class OfflineDownloadManager(
                 })
             }
 
-            context.contentResolver.openOutputStream(uri)?.use { out ->
-                out.write(root.toString(2).toByteArray(Charsets.UTF_8))
-                out.flush()
-            } ?: throw IllegalStateException("Tidak dapat membuka file tujuan")
-
-            liked.size + playlists.size
+            Triple(root.toString(), liked.size, playlists.size)
         }
     }
 
-    suspend fun importBackupFromUri(uri: Uri): Result<Pair<Int, Int>> = withContext(Dispatchers.IO) {
+    suspend fun importBackupJsonString(jsonText: String): Result<Pair<Int, Int>> = withContext(Dispatchers.IO) {
         runCatching {
-            val jsonText = context.contentResolver.openInputStream(uri)
-                ?.bufferedReader(Charsets.UTF_8)
-                ?.use { it.readText() }
-                ?: throw IllegalStateException("Tidak dapat membaca file backup")
-
             val root = JSONObject(jsonText)
             var likedCount = 0
             var playlistCount = 0
@@ -270,13 +260,15 @@ class OfflineDownloadManager(
                 likedCount++
             }
 
+            val existingPlaylists = dao.getAllPlaylistsOnce().associateBy { it.name.trim().lowercase() }
             val plArr = root.optJSONArray("playlists") ?: JSONArray()
             for (i in 0 until plArr.length()) {
                 val plObj = plArr.optJSONObject(i) ?: continue
                 val name = plObj.optString("name").takeIf { it.isNotBlank() } ?: continue
                 val desc = plObj.optString("description")
                 val cover = plObj.optString("coverUrl").takeIf { it.isNotBlank() }
-                val newPlId = dao.insertPlaylist(PlaylistEntity(name = name, description = desc, coverUrl = cover))
+                val targetPlId = existingPlaylists[name.trim().lowercase()]?.id
+                    ?: dao.insertPlaylist(PlaylistEntity(name = name, description = desc, coverUrl = cover))
                 val plTracks = plObj.optJSONArray("tracks") ?: JSONArray()
                 for (j in 0 until plTracks.length()) {
                     val tObj = plTracks.optJSONObject(j) ?: continue
@@ -285,7 +277,7 @@ class OfflineDownloadManager(
                     if (existing == null) {
                         dao.upsertTrack(jsonToTrackEntity(tObj, isLiked = false))
                     }
-                    dao.addTrackToPlaylist(PlaylistTrackCrossRef(playlistId = newPlId, trackId = trackId))
+                    dao.addTrackToPlaylist(PlaylistTrackCrossRef(playlistId = targetPlId, trackId = trackId))
                 }
                 playlistCount++
             }
@@ -312,6 +304,31 @@ class OfflineDownloadManager(
 
             likedCount to playlistCount
         }
+    }
+
+    suspend fun exportBackupToUri(uri: Uri): Result<Int> = withContext(Dispatchers.IO) {
+        val built = buildBackupJsonPayload()
+        built.mapCatching { (jsonText, likedCount, playlistCount) ->
+            val pretty = JSONObject(jsonText).toString(2)
+            context.contentResolver.openOutputStream(uri)?.use { out ->
+                out.write(pretty.toByteArray(Charsets.UTF_8))
+                out.flush()
+            } ?: throw IllegalStateException("Tidak dapat membuka file tujuan")
+            likedCount + playlistCount
+        }
+    }
+
+    suspend fun importBackupFromUri(uri: Uri): Result<Pair<Int, Int>> = withContext(Dispatchers.IO) {
+        val textResult = runCatching {
+            context.contentResolver.openInputStream(uri)
+                ?.bufferedReader(Charsets.UTF_8)
+                ?.use { it.readText() }
+                ?: throw IllegalStateException("Tidak dapat membaca file backup")
+        }
+        textResult.fold(
+            onSuccess = { importBackupJsonString(it) },
+            onFailure = { Result.failure(it) }
+        )
     }
 
     private fun trackEntityToJson(e: SavedTrackEntity): JSONObject = JSONObject().apply {

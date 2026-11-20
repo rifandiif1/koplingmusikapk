@@ -74,6 +74,7 @@ class KoplingfyPlaybackService : Service() {
             })
             isActive = true
         }
+        KoplingfyMediaBridge.markServiceRunning(true)
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -134,8 +135,9 @@ class KoplingfyPlaybackService : Service() {
         cachedBitmap?.let { metaBuilder.putBitmap(MediaMetadata.METADATA_KEY_ALBUM_ART, it) }
         mediaSession.setMetadata(metaBuilder.build())
 
-        val notification = buildMediaNotification(track.title, track.artist, snap.isPlaying, cachedBitmap)
-        if (snap.isPlaying) {
+        val keepForeground = snap.isPlaying || snap.isBuffering
+        val notification = buildMediaNotification(track.title, track.artist, keepForeground, cachedBitmap)
+        if (keepForeground) {
             runCatching {
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
                     startForeground(
@@ -284,6 +286,7 @@ class KoplingfyPlaybackService : Service() {
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onDestroy() {
+        KoplingfyMediaBridge.markServiceRunning(false)
         artworkLoadJob?.cancel()
         serviceScope.cancel()
         runCatching {

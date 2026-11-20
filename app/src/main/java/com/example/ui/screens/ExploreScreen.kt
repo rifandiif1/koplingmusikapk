@@ -80,68 +80,25 @@ fun ExploreScreen(
         contentPadding = PaddingValues(bottom = bottomContentPadding),
         verticalArrangement = Arrangement.spacedBy(22.dp)
     ) {
-        // ---- Editorial Acoustic Prism Banner ----
+        // ---- Clean Editorial Header ----
         item {
-            Surface(
+            Column(
                 modifier = Modifier
                     .fillMaxWidth()
                     .padding(horizontal = 20.dp)
                     .padding(top = 14.dp)
-                    .height(176.dp),
-                shape = RoundedCornerShape(28.dp),
-                border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant)
             ) {
-                Box(modifier = Modifier.fillMaxSize()) {
-                    Image(
-                        painter = painterResource(id = R.drawable.img_explore_banner_1795073962020),
-                        contentDescription = "Jelajah Musik",
-                        contentScale = ContentScale.Crop,
-                        modifier = Modifier.fillMaxSize()
-                    )
-                    Box(
-                        modifier = Modifier
-                            .fillMaxSize()
-                            .background(
-                                Brush.verticalGradient(
-                                    listOf(Color(0x550A0B0F), Color(0xE80A0B0F))
-                                )
-                            )
-                    )
-                    Column(
-                        modifier = Modifier
-                            .fillMaxSize()
-                            .padding(20.dp),
-                        verticalArrangement = Arrangement.SpaceBetween
-                    ) {
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            Icon(
-                                imageVector = Icons.Rounded.Explore,
-                                contentDescription = null,
-                                tint = MaterialTheme.colorScheme.primary,
-                                modifier = Modifier.size(18.dp)
-                            )
-                            Spacer(modifier = Modifier.width(6.dp))
-                            Text(
-                                text = "KOPLINGFY DISCOVER",
-                                style = MaterialTheme.typography.labelMedium,
-                                color = MaterialTheme.colorScheme.primary
-                            )
-                        }
-                        Column {
-                            Text(
-                                text = "Jelajahi Nada & Genre",
-                                style = MaterialTheme.typography.headlineMedium,
-                                color = Color.White
-                            )
-                            Spacer(modifier = Modifier.height(4.dp))
-                            Text(
-                                text = "Tangga lagu dunia, suasana hati, dan rilisan terkurasi",
-                                style = MaterialTheme.typography.bodySmall,
-                                color = Color.White.copy(alpha = 0.8f)
-                            )
-                        }
-                    }
-                }
+                Text(
+                    text = "Jelajah",
+                    style = MaterialTheme.typography.headlineMedium.copy(fontWeight = FontWeight.Bold),
+                    color = MaterialTheme.colorScheme.onBackground
+                )
+                Spacer(modifier = Modifier.height(2.dp))
+                Text(
+                    text = "Tangga lagu dunia, genre, dan rilisan terbaru",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
             }
         }
 
@@ -176,7 +133,7 @@ fun ExploreScreen(
             }
         }
 
-        // ---- Featured Albums Strip ----
+        // ---- Featured Albums Strip (Frameless Artwork-First) ----
         if (homeState.featuredAlbums.isNotEmpty()) {
             item {
                 Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
@@ -190,37 +147,34 @@ fun ExploreScreen(
                         horizontalArrangement = Arrangement.spacedBy(14.dp)
                     ) {
                         items(homeState.featuredAlbums, key = { "exp_alb_${it.id}" }) { album ->
-                            Surface(
-                                onClick = { onAlbumClick(album) },
-                                modifier = Modifier.width(164.dp),
-                                shape = RoundedCornerShape(20.dp),
-                                color = MaterialTheme.colorScheme.surface,
-                                border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant)
+                            Column(
+                                modifier = Modifier
+                                    .width(148.dp)
+                                    .clip(RoundedCornerShape(10.dp))
+                                    .clickable { onAlbumClick(album) }
                             ) {
-                                Column(modifier = Modifier.padding(10.dp)) {
-                                    AlbumArtImage(
-                                        url = album.artworkUrl,
-                                        contentDescription = album.title,
-                                        modifier = Modifier
-                                            .fillMaxWidth()
-                                            .height(144.dp),
-                                        shape = RoundedCornerShape(14.dp)
-                                    )
-                                    Spacer(modifier = Modifier.height(10.dp))
-                                    Text(
-                                        text = album.title,
-                                        style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.SemiBold),
-                                        maxLines = 1,
-                                        overflow = TextOverflow.Ellipsis
-                                    )
-                                    Text(
-                                        text = album.artist,
-                                        style = MaterialTheme.typography.bodySmall,
-                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                        maxLines = 1,
-                                        overflow = TextOverflow.Ellipsis
-                                    )
-                                }
+                                AlbumArtImage(
+                                    url = album.artworkUrl,
+                                    contentDescription = album.title,
+                                    modifier = Modifier.size(148.dp),
+                                    shape = RoundedCornerShape(10.dp)
+                                )
+                                Spacer(modifier = Modifier.height(8.dp))
+                                Text(
+                                    text = album.title,
+                                    style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.SemiBold),
+                                    color = MaterialTheme.colorScheme.onBackground,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+                                Spacer(modifier = Modifier.height(1.dp))
+                                Text(
+                                    text = album.artist,
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
+                                )
                             }
                         }
                     }
@@ -309,45 +263,43 @@ private fun MoodGradientTile(
     onClick: () -> Unit,
     modifier: Modifier = Modifier
 ) {
+    // Authentic YouTube Music / Metrolist genre tile: neutral matte surface with left color bar
     Surface(
         onClick = onClick,
-        shape = RoundedCornerShape(20.dp),
-        border = BorderStroke(0.9.dp, Color.White.copy(alpha = 0.14f)),
+        shape = RoundedCornerShape(10.dp),
+        color = MaterialTheme.colorScheme.surface,
+        border = BorderStroke(0.5.dp, MaterialTheme.colorScheme.outlineVariant),
         modifier = modifier
-            .height(96.dp)
+            .height(64.dp)
             .testTag("explore_mood_${mood.id}")
     ) {
-        Box(
-            modifier = Modifier
-                .fillMaxSize()
-                .background(
-                    Brush.linearGradient(
-                        colors = listOf(Color(mood.startColor), Color(mood.endColor))
-                    )
-                )
-                .background(
-                    Brush.verticalGradient(
-                        colors = listOf(Color.White.copy(alpha = 0.08f), Color.Black.copy(alpha = 0.22f))
-                    )
-                )
-                .padding(14.dp)
-        ) {
+        Row(modifier = Modifier.fillMaxSize()) {
+            Box(
+                modifier = Modifier
+                    .width(5.dp)
+                    .fillMaxSize()
+                    .background(Color(mood.startColor))
+            )
             Column(
-                modifier = Modifier.fillMaxSize(),
-                verticalArrangement = Arrangement.SpaceBetween
+                modifier = Modifier
+                    .weight(1f)
+                    .fillMaxSize()
+                    .padding(horizontal = 12.dp, vertical = 10.dp),
+                verticalArrangement = Arrangement.Center
             ) {
                 Text(
                     text = mood.label,
-                    style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold),
-                    color = Color.White,
+                    style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.SemiBold),
+                    color = MaterialTheme.colorScheme.onSurface,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis
                 )
+                Spacer(modifier = Modifier.height(1.dp))
                 Text(
                     text = mood.subtitle,
                     style = MaterialTheme.typography.bodySmall,
-                    color = Color.White.copy(alpha = 0.85f),
-                    maxLines = 2,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1,
                     overflow = TextOverflow.Ellipsis
                 )
             }

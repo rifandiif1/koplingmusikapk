@@ -33,7 +33,12 @@ object KoplingfyMediaBridge {
     @Volatile var onSeekTo: ((Long) -> Unit)? = null
 
     private var lastServiceTrackId: String? = null
-    private var lastServicePlaying: Boolean? = null
+    private var lastServiceActive: Boolean? = null
+    private var serviceRunning: Boolean = false
+
+    fun markServiceRunning(running: Boolean) {
+        serviceRunning = running
+    }
 
     fun publishState(
         context: Context,
@@ -51,21 +56,27 @@ object KoplingfyMediaBridge {
             durationMs = durationMs
         )
 
+        // Keep foreground service active during BOTH playback and track-transition buffering
+        val isPlaybackActive = isPlaying || isBuffering
         val shouldSyncService = track != null && (
             track.id != lastServiceTrackId ||
-                isPlaying != lastServicePlaying
+                isPlaybackActive != lastServiceActive
             )
 
         if (shouldSyncService) {
             lastServiceTrackId = track?.id
-            lastServicePlaying = isPlaying
+            lastServiceActive = isPlaybackActive
             runCatching {
                 val intent = Intent(context.applicationContext, KoplingfyPlaybackService::class.java).apply {
                     action = KoplingfyPlaybackService.ACTION_UPDATE_STATE
                 }
-                if (isPlaying) {
-                    ContextCompat.startForegroundService(context.applicationContext, intent)
-                } else {
+                if (isPlaybackActive) {
+                    if (!serviceRunning) {
+                        ContextCompat.startForegroundService(context.applicationContext, intent)
+                    } else {
+                        context.applicationContext.startService(intent)
+                    }
+                } else if (serviceRunning) {
                     context.applicationContext.startService(intent)
                 }
             }

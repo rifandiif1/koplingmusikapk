@@ -103,23 +103,12 @@ fun HomeScreen(
         }
     }
 
-    val primaryGlow = MaterialTheme.colorScheme.primary
     val bgColor = MaterialTheme.colorScheme.background
 
     Box(
         modifier = Modifier
             .fillMaxSize()
             .background(bgColor)
-            .background(
-                Brush.verticalGradient(
-                    colors = listOf(
-                        primaryGlow.copy(alpha = 0.14f),
-                        bgColor,
-                        bgColor
-                    ),
-                    endY = 720f
-                )
-            )
     ) {
         LazyColumn(
             modifier = Modifier
@@ -141,7 +130,7 @@ fun HomeScreen(
                 )
             }
 
-            // ---- Mood & Vibe Filter Pills ----
+            // ---- Clean YouTube Music / Metrolist Mood Filter Pills ----
             item {
                 LazyRow(
                     contentPadding = PaddingValues(horizontal = 20.dp),
@@ -151,16 +140,18 @@ fun HomeScreen(
                         val selected = homeState.selectedMood.id == mood.id
                         Surface(
                             onClick = { onSelectMood(mood) },
-                            shape = RoundedCornerShape(50),
-                            color = if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.surface,
-                            border = if (selected) null else BorderStroke(0.9.dp, MaterialTheme.colorScheme.outlineVariant),
+                            shape = RoundedCornerShape(10.dp),
+                            color = if (selected) MaterialTheme.colorScheme.onBackground else MaterialTheme.colorScheme.surfaceVariant,
+                            border = null,
                             modifier = Modifier.testTag("mood_chip_${mood.id}")
                         ) {
                             Text(
                                 text = mood.label,
-                                style = MaterialTheme.typography.labelLarge,
-                                color = if (selected) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurface,
-                                modifier = Modifier.padding(horizontal = 16.dp, vertical = 9.dp)
+                                style = MaterialTheme.typography.labelLarge.copy(
+                                    fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Medium
+                                ),
+                                color = if (selected) MaterialTheme.colorScheme.background else MaterialTheme.colorScheme.onSurface,
+                                modifier = Modifier.padding(horizontal = 14.dp, vertical = 8.dp)
                             )
                         }
                     }
@@ -404,51 +395,29 @@ private fun HomeTopHeader(
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.SpaceBetween
     ) {
-        Row(
-            modifier = Modifier.weight(1f),
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            Surface(
-                shape = RoundedCornerShape(13.dp),
-                color = MaterialTheme.colorScheme.primary.copy(alpha = 0.14f),
-                border = BorderStroke(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.35f)),
-                modifier = Modifier.size(42.dp)
-            ) {
-                Box(contentAlignment = Alignment.Center) {
-                    Icon(
-                        imageVector = Icons.Rounded.GraphicEq,
-                        contentDescription = "Koplingfy",
-                        tint = MaterialTheme.colorScheme.primary,
-                        modifier = Modifier.size(22.dp)
-                    )
-                }
-            }
-            Spacer(modifier = Modifier.width(12.dp))
-            Column(modifier = Modifier.weight(1f)) {
-                Text(
-                    text = if (youtubeAccount.isLoggedIn) "$greeting, ${youtubeAccount.name.substringBefore(" ")}" else greeting,
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis
-                )
-                Text(
-                    text = "Koplingfy",
-                    style = MaterialTheme.typography.headlineSmall.copy(fontWeight = FontWeight.Bold),
-                    color = MaterialTheme.colorScheme.onBackground,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis
-                )
-            }
+        Column(modifier = Modifier.weight(1f)) {
+            Text(
+                text = if (youtubeAccount.isLoggedIn) "$greeting, ${youtubeAccount.name.substringBefore(" ")}" else greeting,
+                style = MaterialTheme.typography.labelMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
+            Text(
+                text = "Koplingfy",
+                style = MaterialTheme.typography.headlineMedium.copy(fontWeight = FontWeight.Bold),
+                color = MaterialTheme.colorScheme.onBackground,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
         }
 
         Spacer(modifier = Modifier.width(8.dp))
 
         Row(
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            horizontalArrangement = Arrangement.spacedBy(4.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
-            // Show compact live room indicator only when actively inside a Play Bersama room
             if (activeRoomCode != null) {
                 Surface(
                     onClick = onOpenListenTogether,
@@ -457,7 +426,7 @@ private fun HomeTopHeader(
                     modifier = Modifier.testTag("open_listen_together_button")
                 ) {
                     Row(
-                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 7.dp),
+                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
                         verticalAlignment = Alignment.CenterVertically,
                         horizontalArrangement = Arrangement.spacedBy(4.dp)
                     ) {
@@ -465,7 +434,7 @@ private fun HomeTopHeader(
                             imageVector = Icons.Rounded.Groups,
                             contentDescription = "Play Bersama Aktif",
                             tint = MaterialTheme.colorScheme.onPrimary,
-                            modifier = Modifier.size(15.dp)
+                            modifier = Modifier.size(14.dp)
                         )
                         Text(
                             text = activeRoomCode,
@@ -476,12 +445,35 @@ private fun HomeTopHeader(
                 }
             }
 
+            IconButton(
+                onClick = onOpenStats,
+                modifier = Modifier.size(44.dp).testTag("open_stats_button")
+            ) {
+                Icon(
+                    imageVector = Icons.Rounded.AutoGraph,
+                    contentDescription = "Statistik",
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.size(22.dp)
+                )
+            }
+
+            IconButton(
+                onClick = onOpenSettings,
+                modifier = Modifier.size(44.dp).testTag("open_settings_button")
+            ) {
+                Icon(
+                    imageVector = Icons.Rounded.Settings,
+                    contentDescription = "Pengaturan",
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.size(22.dp)
+                )
+            }
+
             if (youtubeAccount.isLoggedIn) {
                 Surface(
                     onClick = onOpenSettings,
                     shape = CircleShape,
-                    border = BorderStroke(1.5.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.8f)),
-                    modifier = Modifier.size(40.dp).testTag("home_account_avatar")
+                    modifier = Modifier.size(34.dp).testTag("home_account_avatar")
                 ) {
                     AlbumArtImage(
                         url = youtubeAccount.avatarUrl,
@@ -494,48 +486,14 @@ private fun HomeTopHeader(
                 Surface(
                     onClick = onOpenYouTubeLogin,
                     shape = RoundedCornerShape(50),
-                    color = MaterialTheme.colorScheme.primary.copy(alpha = 0.14f),
-                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.4f)),
+                    color = MaterialTheme.colorScheme.surfaceVariant,
                     modifier = Modifier.testTag("home_login_ytm_pill")
                 ) {
                     Text(
                         text = "Masuk",
-                        style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Bold),
-                        color = MaterialTheme.colorScheme.primary,
-                        modifier = Modifier.padding(horizontal = 13.dp, vertical = 9.dp)
-                    )
-                }
-            }
-
-            Surface(
-                onClick = onOpenStats,
-                shape = CircleShape,
-                color = MaterialTheme.colorScheme.surface,
-                border = BorderStroke(0.9.dp, MaterialTheme.colorScheme.outlineVariant),
-                modifier = Modifier.size(40.dp).testTag("open_stats_button")
-            ) {
-                Box(contentAlignment = Alignment.Center) {
-                    Icon(
-                        imageVector = Icons.Rounded.AutoGraph,
-                        contentDescription = "Statistik",
-                        tint = MaterialTheme.colorScheme.onSurface,
-                        modifier = Modifier.size(19.dp)
-                    )
-                }
-            }
-            Surface(
-                onClick = onOpenSettings,
-                shape = CircleShape,
-                color = MaterialTheme.colorScheme.surface,
-                border = BorderStroke(0.9.dp, MaterialTheme.colorScheme.outlineVariant),
-                modifier = Modifier.size(40.dp).testTag("open_settings_button")
-            ) {
-                Box(contentAlignment = Alignment.Center) {
-                    Icon(
-                        imageVector = Icons.Rounded.Settings,
-                        contentDescription = "Pengaturan",
-                        tint = MaterialTheme.colorScheme.onSurface,
-                        modifier = Modifier.size(19.dp)
+                        style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.SemiBold),
+                        color = MaterialTheme.colorScheme.onSurface,
+                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 7.dp)
                     )
                 }
             }
@@ -553,104 +511,86 @@ private fun HeroSpotlightCard(
     Surface(
         modifier = Modifier
             .fillMaxWidth()
-            .padding(horizontal = 20.dp)
-            .height(206.dp),
-        shape = RoundedCornerShape(26.dp),
-        border = BorderStroke(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.28f)),
-        shadowElevation = 12.dp
+            .padding(horizontal = 20.dp),
+        shape = RoundedCornerShape(18.dp),
+        color = MaterialTheme.colorScheme.surface,
+        border = BorderStroke(0.6.dp, MaterialTheme.colorScheme.outlineVariant)
     ) {
-        Box(modifier = Modifier.fillMaxSize()) {
-            Image(
-                painter = painterResource(id = R.drawable.img_hero_spotlight_1795073960647),
-                contentDescription = null,
-                contentScale = ContentScale.Crop,
-                modifier = Modifier.fillMaxSize()
-            )
+        Box(modifier = Modifier.fillMaxWidth()) {
+            // Subtle atmospheric tint from the mood without garish AI wallpaper clash
             Box(
                 modifier = Modifier
-                    .fillMaxSize()
+                    .matchParentSize()
                     .background(
-                        Brush.linearGradient(
+                        Brush.horizontalGradient(
                             colors = listOf(
-                                Color(0xF008090D),
-                                Color(0xC808090D),
-                                Color(mood.startColor).copy(alpha = 0.28f)
+                                Color(mood.startColor).copy(alpha = 0.14f),
+                                Color.Transparent
                             )
                         )
                     )
             )
-            Column(
+            Row(
                 modifier = Modifier
-                    .fillMaxSize()
-                    .padding(20.dp),
-                verticalArrangement = Arrangement.SpaceBetween
+                    .fillMaxWidth()
+                    .padding(16.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(16.dp)
             ) {
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.Top
-                ) {
-                    Surface(
-                        color = Color.Black.copy(alpha = 0.45f),
-                        shape = RoundedCornerShape(50),
-                        border = BorderStroke(0.9.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.5f))
-                    ) {
-                        Text(
-                            text = "SPOTLIGHT • ${mood.label.uppercase()}",
-                            style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold),
-                            color = MaterialTheme.colorScheme.primary,
-                            modifier = Modifier.padding(horizontal = 11.dp, vertical = 5.dp)
-                        )
-                    }
-                    if (featuredTrack?.artworkUrl != null) {
-                        Surface(
-                            shape = RoundedCornerShape(14.dp),
-                            border = BorderStroke(1.dp, Color.White.copy(alpha = 0.22f)),
-                            shadowElevation = 8.dp,
-                            modifier = Modifier.size(62.dp)
-                        ) {
-                            AlbumArtImage(
-                                url = featuredTrack.artworkUrl,
-                                contentDescription = featuredTrack.title,
-                                modifier = Modifier.fillMaxSize(),
-                                shape = RoundedCornerShape(14.dp)
-                            )
-                        }
-                    }
-                }
+                AlbumArtImage(
+                    url = featuredTrack?.artworkUrl,
+                    contentDescription = featuredTrack?.title ?: mood.label,
+                    modifier = Modifier.size(104.dp),
+                    shape = RoundedCornerShape(10.dp)
+                )
 
-                Column {
+                Column(
+                    modifier = Modifier.weight(1f),
+                    verticalArrangement = Arrangement.spacedBy(4.dp)
+                ) {
                     Text(
-                        text = featuredTrack?.title ?: "Audio Tanpa Batas",
-                        style = MaterialTheme.typography.headlineSmall.copy(fontWeight = FontWeight.Bold),
-                        color = Color.White,
-                        maxLines = 1,
+                        text = mood.label,
+                        style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.SemiBold),
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    Text(
+                        text = featuredTrack?.title ?: "Mulai Mendengar",
+                        style = MaterialTheme.typography.titleLarge.copy(fontWeight = FontWeight.Bold),
+                        color = MaterialTheme.colorScheme.onSurface,
+                        maxLines = 2,
                         overflow = TextOverflow.Ellipsis
                     )
-                    Spacer(modifier = Modifier.height(2.dp))
                     Text(
-                        text = featuredTrack?.let { "${it.artist} • ${it.album}" } ?: mood.subtitle,
+                        text = featuredTrack?.artist ?: mood.subtitle,
                         style = MaterialTheme.typography.bodySmall,
-                        color = Color.White.copy(alpha = 0.78f),
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis
                     )
-                    Spacer(modifier = Modifier.height(14.dp))
-                    Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                    Spacer(modifier = Modifier.height(6.dp))
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                         GlassActionPill(
-                            label = "Putar Mix",
+                            label = "Putar",
                             icon = Icons.Rounded.PlayArrow,
                             highlighted = true,
                             onClick = onPlayFeatured,
                             modifier = Modifier.testTag("hero_play_button")
                         )
-                        GlassActionPill(
-                            label = "Acak",
-                            icon = Icons.Rounded.Shuffle,
-                            highlighted = false,
+                        Surface(
                             onClick = onShuffleFeatured,
-                            modifier = Modifier.testTag("hero_shuffle_button")
-                        )
+                            shape = CircleShape,
+                            color = MaterialTheme.colorScheme.surfaceVariant,
+                            modifier = Modifier.size(40.dp).testTag("hero_shuffle_button")
+                        ) {
+                            Box(contentAlignment = Alignment.Center) {
+                                Icon(
+                                    imageVector = Icons.Rounded.Shuffle,
+                                    contentDescription = "Acak",
+                                    tint = MaterialTheme.colorScheme.onSurface,
+                                    modifier = Modifier.size(18.dp)
+                                )
+                            }
+                        }
                     }
                 }
             }
@@ -665,77 +605,54 @@ private fun RankedPosterCard(
     isActive: Boolean,
     onClick: () -> Unit
 ) {
-    Surface(
-        onClick = onClick,
-        modifier = Modifier.width(156.dp),
-        shape = RoundedCornerShape(20.dp),
-        color = MaterialTheme.colorScheme.surface,
-        border = BorderStroke(
-            width = if (isActive) 1.5.dp else 1.dp,
-            color = if (isActive) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outlineVariant
-        )
+    Column(
+        modifier = Modifier
+            .width(148.dp)
+            .clip(RoundedCornerShape(10.dp))
+            .clickable(onClick = onClick)
     ) {
-        Column(modifier = Modifier.padding(10.dp)) {
-            Box(
+        Box(
+            modifier = Modifier
+                .size(148.dp)
+                .clip(RoundedCornerShape(10.dp))
+        ) {
+            AlbumArtImage(
+                url = track.artworkUrl,
+                contentDescription = track.title,
+                modifier = Modifier.fillMaxSize(),
+                shape = RoundedCornerShape(10.dp)
+            )
+            Surface(
                 modifier = Modifier
-                    .fillMaxWidth()
-                    .height(136.dp)
+                    .align(Alignment.TopStart)
+                    .padding(8.dp),
+                shape = RoundedCornerShape(6.dp),
+                color = Color(0xB80A0A0C)
             ) {
-                AlbumArtImage(
-                    url = track.artworkUrl,
-                    contentDescription = track.title,
-                    modifier = Modifier.fillMaxSize(),
-                    shape = RoundedCornerShape(14.dp)
+                Text(
+                    text = "#$rank",
+                    style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold),
+                    color = Color.White,
+                    modifier = Modifier.padding(horizontal = 7.dp, vertical = 2.dp)
                 )
-                Surface(
-                    modifier = Modifier
-                        .align(Alignment.TopStart)
-                        .padding(8.dp),
-                    shape = RoundedCornerShape(8.dp),
-                    color = Color(0xCC0A0B0F)
-                ) {
-                    Text(
-                        text = "#$rank",
-                        style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Bold),
-                        color = if (rank <= 3) MaterialTheme.colorScheme.secondary else Color.White,
-                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp)
-                    )
-                }
-                Surface(
-                    modifier = Modifier
-                        .align(Alignment.BottomEnd)
-                        .padding(8.dp)
-                        .size(34.dp),
-                    shape = CircleShape,
-                    color = MaterialTheme.colorScheme.primary
-                ) {
-                    Box(contentAlignment = Alignment.Center) {
-                        Icon(
-                            imageVector = Icons.Rounded.PlayArrow,
-                            contentDescription = "Putar",
-                            tint = MaterialTheme.colorScheme.onPrimary,
-                            modifier = Modifier.size(20.dp)
-                        )
-                    }
-                }
             }
-            Spacer(modifier = Modifier.height(10.dp))
-            Text(
-                text = track.title,
-                style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.SemiBold),
-                color = if (isActive) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis
-            )
-            Spacer(modifier = Modifier.height(2.dp))
-            Text(
-                text = track.artist,
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis
-            )
         }
+        Spacer(modifier = Modifier.height(8.dp))
+        Text(
+            text = track.title,
+            style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.SemiBold),
+            color = if (isActive) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onBackground,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis
+        )
+        Spacer(modifier = Modifier.height(1.dp))
+        Text(
+            text = track.artist,
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis
+        )
     }
 }
 
@@ -745,31 +662,31 @@ private fun CompactSquareCard(
     subtitle: String,
     artworkUrl: String?,
     isActive: Boolean,
-    cardWidth: androidx.compose.ui.unit.Dp = 138.dp,
+    cardWidth: androidx.compose.ui.unit.Dp = 142.dp,
     onClick: () -> Unit
 ) {
     Column(
         modifier = Modifier
             .width(cardWidth)
-            .clip(RoundedCornerShape(16.dp))
+            .clip(RoundedCornerShape(10.dp))
             .clickable(onClick = onClick)
     ) {
         Box(
             modifier = Modifier
                 .size(cardWidth)
-                .clip(RoundedCornerShape(18.dp))
+                .clip(RoundedCornerShape(10.dp))
         ) {
             AlbumArtImage(
                 url = artworkUrl,
                 contentDescription = title,
                 modifier = Modifier.fillMaxSize(),
-                shape = RoundedCornerShape(18.dp)
+                shape = RoundedCornerShape(10.dp)
             )
             if (isActive) {
                 Box(
                     modifier = Modifier
                         .fillMaxSize()
-                        .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.22f))
+                        .background(Color.Black.copy(alpha = 0.35f))
                 )
             }
         }
@@ -781,6 +698,7 @@ private fun CompactSquareCard(
             maxLines = 1,
             overflow = TextOverflow.Ellipsis
         )
+        Spacer(modifier = Modifier.height(1.dp))
         Text(
             text = subtitle,
             style = MaterialTheme.typography.bodySmall,
@@ -799,29 +717,20 @@ private fun ArtistAvatarCard(
     Column(
         modifier = Modifier
             .width(96.dp)
-            .clip(RoundedCornerShape(16.dp))
+            .clip(RoundedCornerShape(12.dp))
             .clickable(onClick = onClick),
         horizontalAlignment = Alignment.CenterHorizontally
     ) {
-        Surface(
-            modifier = Modifier.size(86.dp),
-            shape = CircleShape,
-            border = BorderStroke(1.5.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.5f)),
-            color = MaterialTheme.colorScheme.surfaceVariant
-        ) {
-            AlbumArtImage(
-                url = artist.artworkUrl,
-                contentDescription = artist.name,
-                modifier = Modifier
-                    .fillMaxSize()
-                    .padding(3.dp),
-                shape = CircleShape
-            )
-        }
+        AlbumArtImage(
+            url = artist.artworkUrl,
+            contentDescription = artist.name,
+            modifier = Modifier.size(88.dp),
+            shape = CircleShape
+        )
         Spacer(modifier = Modifier.height(8.dp))
         Text(
             text = artist.name,
-            style = MaterialTheme.typography.titleSmall,
+            style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.Medium),
             color = MaterialTheme.colorScheme.onBackground,
             maxLines = 1,
             overflow = TextOverflow.Ellipsis

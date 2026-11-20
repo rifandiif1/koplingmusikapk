@@ -5,14 +5,18 @@ import android.content.Context
 import android.net.ConnectivityManager
 import android.net.NetworkCapabilities
 import android.net.Uri
+import android.view.TextureView
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
+import com.example.ai.LyricsTranslator
+import com.example.data.CloudLibraryRepository
 import com.example.data.MusicRepository
 import com.example.data.OfflineDownloadManager
 import com.example.data.local.KoplingfyDatabase
 import com.example.data.local.PreferencesRepository
 import com.example.data.remote.InnerTubeClient
 import com.example.data.remote.StreamResolveResult
+import com.example.data.remote.VideoStreamResolveResult
 import com.example.model.AccentPreset
 import com.example.model.AlbumSummary
 import com.example.model.ArtistSummary
@@ -29,8 +33,10 @@ import com.example.model.PlayerBackgroundStyle
 import com.example.model.PlaylistSummary
 import com.example.model.RemotePlaylistSummary
 import com.example.model.RepeatMode
+import com.example.model.StreamTechStats
 import com.example.model.ThemeMode
 import com.example.model.Track
+import com.example.model.VideoCandidate
 import com.example.model.YouTubeAccount
 import com.example.player.KoplingfyAudioEngine
 import com.example.player.KoplingfyMediaBridge
@@ -91,7 +97,14 @@ data class PlayerUiState(
     val lyricsOffsetMs: Long = 0L,
     val abLoopStartMs: Long? = null,
     val abLoopEndMs: Long? = null,
-    val isDrivingMode: Boolean = false
+    val isDrivingMode: Boolean = false,
+    val isVideoMode: Boolean = false,
+    val isLoadingVideo: Boolean = false,
+    val videoError: String? = null,
+    val videoCandidates: List<VideoCandidate> = emptyList(),
+    val selectedVideoId: String? = null,
+    val videoQualityLabel: String = "",
+    val streamTechStats: StreamTechStats = StreamTechStats()
 )
 
 data class CollectionDetailState(
@@ -106,7 +119,17 @@ data class CollectionDetailState(
 
 data class StorageStats(
     val downloadsBytes: Long = 0L,
-    val cacheBytes: Long = 0L
+    val cacheBytes: Long = 0L,
+    val lyricsAiCacheBytes: Long = 0L
+)
+
+data class CloudSyncUiState(
+    val isSyncing: Boolean = false,
+    val isImportingPlaylist: Boolean = false,
+    val lastSyncedAtMillis: Long? = null,
+    val cloudLikedCount: Int? = null,
+    val cloudPlaylistCount: Int? = null,
+    val cloudDeviceLabel: String? = null
 )
 
 class KoplingfyViewModel(application: Application) : AndroidViewModel(application) {
@@ -115,6 +138,7 @@ class KoplingfyViewModel(application: Application) : AndroidViewModel(applicatio
     private val repository = MusicRepository(application, database.dao())
     private val downloadManager = OfflineDownloadManager(application, database.dao())
     private val preferences = PreferencesRepository(application)
+    private val cloudLibraryRepository = CloudLibraryRepository(application)
 
     private val audioEngine = KoplingfyAudioEngine(
         context = application,
@@ -174,6 +198,9 @@ class KoplingfyViewModel(application: Application) : AndroidViewModel(applicatio
     private val _storageStats = MutableStateFlow(StorageStats())
     val storageStats: StateFlow<StorageStats> = _storageStats.asStateFlow()
 
+    private val _cloudSyncState = MutableStateFlow(CloudSyncUiState())
+    val cloudSyncState: StateFlow<CloudSyncUiState> = _cloudSyncState.asStateFlow()
+
     private val _isSyncingAccount = MutableStateFlow(false)
     val isSyncingAccount: StateFlow<Boolean> = _isSyncingAccount.asStateFlow()
 
@@ -185,11 +212,19 @@ class KoplingfyViewModel(application: Application) : AndroidViewModel(applicatio
     private var resolveStreamJob: Job? = null
     private var prefetchJob: Job? = null
     private var lyricsJob: Job? = null
+    private var translateLyricsJob: Job? = null
+    private var romanizeLyricsJob: Job? = null
+    private var videoResolveJob: Job? = null
     private var sleepTimerJob: Job? = null
     private var detailObserveJob: Job? = null
     private var retriedExpiredTrackId: String? = null
+    private var preEndPrefetchedTrackId: String? = null
+    private var autoQueuedRadioForTrackId: String? = null
+    private var consecutiveAutoSkipFailures: Int = 0
+    private var isAutoAdvancingTrack: Boolean = false
 
     init {
+        LyricsTranslator.init(getApplication())
         InnerTubeClient.warmupAsync()
         registerMediaBridgeCallbacks()
         observeAudioEngine()
@@ -237,14 +272,35 @@ class KoplingfyViewModel(application: Application) : AndroidViewModel(applicatio
                         isBuffering = engine.isBuffering,
                         positionMs = engine.positionMs,
                         durationMs = if (engine.durationMs > 0) engine.durationMs else state.currentTrack?.durationMs ?: 0L,
-                        audioError = engine.errorMessage ?: state.audioError
+                        audioError = engine.errorMessage ?: state.audioError,
+                        streamTechStats = engine.streamTechStats
                     )
                     updatedState = next
                     next
                 }
-                updatedState?.let { publishMediaBridgeState(it) }
+                updatedState?.let { st ->
+                    publishMediaBridgeState(st)
+                    // Proactively pre-fetch the next song ~20s before current track ends for instant gapless transition
+                    val curTrack = st.currentTrack
+                    if (curTrack != null &&
+                        st.isPlaying &&
+                        !st.isBuffering &&
+                        st.durationMs > 20_000L &&
+                        st.positionMs > 5_000L &&
+                        (st.durationMs - st.positionMs) in 1L..22_000L &&
+                        preEndPrefetchedTrackId != curTrack.id
+                    ) {
+                        preEndPrefetchedTrackId = curTrack.id
+                        schedulePrefetchNextTrack(effectiveAudioQuality(), delayMs = 0L)
+                    }
+                }
             }
         }
+    }
+
+    private fun effectiveAudioQuality(): AudioQuality {
+        val useDataSaver = settings.value.dataSaverCellular && isOnCellular()
+        return if (useDataSaver) AudioQuality.LOW else settings.value.audioQuality
     }
 
     private fun observeSettingsForAudio() {
@@ -253,6 +309,7 @@ class KoplingfyViewModel(application: Application) : AndroidViewModel(applicatio
                 audioEngine.updatePlaybackParams(cfg.playbackSpeed, cfg.playbackPitch)
                 audioEngine.updateEqualizerBands(cfg.customBandsDb)
                 audioEngine.updateBassBoostAndNormalization(cfg.bassBoostStrength, cfg.normalizeAudio)
+                audioEngine.updateSkipSilenceAndReverb(cfg.skipSilence, cfg.reverbEnabled)
                 audioEngine.updateCrossfadeSeconds(cfg.crossfadeSeconds)
             }
         }
@@ -379,10 +436,25 @@ class KoplingfyViewModel(application: Application) : AndroidViewModel(applicatio
                 requiresYouTubeLogin = false,
                 lyricsOffsetMs = 0L,
                 abLoopStartMs = null,
-                abLoopEndMs = null
+                abLoopEndMs = null,
+                isLoadingVideo = it.isVideoMode && !track.isLocal,
+                videoError = null,
+                videoCandidates = emptyList(),
+                selectedVideoId = null,
+                videoQualityLabel = ""
             )
         }
-        resolveAndPlayTrack(track)
+        preEndPrefetchedTrackId = null
+        val keepVideoMode = _playerState.value.isVideoMode && !track.isLocal
+        if (keepVideoMode) {
+            loadAndPlayLyricVideoForCurrentTrack(track, startPositionMs = 0L)
+            schedulePrefetchNextTrack(effectiveAudioQuality(), delayMs = 2_000L)
+        } else {
+            if (_playerState.value.isVideoMode && track.isLocal) {
+                _playerState.update { it.copy(isVideoMode = false) }
+            }
+            resolveAndPlayTrack(track)
+        }
         viewModelScope.launch { repository.recordPlay(track) }
         fetchLyricsForTrack(track)
     }
@@ -404,17 +476,29 @@ class KoplingfyViewModel(application: Application) : AndroidViewModel(applicatio
     }
 
     private fun handleStreamExpiredRetry(): Boolean {
-        val current = _playerState.value.currentTrack ?: return false
+        val state = _playerState.value
+        val current = state.currentTrack ?: return false
         if (current.isLocal || retriedExpiredTrackId == current.id) return false
         retriedExpiredTrackId = current.id
-        resolveAndPlayTrack(current, forceRefresh = true)
+        if (state.isVideoMode && !state.selectedVideoId.isNullOrBlank()) {
+            audioEngine.setNextTrackStartOptions(startPositionMs = state.positionMs, autoStart = true)
+            playSelectedVideoId(state.selectedVideoId, startPositionMs = state.positionMs)
+        } else {
+            audioEngine.setNextTrackStartOptions(startPositionMs = state.positionMs, autoStart = true)
+            resolveAndPlayTrack(current, forceRefresh = true)
+        }
         return true
     }
 
-    private fun resolveAndPlayTrack(track: Track, forceRefresh: Boolean = false) {
+    private fun resolveAndPlayTrack(
+        track: Track,
+        forceRefresh: Boolean = false,
+        fromAutoAdvance: Boolean = isAutoAdvancingTrack
+    ) {
         if (!forceRefresh) {
             retriedExpiredTrackId = null
         }
+        videoResolveJob?.cancel()
         resolveStreamJob?.cancel()
         prefetchJob?.cancel()
         resolveStreamJob = viewModelScope.launch {
@@ -425,6 +509,8 @@ class KoplingfyViewModel(application: Application) : AndroidViewModel(applicatio
             val effectiveQuality = if (useDataSaver) AudioQuality.LOW else settings.value.audioQuality
             when (val result = repository.resolveFullAudioStream(track, effectiveQuality, forceRefresh = forceRefresh)) {
                 is StreamResolveResult.Success -> {
+                    consecutiveAutoSkipFailures = 0
+                    isAutoAdvancingTrack = false
                     val stream = result.stream
                     val sourceTag = if (useDataSaver && !track.isLocal && !track.isDownloaded) {
                         "${stream.sourceLabel} • HEMAT KUOTA"
@@ -447,6 +533,8 @@ class KoplingfyViewModel(application: Application) : AndroidViewModel(applicatio
                     schedulePrefetchNextTrack(effectiveQuality)
                 }
                 is StreamResolveResult.LoginRequired -> {
+                    if (fromAutoAdvance && tryAutoSkipAfterFailure(track)) return@launch
+                    isAutoAdvancingTrack = false
                     _playerState.update {
                         it.copy(
                             isPlaying = false,
@@ -457,6 +545,8 @@ class KoplingfyViewModel(application: Application) : AndroidViewModel(applicatio
                     }
                 }
                 is StreamResolveResult.Unavailable -> {
+                    if (fromAutoAdvance && tryAutoSkipAfterFailure(track)) return@launch
+                    isAutoAdvancingTrack = false
                     _playerState.update {
                         it.copy(
                             isPlaying = false,
@@ -470,18 +560,69 @@ class KoplingfyViewModel(application: Application) : AndroidViewModel(applicatio
         }
     }
 
-    private fun schedulePrefetchNextTrack(quality: AudioQuality) {
-        prefetchJob?.cancel()
+    /**
+     * Prevents queue playback from stalling permanently if a single track in a playlist/radio
+     * fails to resolve during automatic transition (capped at 3 consecutive skips).
+     */
+    private fun tryAutoSkipAfterFailure(failedTrack: Track): Boolean {
         val state = _playerState.value
-        val nextTrack = when {
-            state.currentIndex + 1 in state.queue.indices -> state.queue[state.currentIndex + 1]
-            state.repeatMode == RepeatMode.ALL && state.queue.isNotEmpty() -> state.queue.first()
-            else -> null
-        } ?: return
-        if (nextTrack.id == state.currentTrack?.id || nextTrack.isLocal) return
+        val hasNext = state.currentIndex + 1 < state.queue.size ||
+            (state.repeatMode == RepeatMode.ALL && state.queue.size > 1)
+        if (!hasNext || consecutiveAutoSkipFailures >= 3) {
+            consecutiveAutoSkipFailures = 0
+            return false
+        }
+        consecutiveAutoSkipFailures += 1
+        showMessage("Melewati \"${failedTrack.title}\" (stream tidak tersedia)…")
+        skipNext(fromAutoAdvance = true)
+        return true
+    }
+
+    private fun schedulePrefetchNextTrack(quality: AudioQuality, delayMs: Long = 1_200L) {
+        prefetchJob?.cancel()
         prefetchJob = viewModelScope.launch {
-            delay(1_200L)
-            repository.prefetchTrackStream(nextTrack, quality)
+            if (delayMs > 0L) delay(delayMs)
+            val state = _playerState.value
+            val current = state.currentTrack ?: return@launch
+
+            var nextTrack = when {
+                state.currentIndex + 1 in state.queue.indices -> state.queue[state.currentIndex + 1]
+                state.repeatMode == RepeatMode.ALL && state.queue.isNotEmpty() -> state.queue.first()
+                else -> null
+            }
+
+            // If at the end of the queue with Autoplay Radio enabled, proactively queue related tracks
+            // so the next song is already known and pre-fetched before the current track ends!
+            if (nextTrack == null &&
+                settings.value.autoplayRadio &&
+                state.repeatMode != RepeatMode.ONE &&
+                !current.isLocal &&
+                autoQueuedRadioForTrackId != current.id
+            ) {
+                autoQueuedRadioForTrackId = current.id
+                val existingIds = state.queue.map { it.id }.toSet()
+                val radio = repository.fetchRadioQueue(current)
+                    .filter { it.id != current.id && it.id !in existingIds }
+                    .ifEmpty {
+                        repository.fetchTracksByQuery("${current.artist} hits", limit = 10)
+                            .filter { it.id != current.id && it.id !in existingIds }
+                    }
+                if (radio.isNotEmpty() && _playerState.value.currentTrack?.id == current.id) {
+                    _playerState.update { cur ->
+                        val deduped = (cur.queue + radio).distinctBy { it.id }
+                        cur.copy(queue = deduped)
+                    }
+                    nextTrack = radio.firstOrNull()
+                }
+            }
+
+            val target = nextTrack ?: return@launch
+            if (target.id == current.id || target.isLocal) return@launch
+            repository.prefetchTrackStream(
+                track = target,
+                quality = quality,
+                prefetchVideo = _playerState.value.isVideoMode
+            )
         }
     }
 
@@ -569,9 +710,10 @@ class KoplingfyViewModel(application: Application) : AndroidViewModel(applicatio
         }
     }
 
-    fun skipNext() {
+    fun skipNext(fromAutoAdvance: Boolean = false) {
         val state = _playerState.value
         if (state.queue.isEmpty()) return
+        isAutoAdvancingTrack = fromAutoAdvance
         val nextIndex = when {
             state.isShuffleEnabled && state.queue.size > 1 -> {
                 val candidates = state.queue.indices.filter { it != state.currentIndex }
@@ -580,17 +722,34 @@ class KoplingfyViewModel(application: Application) : AndroidViewModel(applicatio
             state.currentIndex + 1 < state.queue.size -> state.currentIndex + 1
             state.repeatMode == RepeatMode.ALL -> 0
             else -> {
-                // Metrolist Autoplay Radio: append similar tracks when reaching end of queue!
+                // Metrolist Autoplay Radio with multi-tier fallback so continuous playback never dies
                 val seed = state.currentTrack
                 if (settings.value.autoplayRadio && seed != null && !seed.isLocal) {
                     viewModelScope.launch {
-                        val extra = repository.fetchRadioQueue(seed)
-                            .filter { candidate -> state.queue.none { it.id == candidate.id } }
+                        _playerState.update { it.copy(isBuffering = true) }
+                        val existingIds = state.queue.map { it.id }.toSet()
+                        var extra = repository.fetchRadioQueue(seed)
+                            .filter { it.id !in existingIds }
+                        if (extra.isEmpty()) {
+                            extra = repository.fetchTracksByQuery("${seed.artist} songs", limit = 15)
+                                .filter { it.id !in existingIds }
+                        }
+                        if (extra.isEmpty()) {
+                            extra = (_homeState.value.quickPicks + _homeState.value.chartTracks)
+                                .distinctBy { it.id }
+                                .filter { it.id !in existingIds }
+                        }
                         if (extra.isNotEmpty()) {
                             val newQueue = state.queue + extra
+                            isAutoAdvancingTrack = true
                             playTrack(extra.first(), newQueue)
+                        } else {
+                            isAutoAdvancingTrack = false
+                            _playerState.update { it.copy(isBuffering = false) }
                         }
                     }
+                } else {
+                    isAutoAdvancingTrack = false
                 }
                 return
             }
@@ -605,6 +764,7 @@ class KoplingfyViewModel(application: Application) : AndroidViewModel(applicatio
             return
         }
         if (state.queue.isEmpty()) return
+        isAutoAdvancingTrack = false
         val prevIndex = when {
             state.currentIndex - 1 >= 0 -> state.currentIndex - 1
             state.repeatMode == RepeatMode.ALL -> state.queue.lastIndex
@@ -622,12 +782,18 @@ class KoplingfyViewModel(application: Application) : AndroidViewModel(applicatio
         }
         when (state.repeatMode) {
             RepeatMode.ONE -> {
-                state.currentTrack?.let { resolveAndPlayTrack(it) }
+                state.currentTrack?.let { track ->
+                    if (state.isVideoMode && !state.selectedVideoId.isNullOrBlank()) {
+                        playSelectedVideoId(state.selectedVideoId, startPositionMs = 0L)
+                    } else {
+                        resolveAndPlayTrack(track, fromAutoAdvance = false)
+                    }
+                }
             }
             else -> {
                 val handledByRoom = onAutoAdvanceOverride?.invoke() == true
                 if (!handledByRoom) {
-                    skipNext()
+                    skipNext(fromAutoAdvance = true)
                 }
             }
         }
@@ -659,6 +825,7 @@ class KoplingfyViewModel(application: Application) : AndroidViewModel(applicatio
             mutable.add(insertAt, track)
             state.copy(queue = mutable)
         }
+        schedulePrefetchNextTrack(effectiveAudioQuality(), delayMs = 300L)
         showMessage("\"${track.title}\" akan diputar berikutnya")
     }
 
@@ -668,6 +835,7 @@ class KoplingfyViewModel(application: Application) : AndroidViewModel(applicatio
             return
         }
         _playerState.update { state -> state.copy(queue = state.queue + track) }
+        schedulePrefetchNextTrack(effectiveAudioQuality(), delayMs = 500L)
         showMessage("\"${track.title}\" ditambahkan ke antrean")
     }
 
@@ -685,6 +853,7 @@ class KoplingfyViewModel(application: Application) : AndroidViewModel(applicatio
             }
             state.copy(queue = mutable, currentIndex = newCurrent)
         }
+        schedulePrefetchNextTrack(effectiveAudioQuality(), delayMs = 400L)
     }
 
     fun removeFromQueue(index: Int) {
@@ -694,6 +863,7 @@ class KoplingfyViewModel(application: Application) : AndroidViewModel(applicatio
             val adjustedCurrent = if (index < state.currentIndex) state.currentIndex - 1 else state.currentIndex
             state.copy(queue = updated, currentIndex = adjustedCurrent)
         }
+        schedulePrefetchNextTrack(effectiveAudioQuality(), delayMs = 400L)
     }
 
     fun clearUpcomingQueue() {
@@ -777,10 +947,405 @@ class KoplingfyViewModel(application: Application) : AndroidViewModel(applicatio
 
     private fun fetchLyricsForTrack(track: Track) {
         lyricsJob?.cancel()
+        translateLyricsJob?.cancel()
+        romanizeLyricsJob?.cancel()
         lyricsJob = viewModelScope.launch {
             _playerState.update { it.copy(lyricsState = LyricsState(isLoading = true)) }
             val result = repository.fetchLyrics(track)
-            _playerState.update { it.copy(lyricsState = result) }
+            val cachedAi = LyricsTranslator.getCachedEntry(track.id)
+            val hasSynced = result.syncedLines.isNotEmpty()
+            val plainCount = result.plainLyrics?.lines()?.count { it.isNotBlank() } ?: 0
+
+            var hydrated = result
+            if (cachedAi != null) {
+                if (cachedAi.translatedLines.isNotEmpty()) {
+                    hydrated = if (hasSynced && cachedAi.translatedLines.size == result.syncedLines.size) {
+                        hydrated.copy(translatedSyncedLines = cachedAi.translatedLines)
+                    } else if (!hasSynced && cachedAi.translatedLines.size == plainCount) {
+                        hydrated.copy(translatedPlainLines = cachedAi.translatedLines)
+                    } else hydrated
+                }
+                if (cachedAi.romanizedLines.isNotEmpty() && cachedAi.needsRomanization) {
+                    hydrated = if (hasSynced && cachedAi.romanizedLines.size == result.syncedLines.size) {
+                        hydrated.copy(
+                            romanizedSyncedLines = cachedAi.romanizedLines,
+                            romanizationScriptLabel = cachedAi.scriptLabel
+                        )
+                    } else if (!hasSynced && cachedAi.romanizedLines.size == plainCount) {
+                        hydrated.copy(
+                            romanizedPlainLines = cachedAi.romanizedLines,
+                            romanizationScriptLabel = cachedAi.scriptLabel
+                        )
+                    } else hydrated
+                }
+            }
+            _playerState.update { it.copy(lyricsState = hydrated) }
+        }
+    }
+
+    // ---- Indonesian Lyrics Translation via Firebase AI Logic (Gemini 3.8 Flash + Local Disk Cache) ----
+    fun toggleLyricsTranslation() {
+        val state = _playerState.value
+        val track = state.currentTrack ?: return
+        val lyrics = state.lyricsState
+        if (lyrics.isLoading || lyrics.isInstrumental) return
+
+        // If already displaying translation, toggle off
+        if (lyrics.showTranslation) {
+            _playerState.update {
+                it.copy(lyricsState = it.lyricsState.copy(showTranslation = false, translationError = null))
+            }
+            return
+        }
+
+        // If translation is already available in state (e.g. from local disk cache), show immediately
+        val hasSynced = lyrics.syncedLines.isNotEmpty()
+        val alreadyTranslated = if (hasSynced) {
+            lyrics.translatedSyncedLines.size == lyrics.syncedLines.size && lyrics.translatedSyncedLines.isNotEmpty()
+        } else {
+            lyrics.translatedPlainLines.isNotEmpty()
+        }
+        if (alreadyTranslated) {
+            _playerState.update {
+                it.copy(lyricsState = it.lyricsState.copy(showTranslation = true, translationError = null))
+            }
+            return
+        }
+
+        val sourceLines = if (hasSynced) {
+            lyrics.syncedLines.map { it.text }
+        } else {
+            lyrics.plainLyrics?.lines()?.map { it.trim() }?.filter { it.isNotBlank() }.orEmpty()
+        }
+        if (sourceLines.isEmpty()) {
+            showMessage("Belum ada lirik untuk diterjemahkan")
+            return
+        }
+
+        translateLyricsJob?.cancel()
+        translateLyricsJob = viewModelScope.launch {
+            _playerState.update {
+                it.copy(
+                    lyricsState = it.lyricsState.copy(
+                        isTranslating = true,
+                        translationError = null
+                    )
+                )
+            }
+            val result = LyricsTranslator.translateLinesToIndonesian(
+                trackId = track.id,
+                trackTitle = track.title,
+                artist = track.artist,
+                lines = sourceLines
+            )
+            // Guard against track change while translating
+            if (_playerState.value.currentTrack?.id != track.id) return@launch
+
+            result.onSuccess { translated ->
+                _playerState.update { cur ->
+                    val updatedLyrics = if (hasSynced) {
+                        cur.lyricsState.copy(
+                            translatedSyncedLines = translated.lines,
+                            showTranslation = true,
+                            isTranslating = false,
+                            translationError = null
+                        )
+                    } else {
+                        cur.lyricsState.copy(
+                            translatedPlainLines = translated.lines,
+                            showTranslation = true,
+                            isTranslating = false,
+                            translationError = null
+                        )
+                    }
+                    cur.copy(lyricsState = updatedLyrics)
+                }
+            }.onFailure { err ->
+                val message = err.message ?: "Gagal menerjemahkan lirik ke Bahasa Indonesia."
+                _playerState.update { cur ->
+                    cur.copy(
+                        lyricsState = cur.lyricsState.copy(
+                            isTranslating = false,
+                            showTranslation = false,
+                            translationError = message
+                        )
+                    )
+                }
+                showMessage(message)
+            }
+        }
+    }
+
+    // ---- Lyrics Romanization (Romaji, Hangul, Pinyin, etc.) via Firebase AI Logic + Local Disk Cache ----
+    fun toggleLyricsRomanization() {
+        val state = _playerState.value
+        val track = state.currentTrack ?: return
+        val lyrics = state.lyricsState
+        if (lyrics.isLoading || lyrics.isInstrumental) return
+
+        if (lyrics.showRomanization) {
+            _playerState.update {
+                it.copy(lyricsState = it.lyricsState.copy(showRomanization = false, romanizationError = null))
+            }
+            return
+        }
+
+        val hasSynced = lyrics.syncedLines.isNotEmpty()
+        val alreadyRomanized = if (hasSynced) {
+            lyrics.romanizedSyncedLines.size == lyrics.syncedLines.size &&
+                lyrics.romanizedSyncedLines.any { it.isNotBlank() }
+        } else {
+            lyrics.romanizedPlainLines.any { it.isNotBlank() }
+        }
+        if (alreadyRomanized) {
+            _playerState.update {
+                it.copy(lyricsState = it.lyricsState.copy(showRomanization = true, romanizationError = null))
+            }
+            return
+        }
+
+        val sourceLines = if (hasSynced) {
+            lyrics.syncedLines.map { it.text }
+        } else {
+            lyrics.plainLyrics?.lines()?.map { it.trim() }?.filter { it.isNotBlank() }.orEmpty()
+        }
+        if (sourceLines.isEmpty()) {
+            showMessage("Belum ada lirik untuk diromanisasi")
+            return
+        }
+
+        romanizeLyricsJob?.cancel()
+        romanizeLyricsJob = viewModelScope.launch {
+            _playerState.update {
+                it.copy(
+                    lyricsState = it.lyricsState.copy(
+                        isRomanizing = true,
+                        romanizationError = null
+                    )
+                )
+            }
+            val result = LyricsTranslator.romanizeLines(
+                trackId = track.id,
+                trackTitle = track.title,
+                artist = track.artist,
+                lines = sourceLines
+            )
+            if (_playerState.value.currentTrack?.id != track.id) return@launch
+
+            result.onSuccess { romanized ->
+                if (!romanized.needsRomanization || romanized.lines.none { it.isNotBlank() }) {
+                    _playerState.update { cur ->
+                        cur.copy(
+                            lyricsState = cur.lyricsState.copy(
+                                isRomanizing = false,
+                                showRomanization = false,
+                                romanizationError = null
+                            )
+                        )
+                    }
+                    showMessage("Lirik lagu ini sudah menggunakan huruf Latin")
+                    return@launch
+                }
+                _playerState.update { cur ->
+                    val updatedLyrics = if (hasSynced) {
+                        cur.lyricsState.copy(
+                            romanizedSyncedLines = romanized.lines,
+                            romanizationScriptLabel = romanized.scriptLabel,
+                            showRomanization = true,
+                            isRomanizing = false,
+                            romanizationError = null
+                        )
+                    } else {
+                        cur.lyricsState.copy(
+                            romanizedPlainLines = romanized.lines,
+                            romanizationScriptLabel = romanized.scriptLabel,
+                            showRomanization = true,
+                            isRomanizing = false,
+                            romanizationError = null
+                        )
+                    }
+                    cur.copy(lyricsState = updatedLyrics)
+                }
+            }.onFailure { err ->
+                val message = err.message ?: "Gagal membuat romanisasi lirik."
+                _playerState.update { cur ->
+                    cur.copy(
+                        lyricsState = cur.lyricsState.copy(
+                            isRomanizing = false,
+                            showRomanization = false,
+                            romanizationError = message
+                        )
+                    )
+                }
+                showMessage(message)
+            }
+        }
+    }
+
+    // ---- Metrolist-Style Video Mode (Prioritizing Lyric Video) ----
+    fun attachVideoTextureView(textureView: TextureView?) {
+        audioEngine.attachVideoTextureView(textureView)
+    }
+
+    fun clearVideoTextureView(textureView: TextureView?) {
+        audioEngine.clearVideoTextureView(textureView)
+    }
+
+    fun setVideoMode(enabled: Boolean) {
+        val state = _playerState.value
+        val track = state.currentTrack ?: return
+        if (state.isVideoMode == enabled) return
+        if (enabled && track.isLocal) {
+            showMessage("Mode Video hanya tersedia untuk lagu streaming YouTube Music")
+            return
+        }
+
+        val currentPos = state.positionMs
+        if (enabled) {
+            _playerState.update {
+                it.copy(
+                    isVideoMode = true,
+                    isLoadingVideo = true,
+                    videoError = null
+                )
+            }
+            val existingCandidates = state.videoCandidates
+            if (existingCandidates.isNotEmpty()) {
+                val targetId = state.selectedVideoId ?: existingCandidates.first().videoId
+                playSelectedVideoId(targetId, startPositionMs = currentPos)
+            } else {
+                loadAndPlayLyricVideoForCurrentTrack(track, startPositionMs = currentPos)
+            }
+        } else {
+            videoResolveJob?.cancel()
+            _playerState.update {
+                it.copy(
+                    isVideoMode = false,
+                    isLoadingVideo = false,
+                    videoError = null
+                )
+            }
+            audioEngine.setNextTrackStartOptions(startPositionMs = currentPos, autoStart = state.isPlaying || state.isBuffering)
+            resolveAndPlayTrack(track, fromAutoAdvance = false)
+        }
+    }
+
+    fun selectVideoCandidate(candidate: VideoCandidate) {
+        val state = _playerState.value
+        if (state.selectedVideoId == candidate.videoId && state.videoError == null) return
+        _playerState.update {
+            it.copy(
+                isVideoMode = true,
+                selectedVideoId = candidate.videoId,
+                isLoadingVideo = true,
+                videoError = null
+            )
+        }
+        playSelectedVideoId(candidate.videoId, startPositionMs = 0L)
+    }
+
+    private fun loadAndPlayLyricVideoForCurrentTrack(track: Track, startPositionMs: Long) {
+        videoResolveJob?.cancel()
+        resolveStreamJob?.cancel()
+        videoResolveJob = viewModelScope.launch {
+            _playerState.update {
+                it.copy(
+                    isLoadingVideo = true,
+                    isBuffering = true,
+                    videoError = null,
+                    audioError = null
+                )
+            }
+            val candidates = repository.searchLyricVideosForTrack(track)
+            if (_playerState.value.currentTrack?.id != track.id || !_playerState.value.isVideoMode) return@launch
+
+            if (candidates.isEmpty()) {
+                _playerState.update {
+                    it.copy(
+                        isLoadingVideo = false,
+                        videoError = "Lyric video tidak ditemukan untuk lagu ini."
+                    )
+                }
+                return@launch
+            }
+
+            // Priority #1: Lyric Video first (sorted by InnerTubeClient.searchLyricVideosForTrack)
+            val chosen = candidates.first()
+            _playerState.update {
+                it.copy(
+                    videoCandidates = candidates,
+                    selectedVideoId = chosen.videoId
+                )
+            }
+            resolveAndStartVideoCandidate(chosen.videoId, candidates, startPositionMs)
+        }
+    }
+
+    private fun playSelectedVideoId(videoId: String, startPositionMs: Long) {
+        videoResolveJob?.cancel()
+        resolveStreamJob?.cancel()
+        videoResolveJob = viewModelScope.launch {
+            _playerState.update {
+                it.copy(
+                    isLoadingVideo = true,
+                    isBuffering = true,
+                    videoError = null,
+                    audioError = null
+                )
+            }
+            resolveAndStartVideoCandidate(videoId, _playerState.value.videoCandidates, startPositionMs)
+        }
+    }
+
+    private suspend fun resolveAndStartVideoCandidate(
+        primaryVideoId: String,
+        candidates: List<VideoCandidate>,
+        startPositionMs: Long
+    ) {
+        val attemptOrder = (listOf(primaryVideoId) + candidates.map { it.videoId }).distinct().take(3)
+        var lastError = "Stream video belum dapat diputar."
+        for (vid in attemptOrder) {
+            when (val res = repository.resolveVideoStream(vid)) {
+                is VideoStreamResolveResult.Success -> {
+                    val stream = res.stream
+                    val matched = candidates.firstOrNull { it.videoId == vid }
+                    val tag = if (matched?.isLyricVideo == true) {
+                        "LYRIC VIDEO • ${stream.qualityLabel}"
+                    } else {
+                        "VIDEO • ${stream.qualityLabel}"
+                    }
+                    _playerState.update {
+                        it.copy(
+                            selectedVideoId = vid,
+                            isLoadingVideo = false,
+                            videoError = null,
+                            audioError = null,
+                            videoQualityLabel = stream.qualityLabel,
+                            streamSourceLabel = tag,
+                            durationMs = stream.durationMs?.takeIf { d -> d > 0L } ?: it.durationMs
+                        )
+                    }
+                    audioEngine.setNextTrackStartOptions(startPositionMs = startPositionMs, autoStart = true)
+                    audioEngine.playVideoSource(
+                        videoUrl = stream.videoUrl,
+                        audioUrl = stream.audioUrl,
+                        userAgent = stream.userAgent,
+                        cookie = stream.cookie
+                    )
+                    return
+                }
+                is VideoStreamResolveResult.Unavailable -> {
+                    lastError = res.reason
+                }
+            }
+        }
+
+        _playerState.update {
+            it.copy(
+                isLoadingVideo = false,
+                isBuffering = false,
+                videoError = lastError
+            )
         }
     }
 
@@ -844,10 +1409,25 @@ class KoplingfyViewModel(application: Application) : AndroidViewModel(applicatio
         }
     }
 
+    fun clearLyricsAiCache() {
+        viewModelScope.launch {
+            val freed = LyricsTranslator.clearLocalCache()
+            refreshStorageStats()
+            val kb = freed / 1024.0
+            val label = if (kb >= 1024.0) "%.1f MB".format(kb / 1024.0) else "%.0f KB".format(kb)
+            showMessage("Cache terjemahan & romanisasi lirik dibersihkan ($label)")
+        }
+    }
+
     fun refreshStorageStats() {
         viewModelScope.launch {
             val (dl, cache) = downloadManager.getStorageStatsBytes()
-            _storageStats.value = StorageStats(downloadsBytes = dl, cacheBytes = cache)
+            val lyricsCache = LyricsTranslator.getCacheSizeBytes()
+            _storageStats.value = StorageStats(
+                downloadsBytes = dl,
+                cacheBytes = cache,
+                lyricsAiCacheBytes = lyricsCache
+            )
         }
     }
 
@@ -949,6 +1529,129 @@ class KoplingfyViewModel(application: Application) : AndroidViewModel(applicatio
                 showMessage("Restore selesai: $liked lagu disukai & $pls playlist dipulihkan")
             } else {
                 showMessage("Gagal memulihkan backup: format file tidak sesuai")
+            }
+        }
+    }
+
+    // ---- Cloud Library Sync (Firebase Firestore per-user snapshot) ----
+    fun refreshCloudSyncMeta() {
+        viewModelScope.launch {
+            val res = cloudLibraryRepository.downloadLibrarySnapshot()
+            res.onSuccess { meta ->
+                if (meta != null) {
+                    _cloudSyncState.update {
+                        it.copy(
+                            lastSyncedAtMillis = meta.updatedAt?.toDate()?.time ?: meta.createdAt?.toDate()?.time,
+                            cloudLikedCount = meta.likedCount,
+                            cloudPlaylistCount = meta.playlistCount,
+                            cloudDeviceLabel = meta.deviceLabel
+                        )
+                    }
+                }
+            }
+        }
+    }
+
+    fun uploadLibraryToCloud() {
+        if (_cloudSyncState.value.isSyncing) return
+        viewModelScope.launch {
+            _cloudSyncState.update { it.copy(isSyncing = true) }
+            val built = downloadManager.buildBackupJsonPayload()
+            built.onSuccess { (json, likedCount, playlistCount) ->
+                val upload = cloudLibraryRepository.uploadLibrarySnapshot(
+                    payloadJson = json,
+                    likedCount = likedCount,
+                    playlistCount = playlistCount
+                )
+                upload.onSuccess {
+                    _cloudSyncState.update {
+                        it.copy(
+                            isSyncing = false,
+                            lastSyncedAtMillis = System.currentTimeMillis(),
+                            cloudLikedCount = likedCount,
+                            cloudPlaylistCount = playlistCount
+                        )
+                    }
+                    showMessage("Koleksi diunggah ke Cloud ($likedCount disukai & $playlistCount playlist)")
+                }.onFailure { err ->
+                    _cloudSyncState.update { it.copy(isSyncing = false) }
+                    showMessage(err.message ?: "Gagal mengunggah koleksi ke Cloud")
+                }
+            }.onFailure { err ->
+                _cloudSyncState.update { it.copy(isSyncing = false) }
+                showMessage("Gagal menyiapkan data koleksi: ${err.message}")
+            }
+        }
+    }
+
+    fun restoreLibraryFromCloud() {
+        if (_cloudSyncState.value.isSyncing) return
+        viewModelScope.launch {
+            _cloudSyncState.update { it.copy(isSyncing = true) }
+            val downloaded = cloudLibraryRepository.downloadLibrarySnapshot()
+            downloaded.onSuccess { meta ->
+                if (meta == null || meta.payloadJson.isBlank()) {
+                    _cloudSyncState.update { it.copy(isSyncing = false) }
+                    showMessage("Belum ada cadangan koleksi di Cloud untuk akun ini")
+                    return@onSuccess
+                }
+                val restored = downloadManager.importBackupJsonString(meta.payloadJson)
+                restored.onSuccess { (liked, pls) ->
+                    _cloudSyncState.update {
+                        it.copy(
+                            isSyncing = false,
+                            lastSyncedAtMillis = meta.updatedAt?.toDate()?.time ?: System.currentTimeMillis(),
+                            cloudLikedCount = meta.likedCount,
+                            cloudPlaylistCount = meta.playlistCount,
+                            cloudDeviceLabel = meta.deviceLabel
+                        )
+                    }
+                    showMessage("Pulih dari Cloud: $liked lagu disukai & $pls playlist")
+                }.onFailure { err ->
+                    _cloudSyncState.update { it.copy(isSyncing = false) }
+                    showMessage("Gagal memulihkan data Cloud: ${err.message}")
+                }
+            }.onFailure { err ->
+                _cloudSyncState.update { it.copy(isSyncing = false) }
+                showMessage(err.message ?: "Gagal memuat koleksi dari Cloud")
+            }
+        }
+    }
+
+    // ---- Import YouTube / YouTube Music Playlist URL ----
+    fun importYouTubePlaylistUrl(
+        rawUrl: String,
+        customName: String? = null,
+        onFinished: (Boolean) -> Unit = {}
+    ) {
+        if (_cloudSyncState.value.isImportingPlaylist) return
+        viewModelScope.launch {
+            _cloudSyncState.update { it.copy(isImportingPlaylist = true) }
+            val result = repository.importYouTubePlaylistByUrl(rawUrl, customName)
+            _cloudSyncState.update { it.copy(isImportingPlaylist = false) }
+            result.onSuccess { (playlistName, count) ->
+                showMessage("Berhasil mengimpor \"$playlistName\" ($count lagu)")
+                onFinished(true)
+            }.onFailure { err ->
+                showMessage(err.message ?: "Gagal mengimpor playlist YouTube")
+                onFinished(false)
+            }
+        }
+    }
+
+    // ---- Artist Radio ----
+    fun startArtistRadio(artistName: String, seedTrack: Track?) {
+        viewModelScope.launch {
+            showMessage("Menyiapkan Radio Artis $artistName…")
+            val radioTracks = if (seedTrack != null) {
+                repository.fetchRadioQueue(seedTrack)
+            } else {
+                repository.fetchTracksByQuery("$artistName mix", limit = 25)
+            }
+            if (radioTracks.isNotEmpty()) {
+                playTrack(radioTracks.first(), radioTracks, expandPlayer = true)
+            } else {
+                showMessage("Gagal memuat Radio Artis untuk $artistName")
             }
         }
     }
@@ -1233,6 +1936,46 @@ class KoplingfyViewModel(application: Application) : AndroidViewModel(applicatio
     }
     fun setBassBoost(strength: Float) = viewModelScope.launch { preferences.setBassBoost(strength) }
     fun setNormalizeAudio(enabled: Boolean) = viewModelScope.launch { preferences.setNormalizeAudio(enabled) }
+    fun setSkipSilence(enabled: Boolean) = viewModelScope.launch { preferences.setSkipSilence(enabled) }
+    fun setReverbEnabled(enabled: Boolean) = viewModelScope.launch { preferences.setReverbEnabled(enabled) }
+    fun applyAudioVibePreset(vibe: String) {
+        viewModelScope.launch {
+            when (vibe) {
+                "slowed" -> {
+                    preferences.setPlaybackSpeed(0.84f)
+                    preferences.setPlaybackPitch(0.86f)
+                    preferences.setReverbEnabled(true)
+                    preferences.setBassBoost(0.45f)
+                    preferences.setCustomBands(listOf(3.5f, 2.0f, 0f, -1.0f, -1.5f))
+                    showMessage("Efek Slowed + Reverb aktif")
+                }
+                "nightcore" -> {
+                    preferences.setPlaybackSpeed(1.22f)
+                    preferences.setPlaybackPitch(1.18f)
+                    preferences.setReverbEnabled(false)
+                    preferences.setBassBoost(0.25f)
+                    preferences.setCustomBands(listOf(1.5f, 0.5f, 1.0f, 2.5f, 3.0f))
+                    showMessage("Efek Nightcore aktif")
+                }
+                "lofi" -> {
+                    preferences.setPlaybackSpeed(0.94f)
+                    preferences.setPlaybackPitch(0.96f)
+                    preferences.setReverbEnabled(true)
+                    preferences.setBassBoost(0.35f)
+                    preferences.setCustomBands(listOf(3.0f, 2.5f, -0.5f, -2.5f, -4.0f))
+                    showMessage("Efek Lo-Fi Hangat aktif")
+                }
+                else -> {
+                    preferences.setPlaybackSpeed(1.0f)
+                    preferences.setPlaybackPitch(1.0f)
+                    preferences.setReverbEnabled(false)
+                    preferences.setBassBoost(0f)
+                    preferences.setEqPreset(EqPreset.FLAT)
+                    showMessage("Audio kembali ke mode Normal")
+                }
+            }
+        }
+    }
     fun setAutoplayRadio(enabled: Boolean) = viewModelScope.launch { preferences.setAutoplayRadio(enabled) }
     fun setKeepScreenOnLyrics(enabled: Boolean) = viewModelScope.launch { preferences.setKeepScreenOnLyrics(enabled) }
     fun setLyricsFontScale(scale: Float) = viewModelScope.launch { preferences.setLyricsFontScale(scale) }

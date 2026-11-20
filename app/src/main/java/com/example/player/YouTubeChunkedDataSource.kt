@@ -76,6 +76,9 @@ class YouTubeChunkedDataSource(
         upstreamOpened = true
 
         totalContentLength = parseTotalLengthFromHeaders(upstream.responseHeaders)
+        if (totalContentLength == C.LENGTH_UNSET.toLong() && opened != C.LENGTH_UNSET.toLong() && opened < firstChunkLen) {
+            totalContentLength = currentPosition + opened
+        }
         chunkBytesRemaining = when {
             opened != C.LENGTH_UNSET.toLong() -> opened
             totalContentLength != C.LENGTH_UNSET.toLong() ->
@@ -170,6 +173,9 @@ class YouTubeChunkedDataSource(
 
         if (totalContentLength == C.LENGTH_UNSET.toLong()) {
             totalContentLength = parseTotalLengthFromHeaders(upstream.responseHeaders)
+            if (totalContentLength == C.LENGTH_UNSET.toLong() && opened != C.LENGTH_UNSET.toLong() && opened < nextLen) {
+                totalContentLength = currentPosition + opened
+            }
         }
 
         chunkBytesRemaining = when {
