@@ -8,6 +8,7 @@ import android.net.Uri
 import android.view.TextureView
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
+import com.example.BuildConfig
 import com.example.ai.LyricsTranslator
 import com.example.ai.SongMeaningAnalyzer
 import com.example.ai.SongRecognitionResult
@@ -15,10 +16,14 @@ import com.example.ai.SongRecognitionService
 import com.example.data.CloudLibraryRepository
 import com.example.data.MusicRepository
 import com.example.data.OfflineDownloadManager
+import com.example.data.TrackGuard
 import com.example.data.local.KoplingfyDatabase
 import com.example.data.local.PreferencesRepository
+import com.example.data.remote.AppUpdateUiState
+import com.example.data.remote.GitHubUpdateChecker
 import com.example.data.remote.InnerTubeClient
 import com.example.data.remote.StreamResolveResult
+import com.example.data.remote.UpdateCheckResult
 import com.example.data.remote.VideoStreamResolveResult
 import com.example.model.AccentPreset
 import com.example.model.AlbumSummary
@@ -53,6 +58,7 @@ import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.collectLatest
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
@@ -208,11 +214,20 @@ class KoplingfyViewModel(application: Application) : AndroidViewModel(applicatio
     private val _cloudSyncState = MutableStateFlow(CloudSyncUiState())
     val cloudSyncState: StateFlow<CloudSyncUiState> = _cloudSyncState.asStateFlow()
 
+    private val _updateState = MutableStateFlow(AppUpdateUiState())
+    val updateState: StateFlow<AppUpdateUiState> = _updateState.asStateFlow()
+
     private val _isSyncingAccount = MutableStateFlow(false)
     val isSyncingAccount: StateFlow<Boolean> = _isSyncingAccount.asStateFlow()
 
     private val _snackbarMessage = MutableStateFlow<String?>(null)
     val snackbarMessage: StateFlow<String?> = _snackbarMessage.asStateFlow()
+
+    private var updateCheckJob: Job? = null
+    private var shareLinkResolveJob: Job? = null
+    private var changelogHistoryJob: Job? = null
+    private var didRunAutoUpdateCheck: Boolean = false
+    private var didCheckAutoChangelog: Boolean = false
 
     private var searchJob: Job? = null
     private var suggestionJob: Job? = null
@@ -233,6 +248,16 @@ class KoplingfyViewModel(application: Application) : AndroidViewModel(applicatio
     private var consecutiveAutoSkipFailures: Int = 0
     private var isAutoAdvancingTrack: Boolean = false
     @Volatile private var isTransitioningTrack: Boolean = false
+
+    private data class PendingRoomAnchor(
+        val trackId: String,
+        val anchorPosMs: Long,
+        val anchorServerTimeMs: Long,
+        val shouldPlay: Boolean,
+        val serverNowProvider: () -> Long
+    )
+    @Volatile private var pendingRoomAnchor: PendingRoomAnchor? = null
+    var onPlaybackReadyForRoomSync: ((Track, Long, Boolean) -> Unit)? = null
 
     init {
         LyricsTranslator.init(getApplication())
@@ -312,6 +337,29 @@ class KoplingfyViewModel(application: Application) : AndroidViewModel(applicatio
     }
 
     private fun observeAudioEngine() {
+        audioEngine.onPlaybackReady = { posMs, isPlaying ->
+            val current = _playerState.value.currentTrack
+            val anchor = pendingRoomAnchor
+            if (current != null && anchor != null && anchor.trackId == current.id) {
+                pendingRoomAnchor = null
+                val elapsedSinceAnchor = if (anchor.shouldPlay) {
+                    (anchor.serverNowProvider() - anchor.anchorServerTimeMs).coerceAtLeast(0L)
+                } else 0L
+                val maxDur = current.durationMs.takeIf { it > 0L } ?: _playerState.value.durationMs
+                val rawTarget = anchor.anchorPosMs + elapsedSinceAnchor + if (anchor.shouldPlay) 80L else 0L
+                val liveTarget = if (maxDur > 0L) rawTarget.coerceIn(0L, maxDur) else rawTarget.coerceAtLeast(0L)
+                if (kotlin.math.abs(posMs - liveTarget) > 220L) {
+                    audioEngine.seekTo(liveTarget)
+                }
+                if (anchor.shouldPlay && !isPlaying) {
+                    audioEngine.resume()
+                } else if (!anchor.shouldPlay && isPlaying) {
+                    audioEngine.pause()
+                }
+            } else if (current != null && isPlaying && !current.isLocal) {
+                onPlaybackReadyForRoomSync?.invoke(current, posMs, true)
+            }
+        }
         viewModelScope.launch {
             audioEngine.state.collectLatest { engine ->
                 if (engine.isPlaying) {
@@ -372,6 +420,43 @@ class KoplingfyViewModel(application: Application) : AndroidViewModel(applicatio
                 audioEngine.updateBassBoostAndNormalization(cfg.bassBoostStrength, cfg.normalizeAudio)
                 audioEngine.updateSkipSilenceAndReverb(cfg.skipSilence, cfg.reverbEnabled)
                 audioEngine.updateCrossfadeSeconds(cfg.crossfadeSeconds)
+                _updateState.update { cur ->
+                    cur.copy(
+                        autoCheckEnabled = cfg.autoCheckUpdates,
+                        repoSlug = cfg.githubUpdateRepo
+                    )
+                }
+                if (!didRunAutoUpdateCheck) {
+                    didRunAutoUpdateCheck = true
+                    if (cfg.autoCheckUpdates) {
+                        viewModelScope.launch {
+                            delay(3_500L)
+                            if (settings.value.autoCheckUpdates) {
+                                checkForAppUpdates(manual = false)
+                            }
+                        }
+                    }
+                }
+                if (!didCheckAutoChangelog) {
+                    didCheckAutoChangelog = true
+                    viewModelScope.launch {
+                        val lastSeen = runCatching {
+                            preferences.lastSeenChangelogVersionFlow.first()
+                        }.getOrDefault(0)
+                        if (lastSeen < BuildConfig.VERSION_CODE) {
+                            delay(1_800L)
+                            if (!_updateState.value.showUpdateDialog) {
+                                _updateState.update {
+                                    it.copy(
+                                        showChangelogDialog = true,
+                                        isAutoShownChangelog = true
+                                    )
+                                }
+                                refreshReleaseHistory(force = false)
+                            }
+                        }
+                    }
+                }
             }
         }
     }
@@ -521,7 +606,9 @@ class KoplingfyViewModel(application: Application) : AndroidViewModel(applicatio
 
     // ---- Playback Controls (100% Full-Length, ZERO Preview) ----
     fun playTrack(track: Track, queue: List<Track> = listOf(track), expandPlayer: Boolean = false) {
-        val safeQueue = if (queue.any { it.id == track.id }) queue else listOf(track) + queue
+        val rawQueue = if (queue.any { it.id == track.id }) queue else listOf(track) + queue
+        val dedupedQueue = TrackGuard.deduplicateAndFilter(rawQueue, preserveTrackId = track.id)
+        val safeQueue = if (dedupedQueue.any { it.id == track.id }) dedupedQueue else listOf(track) + dedupedQueue
         val idx = safeQueue.indexOfFirst { it.id == track.id }.coerceAtLeast(0)
         streamErrorRetryJob?.cancel()
         if (streamErrorRetryTrackId != track.id) {
@@ -571,6 +658,47 @@ class KoplingfyViewModel(application: Application) : AndroidViewModel(applicatio
         fetchLyricsForTrack(track)
     }
 
+    private fun hasInternetConnection(): Boolean {
+        val cm = getApplication<Application>().getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager
+            ?: return true
+        val caps = cm.getNetworkCapabilities(cm.activeNetwork) ?: return false
+        return caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
+    }
+
+    private fun markUnplayableAndPurge(track: Track) {
+        if (track.isLocal || track.isDownloaded) return
+        if (hasInternetConnection()) {
+            TrackGuard.markUnplayable(track)
+        }
+        _homeState.update { home ->
+            home.copy(
+                chartTracks = home.chartTracks.filterNot { it.id == track.id },
+                quickPicks = home.quickPicks.filterNot { it.id == track.id }
+            )
+        }
+        _searchState.update { search ->
+            search.copy(
+                tracks = search.tracks.filterNot { it.id == track.id },
+                videos = search.videos.filterNot { it.id == track.id }
+            )
+        }
+        _detailState.update { detail ->
+            detail.copy(tracks = detail.tracks.filterNot { it.id == track.id })
+        }
+        _playerState.update { st ->
+            val removedIdx = st.queue.indexOfFirst { it.id == track.id }
+            if (removedIdx < 0) return@update st
+            val updatedQueue = st.queue.filterNot { it.id == track.id }
+            val adjustedIndex = when {
+                updatedQueue.isEmpty() -> -1
+                removedIdx < st.currentIndex -> (st.currentIndex - 1).coerceAtLeast(0)
+                removedIdx == st.currentIndex -> (st.currentIndex - 1).coerceAtLeast(-1)
+                else -> st.currentIndex.coerceAtMost(updatedQueue.lastIndex)
+            }
+            st.copy(queue = updatedQueue, currentIndex = adjustedIndex)
+        }
+    }
+
     private fun isOnWifi(): Boolean {
         val cm = getApplication<Application>().getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager
             ?: return false
@@ -597,8 +725,9 @@ class KoplingfyViewModel(application: Application) : AndroidViewModel(applicatio
             streamErrorRetryCount = 0
         }
         if (streamErrorRetryCount >= 3) {
-            // If playback died mid-song after 3 retries while auto-playing a queue, try advancing instead of dying silently
-            if (tryAutoSkipAfterFailure(current)) return true
+            // If playback died mid-song after 3 retries, purge broken track and advance cleanly
+            markUnplayableAndPurge(current)
+            if (tryAutoSkipAfterFailure(current, removedFromQueue = true)) return true
             isTransitioningTrack = false
             return false
         }
@@ -682,7 +811,13 @@ class KoplingfyViewModel(application: Application) : AndroidViewModel(applicatio
                     schedulePrefetchNextTrack(effectiveQuality)
                 }
                 is StreamResolveResult.LoginRequired -> {
-                    if (fromAutoAdvance && tryAutoSkipAfterFailure(track)) return@launch
+                    val loggedIn = youtubeAccount.value.isLoggedIn
+                    if (loggedIn) {
+                        markUnplayableAndPurge(track)
+                    }
+                    if (fromAutoAdvance || loggedIn) {
+                        if (tryAutoSkipAfterFailure(track, removedFromQueue = loggedIn)) return@launch
+                    }
                     isAutoAdvancingTrack = false
                     isTransitioningTrack = false
                     _playerState.update {
@@ -690,21 +825,29 @@ class KoplingfyViewModel(application: Application) : AndroidViewModel(applicatio
                             isPlaying = false,
                             isBuffering = false,
                             audioError = finalResult.reason,
-                            requiresYouTubeLogin = true
+                            requiresYouTubeLogin = !loggedIn
                         )
                     }
                     publishMediaBridgeState(_playerState.value)
                 }
                 is StreamResolveResult.Unavailable -> {
-                    if (fromAutoAdvance && tryAutoSkipAfterFailure(track)) return@launch
+                    val online = hasInternetConnection()
+                    if (online) {
+                        markUnplayableAndPurge(track)
+                    }
+                    if (tryAutoSkipAfterFailure(track, removedFromQueue = online)) return@launch
                     isAutoAdvancingTrack = false
                     isTransitioningTrack = false
                     _playerState.update {
                         it.copy(
                             isPlaying = false,
                             isBuffering = false,
-                            audioError = finalResult.reason,
-                            requiresYouTubeLogin = !youtubeAccount.value.isLoggedIn
+                            audioError = if (online) {
+                                "\"${track.title}\" tidak dapat diputar dan telah dihilangkan."
+                            } else {
+                                finalResult.reason
+                            },
+                            requiresYouTubeLogin = false
                         )
                     }
                     publishMediaBridgeState(_playerState.value)
@@ -714,20 +857,28 @@ class KoplingfyViewModel(application: Application) : AndroidViewModel(applicatio
     }
 
     /**
-     * Prevents queue playback from stalling permanently if a single track in a playlist/radio
-     * fails to resolve during automatic transition (capped at 5 consecutive skips).
+     * Prevents queue playback from stalling permanently if a track cannot be played,
+     * automatically advancing to the next playable song (capped at 6 consecutive skips).
      */
-    private fun tryAutoSkipAfterFailure(failedTrack: Track): Boolean {
+    private fun tryAutoSkipAfterFailure(
+        failedTrack: Track,
+        removedFromQueue: Boolean = false
+    ): Boolean {
         val state = _playerState.value
         val hasNext = state.currentIndex + 1 < state.queue.size ||
-            (state.repeatMode == RepeatMode.ALL && state.queue.size > 1) ||
+            (state.repeatMode == RepeatMode.ALL && state.queue.isNotEmpty()) ||
             (settings.value.autoplayRadio && !failedTrack.isLocal)
-        if (!hasNext || consecutiveAutoSkipFailures >= 5) {
+        if (!hasNext || consecutiveAutoSkipFailures >= 6) {
             consecutiveAutoSkipFailures = 0
             return false
         }
         consecutiveAutoSkipFailures += 1
-        showMessage("Melewati \"${failedTrack.title}\" (stream tidak tersedia)…")
+        val msg = if (removedFromQueue) {
+            "\"${failedTrack.title}\" tidak bisa diputar & telah dihilangkan, lanjut lagu berikutnya…"
+        } else {
+            "Melewati \"${failedTrack.title}\" (stream tidak tersedia)…"
+        }
+        showMessage(msg)
         return skipNext(fromAutoAdvance = true)
     }
 
@@ -753,16 +904,20 @@ class KoplingfyViewModel(application: Application) : AndroidViewModel(applicatio
                 autoQueuedRadioForTrackId != current.id
             ) {
                 autoQueuedRadioForTrackId = current.id
-                val existingIds = state.queue.map { it.id }.toSet()
-                val radio = repository.fetchRadioQueue(current)
-                    .filter { it.id != current.id && it.id !in existingIds }
+                val existingTracks = state.queue
+                val radio = TrackGuard.deduplicateAndFilter(repository.fetchRadioQueue(current))
+                    .filter { candidate -> existingTracks.none { TrackGuard.isSameSong(it, candidate) } }
                     .ifEmpty {
-                        repository.fetchTracksByQuery("${current.artist} hits", limit = 10)
-                            .filter { it.id != current.id && it.id !in existingIds }
+                        TrackGuard.deduplicateAndFilter(
+                            repository.fetchTracksByQuery("${current.artist} hits", limit = 10)
+                        ).filter { candidate -> existingTracks.none { TrackGuard.isSameSong(it, candidate) } }
                     }
                 if (radio.isNotEmpty() && _playerState.value.currentTrack?.id == current.id) {
                     _playerState.update { cur ->
-                        val deduped = (cur.queue + radio).distinctBy { it.id }
+                        val deduped = TrackGuard.deduplicateAndFilter(
+                            cur.queue + radio,
+                            preserveTrackId = current.id
+                        )
                         cur.copy(queue = deduped)
                     }
                     nextTrack = radio.firstOrNull()
@@ -786,7 +941,10 @@ class KoplingfyViewModel(application: Application) : AndroidViewModel(applicatio
             val radioTracks = repository.fetchRadioQueue(seedTrack)
             _playerState.update { it.copy(isLoadingRadio = false) }
             if (radioTracks.isNotEmpty()) {
-                val combined = (listOf(seedTrack) + radioTracks).distinctBy { it.id }
+                val combined = TrackGuard.deduplicateAndFilter(
+                    listOf(seedTrack) + radioTracks,
+                    preserveTrackId = seedTrack.id
+                )
                 playTrack(combined.first(), combined, expandPlayer = true)
                 showMessage("Radio dimulai • ${combined.size} lagu serupa siap diputar")
             } else {
@@ -797,8 +955,9 @@ class KoplingfyViewModel(application: Application) : AndroidViewModel(applicatio
     }
 
     fun playAll(tracks: List<Track>, shuffle: Boolean = false) {
-        if (tracks.isEmpty()) return
-        val ordered = if (shuffle) tracks.shuffled() else tracks
+        val clean = TrackGuard.deduplicateAndFilter(tracks)
+        if (clean.isEmpty()) return
+        val ordered = if (shuffle) clean.shuffled() else clean
         _playerState.update { it.copy(isShuffleEnabled = shuffle) }
         playTrack(ordered.first(), ordered, expandPlayer = false)
     }
@@ -821,7 +980,10 @@ class KoplingfyViewModel(application: Application) : AndroidViewModel(applicatio
 
     fun syncRoomUpcomingQueue(roomQueue: List<Track>) {
         val current = _playerState.value.currentTrack ?: return
-        val combinedQueue = listOf(current) + roomQueue.filter { it.id != current.id }
+        val combinedQueue = TrackGuard.deduplicateAndFilter(
+            listOf(current) + roomQueue,
+            preserveTrackId = current.id
+        )
         _playerState.update { state ->
             state.copy(
                 queue = combinedQueue,
@@ -830,37 +992,130 @@ class KoplingfyViewModel(application: Application) : AndroidViewModel(applicatio
         }
     }
 
+    fun prefetchRoomNextTrack(track: Track?) {
+        if (track == null || track.isLocal) return
+        if (track.id == _playerState.value.currentTrack?.id) return
+        viewModelScope.launch {
+            repository.prefetchTrackStream(
+                track = track,
+                quality = effectiveAudioQuality(),
+                prefetchVideo = false
+            )
+        }
+    }
+
     fun applyRemoteRoomSync(
         track: Track?,
         shouldPlay: Boolean,
         targetPositionMs: Long,
-        roomQueue: List<Track>
+        roomQueue: List<Track>,
+        anchorPositionMs: Long = targetPositionMs,
+        anchorServerTimeMs: Long = System.currentTimeMillis(),
+        serverNowProvider: () -> Long = { System.currentTimeMillis() }
     ) {
         if (track == null) return
         val current = _playerState.value
-        val combinedQueue = (listOf(track) + roomQueue.filter { it.id != track.id })
+        val combinedQueue = TrackGuard.deduplicateAndFilter(
+            listOf(track) + roomQueue,
+            preserveTrackId = track.id
+        )
         if (current.currentTrack?.id != track.id) {
+            audioEngine.setRoomSyncSpeedMultiplier(1.0f)
+            pendingRoomAnchor = PendingRoomAnchor(
+                trackId = track.id,
+                anchorPosMs = anchorPositionMs,
+                anchorServerTimeMs = anchorServerTimeMs,
+                shouldPlay = shouldPlay,
+                serverNowProvider = serverNowProvider
+            )
             audioEngine.setNextTrackStartOptions(
                 startPositionMs = targetPositionMs,
                 autoStart = shouldPlay
             )
             playTrack(track, combinedQueue, expandPlayer = false)
         } else {
+            pendingRoomAnchor = null
             _playerState.update { it.copy(queue = combinedQueue, currentIndex = 0) }
             if (current.audioError != null && shouldPlay) {
+                pendingRoomAnchor = PendingRoomAnchor(
+                    trackId = track.id,
+                    anchorPosMs = anchorPositionMs,
+                    anchorServerTimeMs = anchorServerTimeMs,
+                    shouldPlay = true,
+                    serverNowProvider = serverNowProvider
+                )
                 audioEngine.setNextTrackStartOptions(startPositionMs = targetPositionMs, autoStart = true)
                 resolveAndPlayTrack(track)
                 return
             }
-            if (kotlin.math.abs(current.positionMs - targetPositionMs) > 2_500L && !current.isBuffering) {
-                audioEngine.seekTo(targetPositionMs)
+            val drift = current.positionMs - targetPositionMs
+            if (kotlin.math.abs(drift) > 450L && !current.isBuffering) {
+                audioEngine.setRoomSyncSpeedMultiplier(1.0f)
+                audioEngine.seekTo((targetPositionMs + if (shouldPlay) 60L else 0L).coerceAtLeast(0L))
             }
             if (shouldPlay && !current.isPlaying && !current.isBuffering) {
                 audioEngine.resume()
             } else if (!shouldPlay && current.isPlaying) {
+                audioEngine.setRoomSyncSpeedMultiplier(1.0f)
                 audioEngine.pause()
             }
         }
+    }
+
+    /**
+     * Continuous sub-second phase lock for Listen Together guests:
+     * - Large drift (>550ms): crisp direct seek with network compensation
+     * - Moderate drift (160ms..550ms): smooth ±4.5% playback tempo catch-up (inaudible, zero stutter)
+     * - Tight lock (<=120ms): exact 1.0x normal tempo
+     */
+    fun correctRoomPlaybackDrift(
+        roomTrackId: String,
+        roomPlaying: Boolean,
+        expectedPosMs: Long
+    ) {
+        val state = _playerState.value
+        val curTrack = state.currentTrack ?: return
+        if (curTrack.id != roomTrackId) return
+        if (state.isBuffering || isTransitioningTrack || state.audioError != null) return
+
+        if (!roomPlaying) {
+            audioEngine.setRoomSyncSpeedMultiplier(1.0f)
+            if (state.isPlaying) {
+                audioEngine.pause()
+            }
+            if (kotlin.math.abs(state.positionMs - expectedPosMs) > 600L) {
+                audioEngine.seekTo(expectedPosMs.coerceAtLeast(0L))
+            }
+            return
+        }
+
+        if (!state.isPlaying) {
+            audioEngine.seekTo((expectedPosMs + 60L).coerceAtLeast(0L))
+            audioEngine.resume()
+            return
+        }
+
+        val drift = state.positionMs - expectedPosMs
+        when {
+            kotlin.math.abs(drift) > 550L -> {
+                audioEngine.setRoomSyncSpeedMultiplier(1.0f)
+                audioEngine.seekTo((expectedPosMs + 70L).coerceAtLeast(0L))
+            }
+            drift < -160L -> {
+                audioEngine.setRoomSyncSpeedMultiplier(1.045f)
+            }
+            drift > 160L -> {
+                audioEngine.setRoomSyncSpeedMultiplier(0.955f)
+            }
+            kotlin.math.abs(drift) <= 120L -> {
+                audioEngine.setRoomSyncSpeedMultiplier(1.0f)
+            }
+        }
+    }
+
+    fun resetRoomSyncSpeedMultiplier() {
+        pendingRoomAnchor = null
+        audioEngine.setRoomSyncSpeedMultiplier(1.0f)
     }
 
     fun skipNext(fromAutoAdvance: Boolean = false): Boolean {
@@ -886,20 +1141,21 @@ class KoplingfyViewModel(application: Application) : AndroidViewModel(applicatio
                     _playerState.update { it.copy(isBuffering = true) }
                     publishMediaBridgeState(_playerState.value)
                     viewModelScope.launch {
-                        val existingIds = state.queue.map { it.id }.toSet()
-                        var extra = repository.fetchRadioQueue(seed)
-                            .filter { it.id !in existingIds }
+                        val existingTracks = state.queue
+                        var extra = TrackGuard.deduplicateAndFilter(repository.fetchRadioQueue(seed))
+                            .filter { c -> existingTracks.none { TrackGuard.isSameSong(it, c) } }
                         if (extra.isEmpty()) {
-                            extra = repository.fetchTracksByQuery("${seed.artist} songs", limit = 15)
-                                .filter { it.id !in existingIds }
+                            extra = TrackGuard.deduplicateAndFilter(
+                                repository.fetchTracksByQuery("${seed.artist} songs", limit = 15)
+                            ).filter { c -> existingTracks.none { TrackGuard.isSameSong(it, c) } }
                         }
                         if (extra.isEmpty()) {
-                            extra = (_homeState.value.quickPicks + _homeState.value.chartTracks)
-                                .distinctBy { it.id }
-                                .filter { it.id !in existingIds }
+                            extra = TrackGuard.deduplicateAndFilter(
+                                _homeState.value.quickPicks + _homeState.value.chartTracks
+                            ).filter { c -> existingTracks.none { TrackGuard.isSameSong(it, c) } }
                         }
                         if (extra.isNotEmpty()) {
-                            val newQueue = state.queue + extra
+                            val newQueue = TrackGuard.deduplicateAndFilter(state.queue + extra)
                             isAutoAdvancingTrack = true
                             playTrack(extra.first(), newQueue)
                         } else {
@@ -986,26 +1242,48 @@ class KoplingfyViewModel(application: Application) : AndroidViewModel(applicatio
     }
 
     fun addToQueueNext(track: Track) {
-        if (_playerState.value.currentTrack == null) {
+        val state = _playerState.value
+        val current = state.currentTrack
+        if (current == null) {
             playTrack(track, listOf(track))
             return
         }
-        _playerState.update { state ->
-            val mutable = state.queue.toMutableList()
-            val insertAt = (state.currentIndex + 1).coerceAtMost(mutable.size)
+        if (TrackGuard.isSameSong(current, track)) {
+            showMessage("\"${track.title}\" sedang diputar saat ini")
+            return
+        }
+        var movedExisting = false
+        _playerState.update { cur ->
+            val mutable = cur.queue.toMutableList()
+            val existingIdx = mutable.indexOfFirst { TrackGuard.isSameSong(it, track) }
+            var currentIdx = cur.currentIndex
+            if (existingIdx >= 0 && existingIdx != currentIdx) {
+                movedExisting = true
+                mutable.removeAt(existingIdx)
+                if (existingIdx < currentIdx) currentIdx -= 1
+            }
+            val insertAt = (currentIdx + 1).coerceIn(0, mutable.size)
             mutable.add(insertAt, track)
-            state.copy(queue = mutable)
+            cur.copy(queue = mutable, currentIndex = currentIdx)
         }
         schedulePrefetchNextTrack(effectiveAudioQuality(), delayMs = 300L)
-        showMessage("\"${track.title}\" akan diputar berikutnya")
+        showMessage(
+            if (movedExisting) "\"${track.title}\" dipindahkan ke urutan berikutnya"
+            else "\"${track.title}\" akan diputar berikutnya"
+        )
     }
 
     fun addToQueueEnd(track: Track) {
-        if (_playerState.value.currentTrack == null) {
+        val state = _playerState.value
+        if (state.currentTrack == null) {
             playTrack(track, listOf(track))
             return
         }
-        _playerState.update { state -> state.copy(queue = state.queue + track) }
+        if (state.queue.any { TrackGuard.isSameSong(it, track) }) {
+            showMessage("\"${track.title}\" sudah ada di antrean (anti duplikat)")
+            return
+        }
+        _playerState.update { cur -> cur.copy(queue = cur.queue + track) }
         schedulePrefetchNextTrack(effectiveAudioQuality(), delayMs = 500L)
         showMessage("\"${track.title}\" ditambahkan ke antrean")
     }
@@ -1055,13 +1333,14 @@ class KoplingfyViewModel(application: Application) : AndroidViewModel(applicatio
     }
 
     fun saveTracksAsPlaylist(name: String, description: String, tracks: List<Track>) {
-        if (name.isBlank() || tracks.isEmpty()) {
+        val clean = TrackGuard.deduplicateAndFilter(tracks)
+        if (name.isBlank() || clean.isEmpty()) {
             showMessage("Tidak ada lagu untuk disimpan ke playlist")
             return
         }
         viewModelScope.launch {
-            repository.createPlaylistWithTracks(name, description, tracks.distinctBy { it.id })
-            showMessage("\"$name\" (${tracks.distinctBy { it.id }.size} lagu) disimpan ke Koleksi!")
+            repository.createPlaylistWithTracks(name, description, clean)
+            showMessage("\"$name\" (${clean.size} lagu) disimpan ke Koleksi!")
         }
     }
 
@@ -1138,8 +1417,9 @@ class KoplingfyViewModel(application: Application) : AndroidViewModel(applicatio
 
             var hydrated = result
             var hasCachedTranslation = false
+            var hasCachedRomanization = false
             if (cachedAi != null) {
-                if (cachedAi.translatedLines.isNotEmpty()) {
+                if (cachedAi.translatedLines.any { it.isNotBlank() }) {
                     if (hasSynced && cachedAi.translatedLines.size == result.syncedLines.size) {
                         hydrated = hydrated.copy(translatedSyncedLines = cachedAi.translatedLines)
                         hasCachedTranslation = true
@@ -1148,18 +1428,20 @@ class KoplingfyViewModel(application: Application) : AndroidViewModel(applicatio
                         hasCachedTranslation = true
                     }
                 }
-                if (cachedAi.romanizedLines.isNotEmpty() && cachedAi.needsRomanization) {
-                    hydrated = if (hasSynced && cachedAi.romanizedLines.size == result.syncedLines.size) {
-                        hydrated.copy(
+                if (cachedAi.romanizedLines.any { it.isNotBlank() } && cachedAi.needsRomanization) {
+                    if (hasSynced && cachedAi.romanizedLines.size == result.syncedLines.size) {
+                        hydrated = hydrated.copy(
                             romanizedSyncedLines = cachedAi.romanizedLines,
                             romanizationScriptLabel = cachedAi.scriptLabel
                         )
+                        hasCachedRomanization = true
                     } else if (!hasSynced && cachedAi.romanizedLines.size == plainCount) {
-                        hydrated.copy(
+                        hydrated = hydrated.copy(
                             romanizedPlainLines = cachedAi.romanizedLines,
                             romanizationScriptLabel = cachedAi.scriptLabel
                         )
-                    } else hydrated
+                        hasCachedRomanization = true
+                    }
                 }
             }
             if (cachedMeaning != null) {
@@ -1168,6 +1450,9 @@ class KoplingfyViewModel(application: Application) : AndroidViewModel(applicatio
 
             val alreadyIndonesian = (cachedAi?.detectedIndonesian == true) ||
                 LyricsTranslator.isLikelyAlreadyIndonesian(sourceLines)
+            val hasNonLatinScript = !result.isInstrumental &&
+                sourceLines.isNotEmpty() &&
+                LyricsTranslator.containsNonLatinScript(sourceLines)
             val shouldAutoTranslate = settings.value.autoTranslateLyrics &&
                 !result.isInstrumental &&
                 sourceLines.isNotEmpty() &&
@@ -1176,12 +1461,23 @@ class KoplingfyViewModel(application: Application) : AndroidViewModel(applicatio
             if (shouldAutoTranslate && hasCachedTranslation) {
                 hydrated = hydrated.copy(showTranslation = true)
             }
+            if (hasNonLatinScript && hasCachedRomanization) {
+                hydrated = hydrated.copy(showRomanization = true)
+            }
 
             _playerState.update { it.copy(lyricsState = hydrated) }
             publishMediaBridgeState(_playerState.value)
 
             if (shouldAutoTranslate && !hasCachedTranslation) {
                 runLyricsTranslation(
+                    track = track,
+                    hasSynced = hasSynced,
+                    sourceLines = sourceLines,
+                    isAuto = true
+                )
+            }
+            if (hasNonLatinScript && !hasCachedRomanization) {
+                runLyricsRomanization(
                     track = track,
                     hasSynced = hasSynced,
                     sourceLines = sourceLines,
@@ -1354,6 +1650,13 @@ class KoplingfyViewModel(application: Application) : AndroidViewModel(applicatio
             return
         }
 
+        if (lyrics.isRomanizing) {
+            _playerState.update {
+                it.copy(lyricsState = it.lyricsState.copy(showRomanization = true, romanizationError = null))
+            }
+            return
+        }
+
         val sourceLines = if (hasSynced) {
             lyrics.syncedLines.map { it.text }
         } else {
@@ -1364,6 +1667,20 @@ class KoplingfyViewModel(application: Application) : AndroidViewModel(applicatio
             return
         }
 
+        runLyricsRomanization(
+            track = track,
+            hasSynced = hasSynced,
+            sourceLines = sourceLines,
+            isAuto = false
+        )
+    }
+
+    private fun runLyricsRomanization(
+        track: Track,
+        hasSynced: Boolean,
+        sourceLines: List<String>,
+        isAuto: Boolean
+    ) {
         romanizeLyricsJob?.cancel()
         romanizeLyricsJob = viewModelScope.launch {
             _playerState.update {
@@ -1378,7 +1695,27 @@ class KoplingfyViewModel(application: Application) : AndroidViewModel(applicatio
                 trackId = track.id,
                 trackTitle = track.title,
                 artist = track.artist,
-                lines = sourceLines
+                lines = sourceLines,
+                onPartialResult = { partialLines, scriptLabel ->
+                    if (_playerState.value.currentTrack?.id == track.id) {
+                        _playerState.update { cur ->
+                            val updatedLyrics = if (hasSynced) {
+                                cur.lyricsState.copy(
+                                    romanizedSyncedLines = partialLines,
+                                    romanizationScriptLabel = scriptLabel,
+                                    showRomanization = true
+                                )
+                            } else {
+                                cur.lyricsState.copy(
+                                    romanizedPlainLines = partialLines,
+                                    romanizationScriptLabel = scriptLabel,
+                                    showRomanization = true
+                                )
+                            }
+                            cur.copy(lyricsState = updatedLyrics)
+                        }
+                    }
+                }
             )
             if (_playerState.value.currentTrack?.id != track.id) return@launch
 
@@ -1393,7 +1730,9 @@ class KoplingfyViewModel(application: Application) : AndroidViewModel(applicatio
                             )
                         )
                     }
-                    showMessage("Lirik lagu ini sudah menggunakan huruf Latin")
+                    if (!isAuto) {
+                        showMessage("Lirik lagu ini sudah menggunakan huruf Latin")
+                    }
                     return@launch
                 }
                 _playerState.update { cur ->
@@ -1423,11 +1762,13 @@ class KoplingfyViewModel(application: Application) : AndroidViewModel(applicatio
                         lyricsState = cur.lyricsState.copy(
                             isRomanizing = false,
                             showRomanization = false,
-                            romanizationError = message
+                            romanizationError = if (isAuto) null else message
                         )
                     )
                 }
-                showMessage(message)
+                if (!isAuto) {
+                    showMessage(message)
+                }
             }
         }
     }
@@ -2055,8 +2396,12 @@ class KoplingfyViewModel(application: Application) : AndroidViewModel(applicatio
 
     fun addTrackToPlaylist(playlistId: Long, playlistName: String, track: Track) {
         viewModelScope.launch {
-            repository.addTrackToPlaylist(playlistId, track)
-            showMessage("Ditambahkan ke \"$playlistName\"")
+            val added = repository.addTrackToPlaylist(playlistId, track)
+            if (added) {
+                showMessage("Ditambahkan ke \"$playlistName\"")
+            } else {
+                showMessage("\"${track.title}\" sudah ada di \"$playlistName\" (anti duplikat)")
+            }
         }
     }
 
@@ -2352,6 +2697,228 @@ class KoplingfyViewModel(application: Application) : AndroidViewModel(applicatio
     fun setNotificationBarLyrics(enabled: Boolean) = viewModelScope.launch {
         preferences.setNotificationBarLyrics(enabled)
         publishMediaBridgeState(_playerState.value, notificationLyricsOverride = enabled)
+    }
+
+    // ---- GitHub App Update Checker (Automatic & Manual) ----
+    fun setAutoCheckUpdates(enabled: Boolean) = viewModelScope.launch {
+        preferences.setAutoCheckUpdates(enabled)
+        _updateState.update { it.copy(autoCheckEnabled = enabled) }
+        showMessage(
+            if (enabled) "Cek update otomatis GitHub diaktifkan"
+            else "Cek update otomatis dimatikan"
+        )
+    }
+
+    fun setGithubUpdateRepo(rawInput: String): Boolean {
+        val validSlug = GitHubUpdateChecker.normalizeAndValidateRepo(rawInput) ?: return false
+        viewModelScope.launch {
+            preferences.setGithubUpdateRepo(validSlug)
+            _updateState.update {
+                it.copy(
+                    repoSlug = validSlug,
+                    latestRelease = null,
+                    hasUpdateAvailable = false,
+                    releaseHistory = emptyList(),
+                    historyError = null,
+                    statusMessage = "Repositori diperbarui ke $validSlug",
+                    errorMessage = null
+                )
+            }
+            checkForAppUpdates(manual = true)
+        }
+        return true
+    }
+
+    fun dismissUpdateDialog() {
+        _updateState.update { it.copy(showUpdateDialog = false) }
+    }
+
+    fun checkForAppUpdates(manual: Boolean = true) {
+        if (_updateState.value.isChecking) return
+        val repoSlug = settings.value.githubUpdateRepo
+        updateCheckJob?.cancel()
+        updateCheckJob = viewModelScope.launch {
+            _updateState.update {
+                it.copy(
+                    isChecking = true,
+                    repoSlug = repoSlug,
+                    errorMessage = null,
+                    statusMessage = if (manual) "Memeriksa rilis terbaru di github.com/$repoSlug…" else it.statusMessage
+                )
+            }
+            when (val res = GitHubUpdateChecker.fetchLatestRelease(repoSlug)) {
+                is UpdateCheckResult.Success -> {
+                    val release = res.release
+                    val now = System.currentTimeMillis()
+                    if (release.isNewerThanCurrent) {
+                        _updateState.update {
+                            it.copy(
+                                isChecking = false,
+                                latestRelease = release,
+                                hasUpdateAvailable = true,
+                                lastCheckedAtMillis = now,
+                                statusMessage = "Versi baru v${release.versionName} tersedia di GitHub!",
+                                errorMessage = null,
+                                showUpdateDialog = true
+                            )
+                        }
+                        if (manual) {
+                            showMessage("Update baru v${release.versionName} ditemukan!")
+                        }
+                    } else {
+                        _updateState.update {
+                            it.copy(
+                                isChecking = false,
+                                latestRelease = release,
+                                hasUpdateAvailable = false,
+                                lastCheckedAtMillis = now,
+                                statusMessage = "Koplingfy sudah versi terbaru (v${it.currentVersionName})",
+                                errorMessage = null,
+                                showUpdateDialog = false
+                            )
+                        }
+                        if (manual) {
+                            showMessage("Koplingfy sudah versi terbaru (v${_updateState.value.currentVersionName})")
+                        }
+                    }
+                }
+                is UpdateCheckResult.NoReleasesYet -> {
+                    val now = System.currentTimeMillis()
+                    val msg = "Belum ada rilis di github.com/${res.repoSlug}. Pastikan rilis APK sudah dipublikasikan."
+                    _updateState.update {
+                        it.copy(
+                            isChecking = false,
+                            hasUpdateAvailable = false,
+                            lastCheckedAtMillis = now,
+                            statusMessage = msg,
+                            errorMessage = null,
+                            showUpdateDialog = false
+                        )
+                    }
+                    if (manual) showMessage(msg)
+                }
+                is UpdateCheckResult.Error -> {
+                    _updateState.update {
+                        it.copy(
+                            isChecking = false,
+                            errorMessage = if (manual) res.message else it.errorMessage,
+                            showUpdateDialog = false
+                        )
+                    }
+                    if (manual) showMessage(res.message)
+                }
+            }
+        }
+    }
+
+    // ---- Share Direct APK Link + QR Code ----
+    fun openShareApkDialog() {
+        _updateState.update { it.copy(showShareApkDialog = true) }
+        if (_updateState.value.latestRelease == null) {
+            refreshShareApkLink(showToastOnResult = false)
+        }
+    }
+
+    fun refreshShareApkLink(showToastOnResult: Boolean = true) {
+        val repoSlug = settings.value.githubUpdateRepo
+        shareLinkResolveJob?.cancel()
+        shareLinkResolveJob = viewModelScope.launch {
+            _updateState.update { it.copy(isResolvingShareLink = true, repoSlug = repoSlug) }
+            when (val res = GitHubUpdateChecker.fetchLatestRelease(repoSlug)) {
+                is UpdateCheckResult.Success -> {
+                    val release = res.release
+                    _updateState.update {
+                        it.copy(
+                            isResolvingShareLink = false,
+                            latestRelease = release,
+                            hasUpdateAvailable = release.isNewerThanCurrent,
+                            lastCheckedAtMillis = System.currentTimeMillis()
+                        )
+                    }
+                    if (showToastOnResult) {
+                        if (release.apkDownloadUrl != null) {
+                            showMessage("Link unduhan langsung ${release.apkFileName ?: "APK"} diperbarui!")
+                        } else {
+                            showMessage("Rilis ${release.tagName} ditemukan, belum ada aset .apk terlampir")
+                        }
+                    }
+                }
+                is UpdateCheckResult.NoReleasesYet -> {
+                    _updateState.update { it.copy(isResolvingShareLink = false) }
+                    if (showToastOnResult) {
+                        showMessage("Belum ada rilis di github.com/${res.repoSlug}; QR mengarah ke halaman releases terbaru.")
+                    }
+                }
+                is UpdateCheckResult.Error -> {
+                    _updateState.update { it.copy(isResolvingShareLink = false) }
+                    if (showToastOnResult) showMessage(res.message)
+                }
+            }
+        }
+    }
+
+    fun dismissShareApkDialog() {
+        _updateState.update { it.copy(showShareApkDialog = false) }
+    }
+
+    // ---- Interactive Changelog ("Apa yang Baru") ----
+    fun openChangelogDialog() {
+        _updateState.update {
+            it.copy(
+                showChangelogDialog = true,
+                isAutoShownChangelog = false
+            )
+        }
+        refreshReleaseHistory(force = false)
+    }
+
+    fun dismissChangelogDialog() {
+        _updateState.update {
+            it.copy(
+                showChangelogDialog = false,
+                isAutoShownChangelog = false
+            )
+        }
+        viewModelScope.launch {
+            preferences.setLastSeenChangelogVersion(BuildConfig.VERSION_CODE)
+        }
+    }
+
+    fun refreshReleaseHistory(force: Boolean = true) {
+        val state = _updateState.value
+        if (state.isLoadingHistory) return
+        if (!force && state.releaseHistory.isNotEmpty()) return
+        val repoSlug = settings.value.githubUpdateRepo
+        changelogHistoryJob?.cancel()
+        changelogHistoryJob = viewModelScope.launch {
+            _updateState.update {
+                it.copy(
+                    isLoadingHistory = true,
+                    historyError = null,
+                    repoSlug = repoSlug
+                )
+            }
+            val result = GitHubUpdateChecker.fetchReleaseHistory(repoSlug = repoSlug, limit = 8)
+            result.onSuccess { list ->
+                _updateState.update { cur ->
+                    val latest = cur.latestRelease ?: list.firstOrNull()
+                    cur.copy(
+                        isLoadingHistory = false,
+                        releaseHistory = list,
+                        historyError = null,
+                        latestRelease = latest,
+                        hasUpdateAvailable = latest?.isNewerThanCurrent ?: cur.hasUpdateAvailable
+                    )
+                }
+            }.onFailure { err ->
+                _updateState.update {
+                    it.copy(
+                        isLoadingHistory = false,
+                        historyError = err.message ?: "Gagal memuat riwayat rilis GitHub."
+                    )
+                }
+            }
+        }
     }
 
     fun showMessage(msg: String) {

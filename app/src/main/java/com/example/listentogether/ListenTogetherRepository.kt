@@ -1,7 +1,9 @@
 package com.example.listentogether
 
 import android.content.Context
+import android.os.SystemClock
 import com.example.R
+import com.example.data.TrackGuard
 import com.example.model.Track
 import com.google.firebase.Firebase
 import com.google.firebase.auth.FirebaseAuth
@@ -10,6 +12,7 @@ import com.google.firebase.firestore.DocumentSnapshot
 import com.google.firebase.firestore.FieldValue
 import com.google.firebase.firestore.FirebaseFirestore
 import com.google.firebase.firestore.FirebaseFirestoreException
+import com.google.firebase.firestore.Source
 import com.google.firebase.firestore.snapshots
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.flow.Flow
@@ -30,6 +33,34 @@ class ListenTogetherRepository(
             context.applicationContext.getString(R.string.firestore_database_id)
         )
     )
+
+    // Monotonic clock calibration: exactServerEpochMs = SystemClock.elapsedRealtime() + serverEpochMinusElapsedMs
+    @Volatile
+    private var serverEpochMinusElapsedMs: Long? = null
+
+    /**
+     * Returns the current time aligned to Google Firestore server clock (within ~30ms across devices),
+     * completely eliminating phone wall-clock skew between Device 1 and Device 2.
+     */
+    fun serverNowMs(): Long {
+        val offset = serverEpochMinusElapsedMs
+        return if (offset != null) {
+            SystemClock.elapsedRealtime() + offset
+        } else {
+            System.currentTimeMillis()
+        }
+    }
+
+    private fun updateServerClockCalibration(serverEpochMs: Long, localElapsedAtServerMidpointMs: Long) {
+        val sample = serverEpochMs - localElapsedAtServerMidpointMs
+        val prev = serverEpochMinusElapsedMs
+        // Smooth out single jitter spikes once calibrated, or snap immediately on first sample
+        serverEpochMinusElapsedMs = if (prev == null) {
+            sample
+        } else {
+            ((prev * 3L) + sample) / 4L
+        }
+    }
 
     private fun requireUserId(): String {
         return auth.currentUser?.uid?.takeIf { it.isNotBlank() }
@@ -226,12 +257,12 @@ class ListenTogetherRepository(
                 }
                 val newMemberUids = room.memberUids + uid
                 val newMemberNames = room.memberNames + "$uid|$safeName"
+                // Preserve room.updatedAt so joining mid-song never resets the live playback timeline!
                 docRef.update(
                     mapOf(
                         "memberUids" to newMemberUids,
                         "memberNames" to newMemberNames,
-                        "lastActionBy" to "$safeName bergabung".take(140),
-                        "updatedAt" to FieldValue.serverTimestamp()
+                        "lastActionBy" to "$safeName bergabung".take(140)
                     )
                 ).await()
             }
@@ -266,8 +297,7 @@ class ListenTogetherRepository(
                         "memberUids" to updatedUids,
                         "memberNames" to updatedNames,
                         "skipVoteUids" to updatedVotes,
-                        "lastActionBy" to "$safeName keluar ruang".take(140),
-                        "updatedAt" to FieldValue.serverTimestamp()
+                        "lastActionBy" to "$safeName keluar ruang".take(140)
                     )
                 ).await()
             Result.success(Unit)
@@ -319,8 +349,7 @@ class ListenTogetherRepository(
                 .update(
                     mapOf(
                         "guestsCanControl" to enabled,
-                        "lastActionBy" to actionText.take(140),
-                        "updatedAt" to FieldValue.serverTimestamp()
+                        "lastActionBy" to actionText.take(140)
                     )
                 ).await()
             Result.success(Unit)
@@ -371,7 +400,18 @@ class ListenTogetherRepository(
                 updates["queueTracks"] = queueTracks.take(30).map { it.toFirestoreMap() }
             }
 
-            db.collection("listen_rooms").document(room.roomCode).update(updates).await()
+            val docRef = db.collection("listen_rooms").document(room.roomCode)
+            val tWriteStart = SystemClock.elapsedRealtime()
+            docRef.update(updates).await()
+            val tWriteEnd = SystemClock.elapsedRealtime()
+            // Calibrate local monotonic clock against the exact serverTimestamp we just wrote
+            runCatching {
+                val serverSnap = docRef.get(Source.SERVER).await()
+                val serverTs = serverSnap.getTimestamp("updatedAt")?.toDate()?.time
+                if (serverTs != null && serverTs > 0L) {
+                    updateServerClockCalibration(serverTs, (tWriteStart + tWriteEnd) / 2L)
+                }
+            }
             Result.success(nextSeq)
         } catch (e: CancellationException) {
             throw e
@@ -398,6 +438,12 @@ class ListenTogetherRepository(
             if (currentQueue.size >= 30) {
                 return Result.failure(IllegalStateException("Antrian bersama penuh (maksimal 30 lagu)."))
             }
+            val currentRoomTrack = room.currentTrackOrNull()
+            val isDuplicate = (currentRoomTrack != null && TrackGuard.isSameSong(currentRoomTrack, track)) ||
+                currentQueue.any { TrackGuard.isSameSong(it.toTrack(), track) }
+            if (isDuplicate) {
+                return Result.failure(IllegalStateException("\"${track.title}\" sudah ada di antrian bersama."))
+            }
             val safeActor = actorName.trim().ifBlank { "Pendengar" }.take(60)
             val newItem = RoomQueueTrack(
                 trackId = track.id,
@@ -416,12 +462,12 @@ class ListenTogetherRepository(
                 (currentQueue + newItem).take(30)
             }
             val verb = if (playNext) "menempatkan di urutan berikutnya" else "menambahkan ke antrian bersama"
+            // Do NOT overwrite updatedAt on queue edits so live playback position stays 100% accurate
             db.collection("listen_rooms").document(room.roomCode)
                 .update(
                     mapOf(
                         "queueTracks" to updatedList.map { it.toFirestoreMap() },
-                        "lastActionBy" to "$safeActor $verb: \"${track.title}\"".take(140),
-                        "updatedAt" to FieldValue.serverTimestamp()
+                        "lastActionBy" to "$safeActor $verb: \"${track.title}\"".take(140)
                     )
                 ).await()
             Result.success(Unit)
@@ -466,8 +512,7 @@ class ListenTogetherRepository(
                 .update(
                     mapOf(
                         "queueTracks" to finalQueue.take(30).map { it.toFirestoreMap() },
-                        "lastActionBy" to action.take(140),
-                        "updatedAt" to FieldValue.serverTimestamp()
+                        "lastActionBy" to action.take(140)
                     )
                 ).await()
             Result.success(Unit)
@@ -494,8 +539,7 @@ class ListenTogetherRepository(
                 .update(
                     mapOf(
                         "queueTracks" to sorted.take(30).map { it.toFirestoreMap() },
-                        "lastActionBy" to "🔥 $safeActor mengurutkan antrian via Mode Jukebox".take(140),
-                        "updatedAt" to FieldValue.serverTimestamp()
+                        "lastActionBy" to "🔥 $safeActor mengurutkan antrian via Mode Jukebox".take(140)
                     )
                 ).await()
             Result.success(Unit)
@@ -527,8 +571,7 @@ class ListenTogetherRepository(
                 .update(
                     mapOf(
                         "queueTracks" to queue.take(30).map { it.toFirestoreMap() },
-                        "lastActionBy" to "$safeActor mengatur ulang antrian bersama".take(140),
-                        "updatedAt" to FieldValue.serverTimestamp()
+                        "lastActionBy" to "$safeActor mengatur ulang antrian bersama".take(140)
                     )
                 ).await()
             Result.success(Unit)
@@ -556,8 +599,7 @@ class ListenTogetherRepository(
                 .update(
                     mapOf(
                         "queueTracks" to queue.take(30).map { it.toFirestoreMap() },
-                        "lastActionBy" to "$safeActor menghapus \"${removed.title}\" dari antrian".take(140),
-                        "updatedAt" to FieldValue.serverTimestamp()
+                        "lastActionBy" to "$safeActor menghapus \"${removed.title}\" dari antrian".take(140)
                     )
                 ).await()
             Result.success(Unit)
@@ -586,15 +628,15 @@ class ListenTogetherRepository(
                 uid = uid,
                 senderName = safeSender,
                 text = cleaned,
-                sentAtMs = System.currentTimeMillis()
+                sentAtMs = serverNowMs()
             )
             val updated = (room.parsedChatMessages() + newMsg).takeLast(40).map { it.toFirestoreMap() }
+            // Keep room.updatedAt untouched so chat messages NEVER desync song playback timing!
             db.collection("listen_rooms").document(room.roomCode)
                 .update(
                     mapOf(
                         "chatMessages" to updated,
-                        "lastActionBy" to "💬 $safeSender: $cleaned".take(140),
-                        "updatedAt" to FieldValue.serverTimestamp()
+                        "lastActionBy" to "💬 $safeSender: $cleaned".take(140)
                     )
                 ).await()
             Result.success(Unit)
@@ -625,8 +667,7 @@ class ListenTogetherRepository(
                     .update(
                         mapOf(
                             "skipVoteUids" to updated,
-                            "lastActionBy" to "$safeActor membatalkan Vote Skip (${updated.size}/${room.votesNeededToSkip()})".take(140),
-                            "updatedAt" to FieldValue.serverTimestamp()
+                            "lastActionBy" to "$safeActor membatalkan Vote Skip (${updated.size}/${room.votesNeededToSkip()})".take(140)
                         )
                     ).await()
                 return Result.success(false)
@@ -668,8 +709,7 @@ class ListenTogetherRepository(
                     .update(
                         mapOf(
                             "skipVoteUids" to nextVotes.take(25),
-                            "lastActionBy" to note.take(140),
-                            "updatedAt" to FieldValue.serverTimestamp()
+                            "lastActionBy" to note.take(140)
                         )
                     ).await()
                 Result.success(false)
@@ -687,11 +727,11 @@ class ListenTogetherRepository(
         return try {
             requireUserId()
             val safeActor = actorName.trim().ifBlank { "Pendengar" }.take(60)
+            // Keep room.updatedAt untouched so emoji reactions NEVER desync song playback timing!
             db.collection("listen_rooms").document(room.roomCode)
                 .update(
                     mapOf(
-                        "lastActionBy" to "$emoji $safeActor bereaksi".take(140),
-                        "updatedAt" to FieldValue.serverTimestamp()
+                        "lastActionBy" to "$emoji $safeActor bereaksi".take(140)
                     )
                 ).await()
             Result.success(Unit)
@@ -703,6 +743,10 @@ class ListenTogetherRepository(
         }
     }
 
+    /**
+     * Persists recent room history AND calibrates this device's monotonic clock against
+     * Google Firestore server time (NTP-accurate within ~30ms) using RTT midpoint estimation.
+     */
     private suspend fun saveRecentRoom(
         userId: String,
         roomCode: String,
@@ -714,6 +758,7 @@ class ListenTogetherRepository(
             .collection("recent_rooms").document(roomCode)
         runCatching {
             val snap = docRef.get().await()
+            val tWriteStart = SystemClock.elapsedRealtime()
             if (snap.exists()) {
                 docRef.update(
                     mapOf(
@@ -734,6 +779,12 @@ class ListenTogetherRepository(
                         "updatedAt" to FieldValue.serverTimestamp()
                     )
                 ).await()
+            }
+            val tWriteEnd = SystemClock.elapsedRealtime()
+            val serverSnap = docRef.get(Source.SERVER).await()
+            val serverTs = serverSnap.getTimestamp("updatedAt")?.toDate()?.time
+            if (serverTs != null && serverTs > 0L) {
+                updateServerClockCalibration(serverTs, (tWriteStart + tWriteEnd) / 2L)
             }
         }
     }

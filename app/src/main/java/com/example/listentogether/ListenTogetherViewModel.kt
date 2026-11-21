@@ -259,6 +259,8 @@ class ListenTogetherViewModel(
         }
     }
 
+    fun serverNowMs(): Long = repository.serverNowMs()
+
     fun pushPlaybackSync(
         track: Track?,
         playing: Boolean,
@@ -283,6 +285,32 @@ class ListenTogetherViewModel(
                 _sessionState.update { it.copy(lastSyncedSequence = seq) }
             }.onFailure { err ->
                 _sessionState.update { it.copy(errorMessage = err.message ?: "Gagal menyinkronkan pemutaran") }
+            }
+        }
+    }
+
+    /**
+     * Pushes a crisp playback position anchor once the Host/Controller device finishes buffering
+     * a new track (or periodically while playing), keeping Device 1 & Device 2 locked in phase.
+     */
+    fun pushSilentClockAnchor(track: Track, positionMs: Long, playing: Boolean) {
+        val room = _sessionState.value.activeRoom ?: return
+        if (room.status != "active" || room.currentTrackId != track.id) return
+        if (!_sessionState.value.canControl(currentUserId)) return
+        val existingAction = room.lastActionBy.ifBlank { "$currentUserName menyinkronkan pemutaran" }
+        viewModelScope.launch {
+            val res = repository.syncPlaybackState(
+                room = room,
+                actorName = currentUserName,
+                track = track,
+                playing = playing,
+                positionMs = positionMs,
+                queueTracks = null,
+                actionLabel = existingAction
+            )
+            res.onSuccess { seq ->
+                lastPushedSeq = seq
+                _sessionState.update { it.copy(lastSyncedSequence = seq) }
             }
         }
     }

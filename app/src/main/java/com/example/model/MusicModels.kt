@@ -222,7 +222,9 @@ data class AudioSettings(
     val reverbEnabled: Boolean = false,
     val autoTranslateLyrics: Boolean = true,
     val dynamicIslandLyrics: Boolean = true,
-    val notificationBarLyrics: Boolean = true
+    val notificationBarLyrics: Boolean = true,
+    val autoCheckUpdates: Boolean = true,
+    val githubUpdateRepo: String = "budikopling10/Koplingfy"
 )
 
 @Immutable

@@ -1,5 +1,6 @@
 package com.example.data.remote
 
+import com.example.data.TrackGuard
 import com.example.model.AlbumSummary
 import com.example.model.ArtistSummary
 import com.example.model.AudioQuality
@@ -545,7 +546,7 @@ object InnerTubeClient {
         }
 
         return InnerTubeSearchBundle(
-            tracks = tracks.distinctBy { it.id }.mapIndexed { idx, t -> t.copy(rank = idx + 1) },
+            tracks = TrackGuard.deduplicateAndFilter(tracks).mapIndexed { idx, t -> t.copy(rank = idx + 1) },
             videos = emptyList(),
             albums = albums.distinctBy { it.id },
             artists = artists.distinctBy { it.id },
@@ -585,7 +586,7 @@ object InnerTubeClient {
         ) ?: return emptyList()
         val tracks = mutableListOf<Track>()
         walkRenderers(root, tracks, mutableListOf(), mutableListOf(), mutableListOf(), null, null)
-        return tracks.distinctBy { it.id }
+        return TrackGuard.deduplicateAndFilter(tracks)
     }
 
     fun searchVideos(query: String): List<Track> {
@@ -602,7 +603,7 @@ object InnerTubeClient {
         ) ?: return emptyList()
         val videos = mutableListOf<Track>()
         walkRenderers(root, videos, mutableListOf(), mutableListOf(), mutableListOf(), "Video Musik", null)
-        return videos.distinctBy { it.id }
+        return TrackGuard.deduplicateAndFilter(videos)
     }
 
     fun searchAll(query: String): InnerTubeSearchBundle {
@@ -670,8 +671,8 @@ object InnerTubeClient {
         }
 
         return InnerTubeSearchBundle(
-            tracks = tracks.distinctBy { it.id },
-            videos = videos.distinctBy { it.id },
+            tracks = TrackGuard.deduplicateAndFilter(tracks),
+            videos = TrackGuard.deduplicateAndFilter(videos),
             albums = albums.distinctBy { it.id },
             artists = artists.distinctBy { it.id },
             playlists = playlists.distinctBy { it.id }
@@ -694,7 +695,7 @@ object InnerTubeClient {
         ) ?: return emptyList()
         val tracks = mutableListOf<Track>()
         walkRenderers(root, tracks, mutableListOf(), mutableListOf(), mutableListOf(), fallbackTitle, fallbackArt)
-        return tracks.distinctBy { it.id }
+        return TrackGuard.deduplicateAndFilter(tracks)
     }
 
     // ---- Radio & Autoplay Queue (/youtubei/v1/next) ----
@@ -715,7 +716,7 @@ object InnerTubeClient {
 
         val tracks = mutableListOf<Track>()
         walkPlaylistPanelRenderers(root, tracks)
-        return tracks.distinctBy { it.id }
+        return TrackGuard.deduplicateAndFilter(tracks)
     }
 
     // ---- Native YouTube Music Lyrics (/next -> MPLYt_ browse) ----
@@ -1481,13 +1482,14 @@ object InnerTubeClient {
         when (node) {
             is JSONObject -> {
                 val item = node.optJSONObject("playlistPanelVideoRenderer")
-                if (item != null) {
+                if (item != null && !item.has("unplayableText")) {
                     val videoId = item.optString("videoId").takeIf { it.isNotBlank() }
                     val title = extractRunsText(item.optJSONObject("title"))
-                    if (videoId != null && title.isNotBlank()) {
+                    val durText = extractRunsText(item.optJSONObject("lengthText"))
+                    val parsedDur = parseDurationMs(durText)
+                    if (!TrackGuard.isMetadataInvalid(videoId, title, parsedDur) && videoId != null) {
                         val byline = extractRunsText(item.optJSONObject("shortBylineText"))
                             .ifBlank { extractRunsText(item.optJSONObject("longBylineText")) }
-                        val durText = extractRunsText(item.optJSONObject("lengthText"))
                         val thumbs = item.optJSONObject("thumbnail")?.optJSONArray("thumbnails")
                         val art = thumbs?.let { arr ->
                             if (arr.length() > 0) arr.optJSONObject(arr.length() - 1)?.optString("url") else null
@@ -1501,7 +1503,7 @@ object InnerTubeClient {
                                 album = meta.album.ifBlank { "Radio YouTube Music" },
                                 artworkUrl = art ?: "https://i.ytimg.com/vi/$videoId/hqdefault.jpg",
                                 streamUrl = null,
-                                durationMs = parseDurationMs(durText) ?: meta.durationMs,
+                                durationMs = parsedDur ?: meta.durationMs,
                                 genre = "YouTube Music"
                             )
                         )
@@ -1563,18 +1565,20 @@ object InnerTubeClient {
         when {
             videoId != null -> {
                 val meta = parseSubtitleMetadata(subtitle)
-                tracks.add(
-                    Track(
-                        id = "yt_$videoId",
-                        title = title,
-                        artist = meta.artist.ifBlank { "YouTube Music" },
-                        album = meta.album.ifBlank { "YouTube Music" },
-                        artworkUrl = art ?: "https://i.ytimg.com/vi/$videoId/hqdefault.jpg",
-                        streamUrl = null,
-                        durationMs = meta.durationMs,
-                        genre = "YouTube Music"
+                if (!TrackGuard.isMetadataInvalid(videoId, title, meta.durationMs)) {
+                    tracks.add(
+                        Track(
+                            id = "yt_$videoId",
+                            title = title,
+                            artist = meta.artist.ifBlank { "YouTube Music" },
+                            album = meta.album.ifBlank { "YouTube Music" },
+                            artworkUrl = art ?: "https://i.ytimg.com/vi/$videoId/hqdefault.jpg",
+                            streamUrl = null,
+                            durationMs = meta.durationMs,
+                            genre = "YouTube Music"
+                        )
                     )
-                )
+                }
             }
             browseId != null && browseId.startsWith("MPREb_") -> {
                 val meta = parseSubtitleMetadata(subtitle)
@@ -1660,19 +1664,21 @@ object InnerTubeClient {
 
         if (videoId != null) {
             val parsedMeta = parseSubtitleMetadata(subtitle)
-            tracks.add(
-                0,
-                Track(
-                    id = "yt_$videoId",
-                    title = title,
-                    artist = parsedMeta.artist,
-                    album = parsedMeta.album,
-                    artworkUrl = art,
-                    streamUrl = null,
-                    durationMs = parsedMeta.durationMs,
-                    genre = "YouTube Music"
+            if (!TrackGuard.isMetadataInvalid(videoId, title, parsedMeta.durationMs)) {
+                tracks.add(
+                    0,
+                    Track(
+                        id = "yt_$videoId",
+                        title = title,
+                        artist = parsedMeta.artist,
+                        album = parsedMeta.album,
+                        artworkUrl = art,
+                        streamUrl = null,
+                        durationMs = parsedMeta.durationMs,
+                        genre = "YouTube Music"
+                    )
                 )
-            )
+            }
         } else if (browseId != null) {
             if (browseId.startsWith("MPREb_")) {
                 val parsedMeta = parseSubtitleMetadata(subtitle)
@@ -1710,6 +1716,12 @@ object InnerTubeClient {
         fallbackAlbumTitle: String?,
         fallbackArt: String?
     ) {
+        // Skip items explicitly marked grayed-out / unplayable by YouTube Music
+        val displayPolicy = item.optString("musicItemRendererDisplayPolicy")
+        if (displayPolicy.contains("GREY_OUT", ignoreCase = true) || item.has("unplayableText")) {
+            return
+        }
+
         val flexCols = item.optJSONArray("flexColumns") ?: return
         if (flexCols.length() == 0) return
 
@@ -1762,6 +1774,7 @@ object InnerTubeClient {
         if (videoId != null) {
             val meta = parseSubtitleMetadata(col1)
             val durationMs = fixedDuration ?: meta.durationMs
+            if (TrackGuard.isMetadataInvalid(videoId, col0, durationMs)) return
             tracks.add(
                 Track(
                     id = "yt_$videoId",

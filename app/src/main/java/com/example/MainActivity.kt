@@ -101,7 +101,12 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.lifecycle.viewmodel.initializer
 import androidx.lifecycle.viewmodel.viewModelFactory
 import com.example.ai.configureAppCheck
+import com.example.data.remote.GitHubReleaseInfo
+import com.example.data.remote.GitHubUpdateChecker
 import com.example.player.KoplingfyMediaBridge
+import com.example.ui.components.AppUpdateAvailableDialog
+import com.example.ui.components.InteractiveChangelogDialog
+import com.example.ui.components.ShareApkLinkDialog
 import com.example.listentogether.ListenRoom
 import com.example.listentogether.ListenSessionUiState
 import com.example.listentogether.ListenTogetherRepository
@@ -341,7 +346,7 @@ private fun KoplingfyAuthScopedRoot(
             val myActiveRoomsState by listenViewModel.myActiveRoomsState.collectAsStateWithLifecycle()
             val recentRoomsState by listenViewModel.recentRoomsState.collectAsStateWithLifecycle()
 
-            // Inbound Real-Time Playback Sync: Firestore Room -> Local Audio Engine
+            // Inbound Real-Time Playback Sync: Firestore Room -> Local Audio Engine (NTP-calibrated)
             val activeRoom = sessionState.activeRoom
             LaunchedEffect(activeRoom?.roomCode, activeRoom?.syncSequence, activeRoom?.status) {
                 val room = activeRoom ?: return@LaunchedEffect
@@ -350,21 +355,95 @@ private fun KoplingfyAuthScopedRoot(
                     val track = room.currentTrackOrNull()
                     val queue = room.parsedQueue().map { it.toTrack() }
                     if (track != null) {
+                        val nowServerMs = listenViewModel.serverNowMs()
+                        val anchorServerTimeMs = room.updatedAt?.toDate()?.time ?: nowServerMs
                         viewModel.applyRemoteRoomSync(
                             track = track,
                             shouldPlay = room.playing,
-                            targetPositionMs = room.effectivePositionMs(),
-                            roomQueue = queue
+                            targetPositionMs = room.effectivePositionMs(nowServerMs),
+                            roomQueue = queue,
+                            anchorPositionMs = room.positionMs,
+                            anchorServerTimeMs = anchorServerTimeMs,
+                            serverNowProvider = { listenViewModel.serverNowMs() }
                         )
                     }
                 }
             }
 
-            // Inbound Collaborative Queue Sync (updates upcoming queue WITHOUT resetting current song position)
+            // Inbound Collaborative Queue Sync + proactive prefetch of next room song for instant transitions
             LaunchedEffect(activeRoom?.roomCode, activeRoom?.queueTracks) {
                 val room = activeRoom ?: return@LaunchedEffect
                 if (room.status == "active") {
-                    viewModel.syncRoomUpcomingQueue(room.parsedQueue().map { it.toTrack() })
+                    val queueTracks = room.parsedQueue().map { it.toTrack() }
+                    viewModel.syncRoomUpcomingQueue(queueTracks)
+                    queueTracks.firstOrNull()?.let { nextSong ->
+                        viewModel.prefetchRoomNextTrack(nextSong)
+                    }
+                }
+            }
+
+            // Continuous tight phase-lock drift correction loop for non-host listeners (zero multi-second lag)
+            val isRoomHost = sessionState.isHost(user.uid)
+            LaunchedEffect(
+                activeRoom?.roomCode,
+                activeRoom?.status,
+                activeRoom?.currentTrackId,
+                activeRoom?.playing,
+                activeRoom?.positionMs,
+                activeRoom?.updatedAt,
+                isRoomHost
+            ) {
+                val room = activeRoom
+                if (room == null || room.status != "active" || room.currentTrackId.isBlank()) {
+                    viewModel.resetRoomSyncSpeedMultiplier()
+                    return@LaunchedEffect
+                }
+                // Host device is the single clock authority; all other devices continuously phase-lock to Host
+                if (isRoomHost) {
+                    viewModel.resetRoomSyncSpeedMultiplier()
+                    return@LaunchedEffect
+                }
+                while (true) {
+                    kotlinx.coroutines.delay(1_400L)
+                    val latestRoom = listenViewModel.sessionState.value.activeRoom ?: break
+                    if (latestRoom.status != "active" || latestRoom.currentTrackId != room.currentTrackId) break
+                    val expectedMs = latestRoom.effectivePositionMs(listenViewModel.serverNowMs())
+                    viewModel.correctRoomPlaybackDrift(
+                        roomTrackId = latestRoom.currentTrackId,
+                        roomPlaying = latestRoom.playing,
+                        expectedPosMs = expectedMs
+                    )
+                }
+            }
+
+            // Host clock-anchor publication: as soon as Host finishes buffering a new song, publish exact anchor
+            // + lightweight 14s heartbeat so late joiners & guests stay tightly phase-locked
+            var lastAnchoredTrackId by remember(activeRoom?.roomCode) { mutableStateOf<String?>(null) }
+            DisposableEffect(isRoomHost, activeRoom?.roomCode) {
+                viewModel.onPlaybackReadyForRoomSync = if (isRoomHost && activeRoom?.status == "active") {
+                    { readyTrack, posMs, isPlaying ->
+                        if (isPlaying && lastAnchoredTrackId != readyTrack.id) {
+                            lastAnchoredTrackId = readyTrack.id
+                            listenViewModel.pushSilentClockAnchor(readyTrack, posMs, true)
+                        }
+                    }
+                } else null
+                onDispose {
+                    viewModel.onPlaybackReadyForRoomSync = null
+                    viewModel.resetRoomSyncSpeedMultiplier()
+                }
+            }
+
+            LaunchedEffect(isRoomHost, activeRoom?.roomCode, activeRoom?.status, activeRoom?.currentTrackId, activeRoom?.playing) {
+                val room = activeRoom ?: return@LaunchedEffect
+                if (!isRoomHost || room.status != "active" || !room.playing) return@LaunchedEffect
+                while (true) {
+                    kotlinx.coroutines.delay(14_000L)
+                    val curPlayer = viewModel.playerState.value
+                    val curTrack = curPlayer.currentTrack
+                    if (curTrack != null && curTrack.id == room.currentTrackId && curPlayer.isPlaying && !curPlayer.isBuffering) {
+                        listenViewModel.pushSilentClockAnchor(curTrack, curPlayer.positionMs, true)
+                    }
                 }
             }
 
@@ -418,6 +497,7 @@ private fun KoplingfyAppRoot(
     val isSyncingAccount by viewModel.isSyncingAccount.collectAsStateWithLifecycle()
     val storageStats by viewModel.storageStats.collectAsStateWithLifecycle()
     val cloudSyncState by viewModel.cloudSyncState.collectAsStateWithLifecycle()
+    val updateState by viewModel.updateState.collectAsStateWithLifecycle()
 
     val homeState by viewModel.homeState.collectAsStateWithLifecycle()
     val searchState by viewModel.searchState.collectAsStateWithLifecycle()
@@ -789,6 +869,67 @@ private fun KoplingfyAppRoot(
         runCatching { context.startActivity(Intent.createChooser(shareIntent, "Bagikan Lirik")) }
     }
 
+    val openTrustedExternalUrl: (String, String) -> Unit = { url, fallbackError ->
+        if (GitHubUpdateChecker.isTrustedExternalUrl(url)) {
+            runCatching {
+                val intent = Intent(Intent.ACTION_VIEW, Uri.parse(url)).apply {
+                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                }
+                context.startActivity(intent)
+            }.onFailure {
+                viewModel.showMessage(fallbackError)
+            }
+        } else {
+            viewModel.showMessage("Tautan eksternal tidak valid")
+        }
+    }
+
+    val downloadAppUpdateFromGitHub: (GitHubReleaseInfo) -> Unit = { release ->
+        val targetUrl = release.apkDownloadUrl ?: release.releasePageUrl
+        viewModel.dismissUpdateDialog()
+        if (release.apkDownloadUrl != null) {
+            viewModel.showMessage("Memulai unduhan ${release.apkFileName ?: "Koplingfy v${release.versionName}"} dari GitHub…")
+        } else {
+            viewModel.showMessage("Membuka halaman rilis GitHub v${release.versionName}…")
+        }
+        openTrustedExternalUrl(targetUrl, "Tidak dapat membuka browser untuk mengunduh pembaruan.")
+    }
+
+    val copyTrustedUrlToClipboard: (String) -> Unit = { url ->
+        if (GitHubUpdateChecker.isTrustedExternalUrl(url)) {
+            runCatching {
+                val cm = context.getSystemService(android.content.Context.CLIPBOARD_SERVICE) as? android.content.ClipboardManager
+                cm?.setPrimaryClip(android.content.ClipData.newPlainText("Koplingfy APK Link", url))
+                viewModel.showMessage("Link unduhan APK berhasil disalin!")
+            }.onFailure {
+                viewModel.showMessage("Gagal menyalin link ke papan klip")
+            }
+        } else {
+            viewModel.showMessage("Tautan unduhan tidak valid")
+        }
+    }
+
+    val shareDirectApkLink: (String, String, Boolean) -> Unit = { url, versionLabel, isDirectApk ->
+        if (GitHubUpdateChecker.isTrustedExternalUrl(url)) {
+            val message = if (isDirectApk) {
+                "Unduh Koplingfy $versionLabel (klik langsung download APK):\n$url\n\n" +
+                    "Ikuti TikTok Owner: ${GitHubUpdateChecker.OWNER_TIKTOK_URL}"
+            } else {
+                "Unduh rilis terbaru Koplingfy ($versionLabel) di GitHub:\n$url\n\n" +
+                    "Ikuti TikTok Owner: ${GitHubUpdateChecker.OWNER_TIKTOK_URL}"
+            }
+            val shareIntent = Intent(Intent.ACTION_SEND).apply {
+                type = "text/plain"
+                putExtra(Intent.EXTRA_SUBJECT, "Unduh Koplingfy $versionLabel APK")
+                putExtra(Intent.EXTRA_TEXT, message)
+            }
+            runCatching { context.startActivity(Intent.createChooser(shareIntent, "Bagikan Link APK Koplingfy")) }
+                .onFailure { viewModel.showMessage("Tidak dapat membuka menu berbagi") }
+        } else {
+            viewModel.showMessage("Tautan eksternal tidak valid")
+        }
+    }
+
     val openCollection: (CollectionDetailType) -> Unit = { type ->
         viewModel.openCollectionDetail(type)
         onOverlayPageChange(OverlayPage.COLLECTION_DETAIL)
@@ -1025,7 +1166,27 @@ private fun KoplingfyAppRoot(
                                                     viewModel.showMessage("Keluar dari akun Google Play Bersama")
                                                 }
                                             )
-                                        }
+                                        },
+                                        updateState = updateState,
+                                        onToggleAutoCheckUpdates = viewModel::setAutoCheckUpdates,
+                                        onCheckUpdatesNow = { viewModel.checkForAppUpdates(manual = true) },
+                                        onDownloadAppUpdate = downloadAppUpdateFromGitHub,
+                                        onUpdateGitHubRepo = viewModel::setGithubUpdateRepo,
+                                        onOpenTikTokOwner = {
+                                            openTrustedExternalUrl(
+                                                GitHubUpdateChecker.OWNER_TIKTOK_URL,
+                                                "Tidak dapat membuka profil TikTok @budikopling10"
+                                            )
+                                        },
+                                        onOpenGitHubRepo = {
+                                            openTrustedExternalUrl(
+                                                GitHubUpdateChecker.githubRepoUrl(updateState.repoSlug),
+                                                "Tidak dapat membuka repositori GitHub"
+                                            )
+                                        },
+                                        onShareApp = viewModel::openShareApkDialog,
+                                        onOpenShareApk = viewModel::openShareApkDialog,
+                                        onOpenChangelog = viewModel::openChangelogDialog
                                     )
                                 }
                                 OverlayPage.STATS -> {
@@ -1122,13 +1283,18 @@ private fun KoplingfyAppRoot(
                                             onForceResyncFromRoom = { room ->
                                                 val track = room.currentTrackOrNull()
                                                 if (track != null) {
+                                                    val nowServerMs = listenViewModel?.serverNowMs() ?: System.currentTimeMillis()
+                                                    val anchorServerTimeMs = room.updatedAt?.toDate()?.time ?: nowServerMs
                                                     viewModel.applyRemoteRoomSync(
                                                         track = track,
                                                         shouldPlay = room.playing,
-                                                        targetPositionMs = room.effectivePositionMs(),
-                                                        roomQueue = room.parsedQueue().map { it.toTrack() }
+                                                        targetPositionMs = room.effectivePositionMs(nowServerMs),
+                                                        roomQueue = room.parsedQueue().map { it.toTrack() },
+                                                        anchorPositionMs = room.positionMs,
+                                                        anchorServerTimeMs = anchorServerTimeMs,
+                                                        serverNowProvider = { listenViewModel?.serverNowMs() ?: System.currentTimeMillis() }
                                                     )
-                                                    viewModel.showMessage("Pemutaran disinkronkan dengan ruang ${room.roomCode}")
+                                                    viewModel.showMessage("Pemutaran disinkronkan presisi dengan ruang ${room.roomCode}")
                                                 }
                                             },
                                             onPlayRoomTrackLocally = { track, queue ->
@@ -1637,6 +1803,50 @@ private fun KoplingfyAppRoot(
                     }
                     savingQueueAsPlaylist = false
                 }
+            )
+        }
+
+        // ---- Automatic / Manual GitHub App Update Dialog ----
+        val availableRelease = updateState.latestRelease
+        if (updateState.showUpdateDialog && availableRelease != null) {
+            AppUpdateAvailableDialog(
+                currentVersionName = updateState.currentVersionName,
+                release = availableRelease,
+                onDismiss = viewModel::dismissUpdateDialog,
+                onDownloadApk = { downloadAppUpdateFromGitHub(availableRelease) },
+                onOpenReleasePage = {
+                    viewModel.dismissUpdateDialog()
+                    openTrustedExternalUrl(
+                        availableRelease.releasePageUrl,
+                        "Tidak dapat membuka halaman rilis GitHub."
+                    )
+                }
+            )
+        }
+
+        // ---- Direct GitHub APK Share + QR Code Dialog ----
+        if (updateState.showShareApkDialog) {
+            ShareApkLinkDialog(
+                updateState = updateState,
+                onDismiss = viewModel::dismissShareApkDialog,
+                onRefreshLink = { viewModel.refreshShareApkLink(showToastOnResult = true) },
+                onCopyLink = copyTrustedUrlToClipboard,
+                onShareLink = shareDirectApkLink,
+                onShowFeedback = viewModel::showMessage
+            )
+        }
+
+        // ---- Interactive Changelog ("Apa yang Baru") Dialog ----
+        if (updateState.showChangelogDialog) {
+            InteractiveChangelogDialog(
+                updateState = updateState,
+                onDismiss = viewModel::dismissChangelogDialog,
+                onRefreshGitHubHistory = { viewModel.refreshReleaseHistory(force = true) },
+                onDownloadRelease = { release ->
+                    viewModel.dismissChangelogDialog()
+                    downloadAppUpdateFromGitHub(release)
+                },
+                onShareReleaseLink = shareDirectApkLink
             )
         }
     }

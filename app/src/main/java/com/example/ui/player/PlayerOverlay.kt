@@ -618,6 +618,19 @@ fun FullScreenPlayerModal(
             PlayerBackgroundStyle.SOLID -> Unit
         }
 
+        // Song-matched atmospheric particle layer (hidden in Video Mode to keep video crisp)
+        if (!playerState.isVideoMode) {
+            AdaptiveSongAtmosphereBackdrop(
+                track = track,
+                moodTags = playerState.lyricsState.songMeaning?.moodTags.orEmpty(),
+                accentPrimary = accentPrimary,
+                accentGlow = accentGlow,
+                isPlaying = playerState.isPlaying,
+                backgroundStyle = settings.playerBackgroundStyle,
+                modifier = Modifier.fillMaxSize()
+            )
+        }
+
         BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
         val isDualColumnLandscape = maxWidth >= 580.dp && maxWidth > maxHeight && !isVideoFullscreen
         if (isDualColumnLandscape) {

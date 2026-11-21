@@ -48,6 +48,9 @@ class PreferencesRepository(private val context: Context) {
         val AUTO_TRANSLATE_LYRICS = booleanPreferencesKey("auto_translate_lyrics")
         val DYNAMIC_ISLAND_LYRICS = booleanPreferencesKey("dynamic_island_lyrics")
         val NOTIFICATION_BAR_LYRICS = booleanPreferencesKey("notification_bar_lyrics")
+        val AUTO_CHECK_UPDATES = booleanPreferencesKey("auto_check_updates")
+        val GITHUB_UPDATE_REPO = stringPreferencesKey("github_update_repo")
+        val LAST_SEEN_CHANGELOG_VERSION = intPreferencesKey("last_seen_changelog_version")
 
         // YouTube Music Account (Metrolist InnerTube auth)
         val YTM_COOKIE = stringPreferencesKey("ytm_cookie")
@@ -101,7 +104,10 @@ class PreferencesRepository(private val context: Context) {
             reverbEnabled = prefs[Keys.REVERB_ENABLED] ?: false,
             autoTranslateLyrics = prefs[Keys.AUTO_TRANSLATE_LYRICS] ?: true,
             dynamicIslandLyrics = prefs[Keys.DYNAMIC_ISLAND_LYRICS] ?: true,
-            notificationBarLyrics = prefs[Keys.NOTIFICATION_BAR_LYRICS] ?: true
+            notificationBarLyrics = prefs[Keys.NOTIFICATION_BAR_LYRICS] ?: true,
+            autoCheckUpdates = prefs[Keys.AUTO_CHECK_UPDATES] ?: true,
+            githubUpdateRepo = prefs[Keys.GITHUB_UPDATE_REPO]?.takeIf { it.isNotBlank() }
+                ?: "budikopling10/Koplingfy"
         )
     }
 
@@ -113,6 +119,10 @@ class PreferencesRepository(private val context: Context) {
             email = prefs[Keys.YTM_ACCOUNT_EMAIL].orEmpty(),
             avatarUrl = prefs[Keys.YTM_ACCOUNT_AVATAR]
         )
+    }
+
+    val lastSeenChangelogVersionFlow: Flow<Int> = context.koplingfyDataStore.data.map { prefs ->
+        prefs[Keys.LAST_SEEN_CHANGELOG_VERSION] ?: 0
     }
 
     suspend fun saveYouTubeAccount(account: YouTubeAccount) {
@@ -248,5 +258,17 @@ class PreferencesRepository(private val context: Context) {
 
     suspend fun setNotificationBarLyrics(enabled: Boolean) {
         context.koplingfyDataStore.edit { it[Keys.NOTIFICATION_BAR_LYRICS] = enabled }
+    }
+
+    suspend fun setAutoCheckUpdates(enabled: Boolean) {
+        context.koplingfyDataStore.edit { it[Keys.AUTO_CHECK_UPDATES] = enabled }
+    }
+
+    suspend fun setGithubUpdateRepo(repoSlug: String) {
+        context.koplingfyDataStore.edit { it[Keys.GITHUB_UPDATE_REPO] = repoSlug }
+    }
+
+    suspend fun setLastSeenChangelogVersion(versionCode: Int) {
+        context.koplingfyDataStore.edit { it[Keys.LAST_SEEN_CHANGELOG_VERSION] = versionCode }
     }
 }

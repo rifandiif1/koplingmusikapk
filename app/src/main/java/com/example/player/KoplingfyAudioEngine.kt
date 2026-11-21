@@ -79,6 +79,7 @@ class KoplingfyAudioEngine(
     private var progressJob: Job? = null
 
     private var currentSpeed: Float = 1.0f
+    private var roomSyncSpeedMultiplier: Float = 1.0f
     private var currentPitch: Float = 1.0f
     private var currentBandsDb: List<Float> = listOf(0f, 0f, 0f, 0f, 0f)
     private var currentBassStrength: Float = 0f
@@ -94,6 +95,9 @@ class KoplingfyAudioEngine(
     private var activeCacheKey: String? = null
     private var attachedTextureView: TextureView? = null
     private var isHandlingTrackCompletion: Boolean = false
+
+    /** Invoked whenever ExoPlayer finishes buffering and reaches STATE_READY (used for zero-delay Listen Together sync). */
+    var onPlaybackReady: ((positionMs: Long, isPlaying: Boolean) -> Unit)? = null
 
     @Volatile
     var lastKnownGoodPositionMs: Long = 0L
@@ -147,6 +151,7 @@ class KoplingfyAudioEngine(
                         errorMessage = null,
                         streamTechStats = extractStreamTechStats(player)
                     )
+                    onPlaybackReady?.invoke(pos, playingNow)
                 }
                 Player.STATE_ENDED -> {
                     stopProgressPolling()
@@ -469,7 +474,7 @@ class KoplingfyAudioEngine(
             stopProgressPolling()
             _state.value = _state.value.copy(isPlaying = false)
         } else {
-            player.playbackParameters = PlaybackParameters(currentSpeed, currentPitch)
+            player.playbackParameters = PlaybackParameters((currentSpeed * roomSyncSpeedMultiplier).coerceIn(0.5f, 2.0f), currentPitch)
             player.play()
             _state.value = _state.value.copy(isPlaying = true, errorMessage = null)
             startProgressPolling()
@@ -479,7 +484,7 @@ class KoplingfyAudioEngine(
     fun resume() {
         val player = exoPlayer ?: return
         if (!player.isPlaying) {
-            player.playbackParameters = PlaybackParameters(currentSpeed, currentPitch)
+            player.playbackParameters = PlaybackParameters((currentSpeed * roomSyncSpeedMultiplier).coerceIn(0.5f, 2.0f), currentPitch)
             player.play()
             _state.value = _state.value.copy(isPlaying = true, errorMessage = null)
             startProgressPolling()
@@ -507,7 +512,24 @@ class KoplingfyAudioEngine(
     fun updatePlaybackParams(speed: Float, pitch: Float) {
         currentSpeed = speed.coerceIn(0.5f, 2.0f)
         currentPitch = pitch.coerceIn(0.75f, 1.5f)
-        exoPlayer?.playbackParameters = PlaybackParameters(currentSpeed, currentPitch)
+        exoPlayer?.playbackParameters = PlaybackParameters(
+            (currentSpeed * roomSyncSpeedMultiplier).coerceIn(0.5f, 2.0f),
+            currentPitch
+        )
+    }
+
+    /**
+     * Temporarily nudges playback speed by ±4.5% during Listen Together sessions to smoothly
+     * erase tiny 180-550ms phase drifts without audible seek glitches.
+     */
+    fun setRoomSyncSpeedMultiplier(multiplier: Float) {
+        val clamped = multiplier.coerceIn(0.92f, 1.08f)
+        if (kotlin.math.abs(roomSyncSpeedMultiplier - clamped) < 0.002f) return
+        roomSyncSpeedMultiplier = clamped
+        exoPlayer?.playbackParameters = PlaybackParameters(
+            (currentSpeed * roomSyncSpeedMultiplier).coerceIn(0.5f, 2.0f),
+            currentPitch
+        )
     }
 
     fun updateEqualizerBands(bandsDb: List<Float>) {

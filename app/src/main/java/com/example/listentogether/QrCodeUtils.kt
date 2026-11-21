@@ -99,6 +99,139 @@ object QrCodeUtils {
     }
 
     /**
+     * Generates a crisp high-contrast QR Code Bitmap for an HTTPS URL (e.g., direct APK download link).
+     */
+    fun generateUrlQrBitmap(url: String, sizePx: Int = 640): Bitmap? {
+        if (url.isBlank()) return null
+        return runCatching {
+            val hints = mapOf(
+                EncodeHintType.ERROR_CORRECTION to ErrorCorrectionLevel.M,
+                EncodeHintType.MARGIN to 2,
+                EncodeHintType.CHARACTER_SET to "UTF-8"
+            )
+            val matrix = QRCodeWriter().encode(url.trim(), BarcodeFormat.QR_CODE, sizePx, sizePx, hints)
+            val width = matrix.width
+            val height = matrix.height
+            val pixels = IntArray(width * height)
+            val darkColor = Color.rgb(11, 14, 18)
+            val lightColor = Color.WHITE
+            for (y in 0 until height) {
+                val offset = y * width
+                for (x in 0 until width) {
+                    pixels[offset + x] = if (matrix.get(x, y)) darkColor else lightColor
+                }
+            }
+            val bitmap = createBitmap(width, height, Bitmap.Config.ARGB_8888)
+            bitmap.setPixels(pixels, 0, width, 0, 0, width, height)
+            bitmap
+        }.getOrNull()
+    }
+
+    /**
+     * Generates a shareable Koplingfy APK download QR card (Obsidian header + Emerald accent + scannable QR + footer).
+     */
+    fun generateShareableApkQrCardBitmap(downloadUrl: String, versionLabel: String): Bitmap? {
+        val qr = generateUrlQrBitmap(downloadUrl, 640) ?: return null
+        val cardW = 840
+        val cardH = 1080
+        val out = createBitmap(cardW, cardH, Bitmap.Config.ARGB_8888)
+        val canvas = Canvas(out)
+
+        canvas.drawColor(Color.WHITE)
+
+        // Obsidian Studio top header
+        val headerPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.rgb(12, 16, 22) }
+        canvas.drawRect(0f, 0f, cardW.toFloat(), 196f, headerPaint)
+
+        // Emerald accent bar
+        val accentPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.rgb(0, 229, 160) }
+        canvas.drawRect(0f, 188f, cardW.toFloat(), 196f, accentPaint)
+
+        val brandPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            color = Color.rgb(0, 229, 160)
+            textSize = 44f
+            isFakeBoldText = true
+            textAlign = Paint.Align.CENTER
+        }
+        canvas.drawText("KOPLINGFY • UNDUH APK", cardW / 2f, 92f, brandPaint)
+
+        val subtitlePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            color = Color.rgb(220, 226, 234)
+            textSize = 30f
+            textAlign = Paint.Align.CENTER
+        }
+        canvas.drawText("Rilis Resmi GitHub • ${versionLabel.take(20)}", cardW / 2f, 148f, subtitlePaint)
+
+        // QR Frame border
+        val framePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            color = Color.rgb(230, 235, 240)
+            style = Paint.Style.STROKE
+            strokeWidth = 6f
+        }
+        canvas.drawRoundRect(RectF(80f, 232f, cardW - 80f, 912f), 32f, 32f, framePaint)
+        canvas.drawBitmap(qr, (cardW - qr.width) / 2f, 252f, null)
+
+        val footerLabelPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            color = Color.rgb(95, 108, 122)
+            textSize = 26f
+            textAlign = Paint.Align.CENTER
+        }
+        canvas.drawText("SCAN QR UNTUK LANGSUNG UNDUH KOPLINGFY", cardW / 2f, 974f, footerLabelPaint)
+
+        val ownerPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            color = Color.rgb(11, 14, 18)
+            textSize = 34f
+            isFakeBoldText = true
+            textAlign = Paint.Align.CENTER
+        }
+        canvas.drawText("TikTok Owner: @budikopling10", cardW / 2f, 1032f, ownerPaint)
+
+        return out
+    }
+
+    /**
+     * Saves the shareable Koplingfy APK QR Card PNG to Gallery using zero-permission MediaStore (API 29+).
+     */
+    fun saveApkShareQrToGallery(
+        context: Context,
+        downloadUrl: String,
+        versionLabel: String
+    ): Result<String> {
+        return runCatching {
+            val bitmap = generateShareableApkQrCardBitmap(downloadUrl, versionLabel)
+                ?: error("Gagal membuat kartu QR APK")
+            val safeVer = versionLabel.replace(Regex("[^A-Za-z0-9._-]"), "_").ifBlank { "latest" }
+            val fileName = "Koplingfy_APK_QR_${safeVer}_${System.currentTimeMillis()}.png"
+
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                val values = ContentValues().apply {
+                    put(MediaStore.Images.Media.DISPLAY_NAME, fileName)
+                    put(MediaStore.Images.Media.MIME_TYPE, "image/png")
+                    put(MediaStore.Images.Media.RELATIVE_PATH, "${Environment.DIRECTORY_PICTURES}/Koplingfy")
+                    put(MediaStore.Images.Media.IS_PENDING, 1)
+                }
+                val resolver = context.contentResolver
+                val uri = resolver.insert(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, values)
+                    ?: error("Gagal menyimpan QR ke Galeri")
+                resolver.openOutputStream(uri)?.use { out ->
+                    bitmap.compress(Bitmap.CompressFormat.PNG, 100, out)
+                } ?: error("Tidak dapat membuka aliran penyimpanan")
+                values.clear()
+                values.put(MediaStore.Images.Media.IS_PENDING, 0)
+                resolver.update(uri, values, null, null)
+                "Pictures/Koplingfy/$fileName"
+            } else {
+                val dir = context.getExternalFilesDir(Environment.DIRECTORY_PICTURES) ?: context.filesDir
+                val target = File(dir, fileName)
+                FileOutputStream(target).use { out ->
+                    bitmap.compress(Bitmap.CompressFormat.PNG, 100, out)
+                }
+                target.absolutePath
+            }
+        }
+    }
+
+    /**
      * Generates a shareable QRIS-style Koplingfy Room Pass card image (white card + header + QR + code).
      */
     fun generateShareablePassBitmap(roomCode: String, roomName: String): Bitmap? {

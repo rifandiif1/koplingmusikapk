@@ -94,7 +94,11 @@ import com.example.model.PlayerBackgroundStyle
 import com.example.model.ThemeMode
 import com.example.model.Track
 import com.example.model.YouTubeAccount
+import com.example.data.remote.AppUpdateUiState
+import com.example.data.remote.GitHubReleaseInfo
+import com.example.ui.components.AboutKoplingfyCard
 import com.example.ui.components.AlbumArtImage
+import com.example.ui.components.AppUpdateSectionCard
 import com.example.ui.components.RecapCardGenerator
 import com.example.ui.components.SectionHeader
 import com.example.viewmodel.CloudSyncUiState
@@ -561,7 +565,17 @@ fun SettingsScreen(
     firebaseUserEmail: String? = null,
     activeRoomCode: String? = null,
     onOpenListenTogether: () -> Unit = {},
-    onSignOutFirebase: () -> Unit = {}
+    onSignOutFirebase: () -> Unit = {},
+    updateState: AppUpdateUiState = AppUpdateUiState(),
+    onToggleAutoCheckUpdates: (Boolean) -> Unit = {},
+    onCheckUpdatesNow: () -> Unit = {},
+    onDownloadAppUpdate: (GitHubReleaseInfo) -> Unit = {},
+    onUpdateGitHubRepo: (String) -> Boolean = { false },
+    onOpenTikTokOwner: () -> Unit = {},
+    onOpenGitHubRepo: () -> Unit = {},
+    onShareApp: () -> Unit = {},
+    onOpenShareApk: () -> Unit = {},
+    onOpenChangelog: () -> Unit = {}
 ) {
     BackHandler(onBack = onBack)
     val firestoreDbId = stringResource(R.string.firestore_database_id)
@@ -1258,47 +1272,30 @@ fun SettingsScreen(
             }
         }
 
-        // ---- About Koplingfy Card ----
+        // ---- GitHub Auto & Manual Update Checker ----
         item {
-            Surface(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 20.dp),
-                shape = RoundedCornerShape(20.dp),
-                color = MaterialTheme.colorScheme.surfaceContainerLow
-            ) {
-                Row(
-                    modifier = Modifier.padding(18.dp),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Box(
-                        modifier = Modifier
-                            .size(48.dp)
-                            .clip(RoundedCornerShape(14.dp))
-                            .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.16f)),
-                        contentAlignment = Alignment.Center
-                    ) {
-                        Icon(
-                            imageVector = Icons.Rounded.HighQuality,
-                            contentDescription = null,
-                            tint = MaterialTheme.colorScheme.primary,
-                            modifier = Modifier.size(26.dp)
-                        )
-                    }
-                    Spacer(modifier = Modifier.width(14.dp))
-                    Column {
-                        Text(
-                            text = "Koplingfy Studio",
-                            style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold)
-                        )
-                        Text(
-                            text = "Full InnerTube YTM • Lyric Video + PiP • Lirik ID & Romaji • Cloud Sync • Visual DSP EQ",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                    }
-                }
-            }
+            AppUpdateSectionCard(
+                updateState = updateState,
+                onToggleAutoCheck = onToggleAutoCheckUpdates,
+                onCheckUpdateNow = onCheckUpdatesNow,
+                onDownloadUpdate = onDownloadAppUpdate,
+                onUpdateGitHubRepo = onUpdateGitHubRepo,
+                onOpenShareApk = onOpenShareApk,
+                onOpenChangelog = onOpenChangelog
+            )
+        }
+
+        // ---- About Koplingfy & Owner Card (TikTok @budikopling10, GitHub, Share APK, Changelog) ----
+        item {
+            AboutKoplingfyCard(
+                currentVersionName = updateState.currentVersionName,
+                currentVersionCode = updateState.currentVersionCode,
+                githubRepoSlug = updateState.repoSlug,
+                onOpenTikTokOwner = onOpenTikTokOwner,
+                onOpenGitHubRepo = onOpenGitHubRepo,
+                onShareApp = onShareApp,
+                onOpenChangelog = onOpenChangelog
+            )
         }
     }
 

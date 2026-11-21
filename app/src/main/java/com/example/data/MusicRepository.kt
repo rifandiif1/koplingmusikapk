@@ -63,6 +63,10 @@ class MusicRepository(
     private val context: Context,
     private val dao: KoplingfyDao
 ) {
+    init {
+        TrackGuard.init(context)
+    }
+
     // ---- Local Reactive Flows ----
     val likedTracksFlow: Flow<List<Track>> = dao.observeLikedTracks()
         .map { list -> list.map { it.toTrack() } }
@@ -118,9 +122,11 @@ class MusicRepository(
             val charts = chartsDeferred.await()
             val moodBundle = quickPicksDeferred.await()
 
-            val quickPicks = moodBundle?.tracks.orEmpty()
-            val chartTracks = charts?.tracks?.takeIf { it.isNotEmpty() }
-                ?: quickPicks.mapIndexed { idx, t -> t.copy(rank = idx + 1) }
+            val quickPicks = TrackGuard.deduplicateAndFilter(moodBundle?.tracks.orEmpty())
+            val chartTracks = TrackGuard.deduplicateAndFilter(
+                charts?.tracks?.takeIf { it.isNotEmpty() }
+                    ?: quickPicks.mapIndexed { idx, t -> t.copy(rank = idx + 1) }
+            ).mapIndexed { idx, t -> t.copy(rank = idx + 1) }
 
             val featuredAlbums = (charts?.albums.orEmpty() + moodBundle?.albums.orEmpty())
                 .distinctBy { it.id }
@@ -235,12 +241,13 @@ class MusicRepository(
                 }.getOrDefault(emptyList())
             }
 
-            if (tracks.isEmpty()) {
+            val dedupedTracks = TrackGuard.deduplicateAndFilter(tracks)
+            if (dedupedTracks.isEmpty()) {
                 throw IllegalStateException("Playlist kosong, bersifat pribadi, atau tidak dapat diakses dari YouTube Music.")
             }
 
             val finalName = customPlaylistName?.trim()?.takeIf { it.isNotEmpty() }
-                ?: tracks.firstOrNull()?.album?.takeIf {
+                ?: dedupedTracks.firstOrNull()?.album?.takeIf {
                     it.isNotBlank() && !it.equals("YouTube Music", ignoreCase = true) && !it.equals("Single", ignoreCase = true)
                 }
                 ?: "Impor YouTube (${extractedListId.take(8)})"
@@ -248,18 +255,18 @@ class MusicRepository(
             val playlistId = dao.insertPlaylist(
                 PlaylistEntity(
                     name = finalName,
-                    description = "Diimpor dari YouTube Music • ${tracks.size} lagu",
-                    coverUrl = tracks.firstOrNull()?.artworkUrl
+                    description = "Diimpor dari YouTube Music • ${dedupedTracks.size} lagu",
+                    coverUrl = dedupedTracks.firstOrNull()?.artworkUrl
                 )
             )
-            tracks.forEach { track ->
+            dedupedTracks.forEach { track ->
                 val existing = dao.getTrackById(track.id)
                 if (existing == null) {
                     dao.upsertTrack(SavedTrackEntity.fromTrack(track))
                 }
                 dao.addTrackToPlaylist(PlaylistTrackCrossRef(playlistId = playlistId, trackId = track.id))
             }
-            finalName to tracks.size
+            finalName to dedupedTracks.size
         }
     }
 
@@ -324,7 +331,17 @@ class MusicRepository(
             .replace(Regex("""\s*\[[^\]]*]"""), "")
             .trim()
 
-        // 3. Resolve direct YouTube videoId via Metrolist InnerTube parallel player racing + cache
+        // 3. Check if a verified working replacement videoId was already cached for this track
+        val savedReplacementId = TrackGuard.getReplacementVideoId(track.id)
+        if (!savedReplacementId.isNullOrBlank()) {
+            val cachedReplacement = InnerTubeClient.resolveAudioStream(savedReplacementId, quality, forceRefresh = forceRefresh)
+            if (cachedReplacement is StreamResolveResult.Success) {
+                TrackGuard.markPlayable(track.id)
+                return@withContext cachedReplacement
+            }
+        }
+
+        // 4. Resolve direct YouTube videoId via Metrolist InnerTube parallel player racing + cache
         var primaryResult: StreamResolveResult? = null
         val videoId = if (track.id.startsWith("yt_")) {
             track.id.removePrefix("yt_")
@@ -336,28 +353,44 @@ class MusicRepository(
 
         if (!videoId.isNullOrBlank()) {
             val direct = InnerTubeClient.resolveAudioStream(videoId, quality, forceRefresh = forceRefresh)
-            if (direct is StreamResolveResult.Success) return@withContext direct
+            if (direct is StreamResolveResult.Success) {
+                TrackGuard.markPlayable(track.id)
+                return@withContext direct
+            }
             primaryResult = direct
 
-            // 4. If primary explicit/official videoId was blocked when signed out, try up to 2 alternate YouTube Music uploads
+            // 5. If primary videoId failed or was region/age restricted, try up to 4 alternate playable uploads
             val altCandidates = runCatching {
-                val audioSearch = InnerTubeClient.searchSongs("$cleanTitle ${track.artist} audio")
-                audioSearch
-                    .map { it.id.removePrefix("yt_") }
-                    .filter { it.isNotBlank() && it != videoId }
-                    .distinct()
-                    .take(2)
+                val queries = listOf(
+                    "$cleanTitle ${track.artist} audio",
+                    "$cleanTitle ${track.artist} lyrics"
+                )
+                val found = LinkedHashSet<String>()
+                for (q in queries) {
+                    val searchRes = InnerTubeClient.searchSongs(q)
+                    searchRes.forEach { cand ->
+                        val altId = cand.id.removePrefix("yt_")
+                        if (altId.length == 11 && altId != videoId && altId != savedReplacementId) {
+                            found.add(altId)
+                        }
+                    }
+                    if (found.size >= 4) break
+                }
+                found.take(4)
             }.getOrDefault(emptyList())
 
             for (altId in altCandidates) {
                 val alt = InnerTubeClient.resolveAudioStream(altId, quality, forceRefresh = forceRefresh)
-                if (alt is StreamResolveResult.Success) return@withContext alt
+                if (alt is StreamResolveResult.Success) {
+                    TrackGuard.recordReplacementVideoId(track.id, altId)
+                    return@withContext alt
+                }
             }
         }
 
-        // NEVER fall back to 30s preview! Surface the exact InnerTube status so user can Login YTM if needed.
+        // NEVER fall back to 30s preview! Surface the exact InnerTube status so caller can blacklist/skip cleanly.
         primaryResult ?: StreamResolveResult.Unavailable(
-            "Stream penuh YouTube Music tidak tersedia untuk lagu ini. Coba Login YouTube Music di Pengaturan."
+            "Stream penuh YouTube Music tidak tersedia untuk lagu ini."
         )
     }
 
@@ -440,8 +473,8 @@ class MusicRepository(
         val bundle = ytResult.getOrNull()
         if (bundle != null) {
             SearchResultBundle(
-                tracks = bundle.tracks,
-                videos = bundle.videos,
+                tracks = TrackGuard.deduplicateAndFilter(bundle.tracks),
+                videos = TrackGuard.deduplicateAndFilter(bundle.videos),
                 albums = bundle.albums,
                 artists = bundle.artists,
                 playlists = bundle.playlists,
@@ -498,6 +531,7 @@ class MusicRepository(
     // ---- YouTube Music Account Verification & Library Sync ----
     suspend fun verifyAndFetchAccount(cookie: String): YouTubeAccount? = withContext(Dispatchers.IO) {
         InnerTubeClient.updateAuth(cookie)
+        TrackGuard.clearUnplayableCache()
         runCatching { InnerTubeClient.fetchAccountInfo(cookie) }.getOrNull()
     }
 
@@ -586,14 +620,15 @@ class MusicRepository(
     }
 
     suspend fun createPlaylistWithTracks(name: String, description: String, tracks: List<Track>): Long = withContext(Dispatchers.IO) {
+        val uniqueTracks = TrackGuard.deduplicateAndFilter(tracks)
         val id = dao.insertPlaylist(
             PlaylistEntity(
                 name = name.trim(),
                 description = description.trim(),
-                coverUrl = tracks.firstOrNull()?.artworkUrl
+                coverUrl = uniqueTracks.firstOrNull()?.artworkUrl
             )
         )
-        tracks.forEach { t ->
+        uniqueTracks.forEach { t ->
             if (dao.getTrackById(t.id) == null) {
                 dao.upsertTrack(SavedTrackEntity.fromTrack(t))
             }
@@ -606,7 +641,15 @@ class MusicRepository(
         dao.deletePlaylist(playlistId)
     }
 
-    suspend fun addTrackToPlaylist(playlistId: Long, track: Track) = withContext(Dispatchers.IO) {
+    /**
+     * Adds [track] to playlist if neither the same ID nor an equivalent song (same title+artist)
+     * already exists inside the playlist. Returns true if newly added, false if duplicate skipped.
+     */
+    suspend fun addTrackToPlaylist(playlistId: Long, track: Track): Boolean = withContext(Dispatchers.IO) {
+        val existingTracks = dao.getTracksForPlaylistOnce(playlistId).map { it.toTrack() }
+        if (existingTracks.any { TrackGuard.isSameSong(it, track) }) {
+            return@withContext false
+        }
         val existing = dao.getTrackById(track.id)
         if (existing == null) {
             dao.upsertTrack(SavedTrackEntity.fromTrack(track))
@@ -615,6 +658,7 @@ class MusicRepository(
         if (!track.artworkUrl.isNullOrBlank()) {
             dao.updatePlaylistCover(playlistId, track.artworkUrl)
         }
+        true
     }
 
     suspend fun removeTrackFromPlaylist(playlistId: Long, trackId: String) = withContext(Dispatchers.IO) {
