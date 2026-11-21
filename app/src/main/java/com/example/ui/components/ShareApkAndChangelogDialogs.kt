@@ -177,7 +177,7 @@ fun ShareApkLinkDialog(
                             overflow = TextOverflow.Ellipsis
                         )
                         Text(
-                            text = "Koplingfy $versionLabel • GitHub Releases",
+                            text = "Koplingfy $versionLabel • Unduhan Resmi",
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                             maxLines = 1,
@@ -232,7 +232,7 @@ fun ShareApkLinkDialog(
                             text = if (isDirectApk) {
                                 "Klik / Scan = Langsung Unduh APK"
                             } else {
-                                "Tautan Rilis GitHub Terbaru"
+                                "Tautan Unduhan Resmi Terbaru"
                             },
                             style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Bold),
                             color = if (isDirectApk) primary else MaterialTheme.colorScheme.onSecondaryContainer
@@ -299,7 +299,7 @@ fun ShareApkLinkDialog(
                     Spacer(modifier = Modifier.height(8.dp))
                 } else {
                     Text(
-                        text = "Unggah aset .apk di GitHub Releases (${updateState.repoSlug}) agar tautan ini langsung mengunduh file APK saat diklik atau discan.",
+                        text = "Scan QR Code atau bagikan tautan di bawah agar teman dapat mengunduh versi terbaru Koplingfy.",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         textAlign = TextAlign.Center
@@ -307,7 +307,7 @@ fun ShareApkLinkDialog(
                     Spacer(modifier = Modifier.height(10.dp))
                 }
 
-                // Exact URL Copy Box
+                // Masked Copyable Download Link Box (hides repository path on screen)
                 Surface(
                     onClick = { onCopyLink(downloadUrl) },
                     shape = RoundedCornerShape(14.dp),
@@ -320,17 +320,25 @@ fun ShareApkLinkDialog(
                     Row(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .padding(horizontal = 12.dp, vertical = 10.dp),
+                            .padding(horizontal = 12.dp, vertical = 12.dp),
                         verticalAlignment = Alignment.CenterVertically
                     ) {
-                        Text(
-                            text = downloadUrl,
-                            style = MaterialTheme.typography.labelSmall.copy(fontFamily = FontFamily.Monospace),
-                            color = MaterialTheme.colorScheme.onSurface,
-                            maxLines = 2,
-                            overflow = TextOverflow.Ellipsis,
-                            modifier = Modifier.weight(1f)
-                        )
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                text = apkFileName ?: "Koplingfy-$versionLabel.apk",
+                                style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.SemiBold),
+                                color = MaterialTheme.colorScheme.onSurface,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                            Text(
+                                text = "Ketuk untuk menyalin tautan unduhan resmi",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                        }
                         Spacer(modifier = Modifier.width(8.dp))
                         Icon(
                             imageVector = Icons.Rounded.ContentCopy,
@@ -579,7 +587,7 @@ fun InteractiveChangelogDialog(
                                 .testTag("changelog_tab_local")
                         )
                         ChangelogTabPill(
-                            label = "Rilis GitHub",
+                            label = "Riwayat Rilis",
                             icon = Icons.Rounded.History,
                             selected = selectedTab == 1,
                             onClick = {
@@ -649,14 +657,14 @@ fun InteractiveChangelogDialog(
                         }
                     }
                 } else {
-                    // Tab 2: GitHub Releases Timeline
+                    // Tab 2: Official Releases Timeline
                     Row(
                         modifier = Modifier.fillMaxWidth(),
                         horizontalArrangement = Arrangement.SpaceBetween,
                         verticalAlignment = Alignment.CenterVertically
                     ) {
                         Text(
-                            text = "github.com/${updateState.repoSlug}",
+                            text = "Riwayat Versi Resmi Koplingfy",
                             style = MaterialTheme.typography.labelMedium,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                             maxLines = 1,
@@ -670,7 +678,7 @@ fun InteractiveChangelogDialog(
                         ) {
                             Icon(
                                 imageVector = Icons.Rounded.Refresh,
-                                contentDescription = "Muat ulang rilis GitHub",
+                                contentDescription = "Muat ulang riwayat rilis",
                                 tint = primary
                             )
                         }
@@ -692,7 +700,7 @@ fun InteractiveChangelogDialog(
                                 ) {
                                     CircularProgressIndicator(color = primary, strokeWidth = 3.dp)
                                     Text(
-                                        text = "Memuat riwayat rilis dari GitHub…",
+                                        text = "Memuat riwayat rilis…",
                                         style = MaterialTheme.typography.bodySmall,
                                         color = MaterialTheme.colorScheme.onSurfaceVariant
                                     )
@@ -741,12 +749,12 @@ fun InteractiveChangelogDialog(
                                         modifier = Modifier.size(34.dp)
                                     )
                                     Text(
-                                        text = "Belum ada rilis GitHub yang dipublikasikan",
+                                        text = "Belum ada riwayat rilis yang dipublikasikan",
                                         style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.SemiBold),
                                         textAlign = TextAlign.Center
                                     )
                                     Text(
-                                        text = "Begitu Anda memublikasikan rilis & file APK di github.com/${updateState.repoSlug}/releases, riwayat changelog lengkap akan tampil otomatis di sini.",
+                                        text = "Catatan pembaruan dan tautan unduhan APK resmi Koplingfy akan tampil otomatis di sini saat versi baru tersedia.",
                                         style = MaterialTheme.typography.bodySmall,
                                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                                         textAlign = TextAlign.Center
@@ -940,7 +948,7 @@ private fun GitHubReleaseTimelineCard(
 ) {
     val primary = MaterialTheme.colorScheme.primary
     val publishedShort = remember(release.publishedAt) {
-        release.publishedAt.take(10).ifBlank { "Rilis GitHub" }
+        release.publishedAt.take(10).ifBlank { "Rilis Resmi" }
     }
     val apkSizeLabel = remember(release.apkSizeBytes) {
         if (release.apkSizeBytes > 0L) "%.1f MB".format(release.apkSizeBytes / (1024.0 * 1024.0)) else null

@@ -105,13 +105,35 @@ object SongRecognitionService {
                 - Tulis `heardSummary` dan `reason` dalam Bahasa Indonesia yang santai dan ringkas.
             """.trimIndent()
 
-            val response = withTimeout(60_000L) {
-                recognitionModel.generateContent(
-                    content {
-                        inlineData(audioBytes, mimeType)
-                        text(prompt)
+            ensureAppCheckTokenReady(forceRefresh = false)
+            val response = try {
+                withTimeout(60_000L) {
+                    recognitionModel.generateContent(
+                        content {
+                            inlineData(audioBytes, mimeType)
+                            text(prompt)
+                        }
+                    )
+                }
+            } catch (firstErr: Exception) {
+                if (firstErr is CancellationException && firstErr !is TimeoutCancellationException) throw firstErr
+                val msg = firstErr.localizedMessage.orEmpty()
+                if (msg.contains("403", ignoreCase = true) ||
+                    msg.contains("App Check", ignoreCase = true) ||
+                    msg.contains("attestation", ignoreCase = true)
+                ) {
+                    ensureAppCheckTokenReady(forceRefresh = true)
+                    withTimeout(60_000L) {
+                        recognitionModel.generateContent(
+                            content {
+                                inlineData(audioBytes, mimeType)
+                                text(prompt)
+                            }
+                        )
                     }
-                )
+                } else {
+                    throw firstErr
+                }
             }
             val rawJson = response.text?.takeIf { it.isNotBlank() }
                 ?: return@withContext Result.failure(
@@ -126,7 +148,7 @@ object SongRecognitionService {
             throw e
         } catch (e: Exception) {
             Log.e(TAG, "Firebase AI audio recognition failed", e)
-            Result.failure(Exception(e.localizedMessage ?: "Gagal mengenali audio saat ini."))
+            Result.failure(Exception(LyricsTranslator.formatFriendlyAiError(e, "Gagal mengenali audio saat ini.")))
         }
     }
 
@@ -154,8 +176,25 @@ object SongRecognitionService {
                 - Jangan mengarang lagu fiktif. Jika benar-benar tidak ada yang cocok, set `found = false`.
             """.trimIndent()
 
-            val response = withTimeout(60_000L) {
-                recognitionModel.generateContent(prompt)
+            ensureAppCheckTokenReady(forceRefresh = false)
+            val response = try {
+                withTimeout(60_000L) {
+                    recognitionModel.generateContent(prompt)
+                }
+            } catch (firstErr: Exception) {
+                if (firstErr is CancellationException && firstErr !is TimeoutCancellationException) throw firstErr
+                val msg = firstErr.localizedMessage.orEmpty()
+                if (msg.contains("403", ignoreCase = true) ||
+                    msg.contains("App Check", ignoreCase = true) ||
+                    msg.contains("attestation", ignoreCase = true)
+                ) {
+                    ensureAppCheckTokenReady(forceRefresh = true)
+                    withTimeout(60_000L) {
+                        recognitionModel.generateContent(prompt)
+                    }
+                } else {
+                    throw firstErr
+                }
             }
             val rawJson = response.text?.takeIf { it.isNotBlank() }
                 ?: return@withContext Result.failure(
@@ -170,7 +209,7 @@ object SongRecognitionService {
             throw e
         } catch (e: Exception) {
             Log.e(TAG, "Firebase AI lyrics search failed", e)
-            Result.failure(Exception(e.localizedMessage ?: "Gagal mencari lagu dari lirik."))
+            Result.failure(Exception(LyricsTranslator.formatFriendlyAiError(e, "Gagal mencari lagu dari lirik.")))
         }
     }
 

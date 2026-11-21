@@ -23,9 +23,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.OpenInNew
 import androidx.compose.material.icons.rounded.AutoAwesome
 import androidx.compose.material.icons.rounded.CheckCircle
-import androidx.compose.material.icons.rounded.Code
 import androidx.compose.material.icons.rounded.Download
-import androidx.compose.material.icons.rounded.Edit
 import androidx.compose.material.icons.rounded.HighQuality
 import androidx.compose.material.icons.rounded.History
 import androidx.compose.material.icons.rounded.Info
@@ -34,26 +32,20 @@ import androidx.compose.material.icons.rounded.NewReleases
 import androidx.compose.material.icons.rounded.Person
 import androidx.compose.material.icons.rounded.QrCode2
 import androidx.compose.material.icons.rounded.Refresh
-import androidx.compose.material.icons.rounded.Share
 import androidx.compose.material.icons.rounded.SystemUpdate
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
-import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
-import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -65,7 +57,6 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.example.data.remote.AppUpdateUiState
 import com.example.data.remote.GitHubReleaseInfo
-import com.example.data.remote.GitHubUpdateChecker
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -76,13 +67,10 @@ fun AppUpdateSectionCard(
     onToggleAutoCheck: (Boolean) -> Unit,
     onCheckUpdateNow: () -> Unit,
     onDownloadUpdate: (GitHubReleaseInfo) -> Unit,
-    onUpdateGitHubRepo: (String) -> Boolean,
     onOpenShareApk: () -> Unit = {},
     onOpenChangelog: () -> Unit = {},
     modifier: Modifier = Modifier
 ) {
-    var showEditRepoDialog by remember { mutableStateOf(false) }
-
     Surface(
         modifier = modifier
             .fillMaxWidth()
@@ -105,7 +93,7 @@ fun AppUpdateSectionCard(
                     )
                     Spacer(modifier = Modifier.width(10.dp))
                     Text(
-                        text = "Pembaruan Aplikasi (GitHub)",
+                        text = "Pembaruan Aplikasi",
                         style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.SemiBold)
                     )
                 }
@@ -134,53 +122,6 @@ fun AppUpdateSectionCard(
                 }
             }
 
-            Spacer(modifier = Modifier.height(12.dp))
-
-            // Source repository row with quick edit
-            Surface(
-                shape = RoundedCornerShape(14.dp),
-                color = MaterialTheme.colorScheme.surfaceContainerHigh.copy(alpha = 0.72f),
-                modifier = Modifier.fillMaxWidth()
-            ) {
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(start = 12.dp, end = 6.dp, top = 8.dp, bottom = 8.dp),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Icon(
-                        imageVector = Icons.Rounded.Code,
-                        contentDescription = null,
-                        tint = MaterialTheme.colorScheme.primary,
-                        modifier = Modifier.size(18.dp)
-                    )
-                    Spacer(modifier = Modifier.width(10.dp))
-                    Column(modifier = Modifier.weight(1f)) {
-                        Text(
-                            text = "Repositori GitHub",
-                            style = MaterialTheme.typography.labelSmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                        Text(
-                            text = updateState.repoSlug,
-                            style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.SemiBold),
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis
-                        )
-                    }
-                    IconButton(
-                        onClick = { showEditRepoDialog = true },
-                        modifier = Modifier.testTag("settings_edit_github_repo_button")
-                    ) {
-                        Icon(
-                            imageVector = Icons.Rounded.Edit,
-                            contentDescription = "Ubah repositori GitHub",
-                            tint = MaterialTheme.colorScheme.primary
-                        )
-                    }
-                }
-            }
-
             Spacer(modifier = Modifier.height(10.dp))
 
             // Auto-check toggle
@@ -197,7 +138,7 @@ fun AppUpdateSectionCard(
                         style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.SemiBold)
                     )
                     Text(
-                        text = "Periksa rilis terbaru GitHub secara otomatis saat membuka Koplingfy",
+                        text = "Periksa pembaruan terbaru secara otomatis saat membuka Koplingfy",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
@@ -224,7 +165,7 @@ fun AppUpdateSectionCard(
                             .format(Date(updateState.lastCheckedAtMillis))
                         "Terakhir diperiksa: $formatted"
                     }
-                    else -> "Ketuk tombol di bawah untuk memeriksa rilis terbaru dari GitHub."
+                    else -> "Ketuk tombol di bawah untuk memeriksa pembaruan terbaru Koplingfy."
                 }
             }
             Text(
@@ -299,7 +240,7 @@ fun AppUpdateSectionCard(
                                 color = MaterialTheme.colorScheme.onPrimary
                             )
                             Spacer(modifier = Modifier.width(8.dp))
-                            Text("Memeriksa GitHub…")
+                            Text("Memeriksa pembaruan…")
                         } else {
                             Icon(
                                 imageVector = Icons.Rounded.Refresh,
@@ -355,18 +296,6 @@ fun AppUpdateSectionCard(
             }
         }
     }
-
-    if (showEditRepoDialog) {
-        EditGitHubRepoDialog(
-            currentRepo = updateState.repoSlug,
-            onDismiss = { showEditRepoDialog = false },
-            onSave = { newRepo ->
-                val saved = onUpdateGitHubRepo(newRepo)
-                if (saved) showEditRepoDialog = false
-                saved
-            }
-        )
-    }
 }
 
 @OptIn(ExperimentalLayoutApi::class)
@@ -374,9 +303,7 @@ fun AppUpdateSectionCard(
 fun AboutKoplingfyCard(
     currentVersionName: String,
     currentVersionCode: Int,
-    githubRepoSlug: String,
     onOpenTikTokOwner: () -> Unit,
-    onOpenGitHubRepo: () -> Unit,
     onShareApp: () -> Unit,
     onOpenChangelog: () -> Unit = {},
     modifier: Modifier = Modifier
@@ -533,27 +460,11 @@ fun AboutKoplingfyCard(
 
             Spacer(modifier = Modifier.height(10.dp))
 
-            // Secondary links: GitHub Releases + Bagikan APK (QR) + Changelog
+            // Secondary links: Bagikan APK (QR) + Changelog Interaktif
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.spacedBy(8.dp)
             ) {
-                OutlinedButton(
-                    onClick = onOpenGitHubRepo,
-                    shape = RoundedCornerShape(14.dp),
-                    modifier = Modifier
-                        .weight(1f)
-                        .height(48.dp)
-                        .testTag("about_github_repo_button")
-                ) {
-                    Icon(
-                        imageVector = Icons.Rounded.Code,
-                        contentDescription = null,
-                        modifier = Modifier.size(17.dp)
-                    )
-                    Spacer(modifier = Modifier.width(5.dp))
-                    Text("GitHub", maxLines = 1, overflow = TextOverflow.Ellipsis)
-                }
                 OutlinedButton(
                     onClick = onShareApp,
                     shape = RoundedCornerShape(14.dp),
@@ -567,28 +478,25 @@ fun AboutKoplingfyCard(
                         contentDescription = null,
                         modifier = Modifier.size(17.dp)
                     )
-                    Spacer(modifier = Modifier.width(5.dp))
+                    Spacer(modifier = Modifier.width(6.dp))
                     Text("Bagikan APK", maxLines = 1, overflow = TextOverflow.Ellipsis)
                 }
-            }
-
-            Spacer(modifier = Modifier.height(8.dp))
-
-            OutlinedButton(
-                onClick = onOpenChangelog,
-                shape = RoundedCornerShape(14.dp),
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .height(48.dp)
-                    .testTag("about_open_changelog_button")
-            ) {
-                Icon(
-                    imageVector = Icons.Rounded.History,
-                    contentDescription = null,
-                    modifier = Modifier.size(18.dp)
-                )
-                Spacer(modifier = Modifier.width(6.dp))
-                Text("Lihat Changelog Interaktif (Apa yang Baru)", maxLines = 1, overflow = TextOverflow.Ellipsis)
+                OutlinedButton(
+                    onClick = onOpenChangelog,
+                    shape = RoundedCornerShape(14.dp),
+                    modifier = Modifier
+                        .weight(1f)
+                        .height(48.dp)
+                        .testTag("about_open_changelog_button")
+                ) {
+                    Icon(
+                        imageVector = Icons.Rounded.History,
+                        contentDescription = null,
+                        modifier = Modifier.size(17.dp)
+                    )
+                    Spacer(modifier = Modifier.width(6.dp))
+                    Text("Apa yang Baru", maxLines = 1, overflow = TextOverflow.Ellipsis)
+                }
             }
 
             Spacer(modifier = Modifier.height(14.dp))
@@ -644,7 +552,7 @@ fun AboutKoplingfyCard(
                     modifier = Modifier.size(14.dp)
                 )
                 Text(
-                    text = "Repo: github.com/$githubRepoSlug • Dibuat dengan semangat musik oleh @budikopling10",
+                    text = "Koplingfy v$currentVersionName • Dibuat dengan semangat musik oleh @budikopling10",
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
@@ -658,8 +566,7 @@ fun AppUpdateAvailableDialog(
     currentVersionName: String,
     release: GitHubReleaseInfo,
     onDismiss: () -> Unit,
-    onDownloadApk: () -> Unit,
-    onOpenReleasePage: () -> Unit
+    onDownloadApk: () -> Unit
 ) {
     val sizeLabel = remember(release.apkSizeBytes) {
         if (release.apkSizeBytes > 0L) {
@@ -775,85 +682,15 @@ fun AppUpdateAvailableDialog(
                     modifier = Modifier.size(18.dp)
                 )
                 Spacer(modifier = Modifier.width(6.dp))
-                Text(if (release.apkDownloadUrl != null) "Unduh APK" else "Buka Rilis")
+                Text("Unduh APK")
             }
         },
         dismissButton = {
-            Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-                if (release.apkDownloadUrl != null) {
-                    TextButton(onClick = onOpenReleasePage) {
-                        Text("Detail")
-                    }
-                }
-                TextButton(
-                    onClick = onDismiss,
-                    modifier = Modifier.testTag("dialog_dismiss_update_button")
-                ) {
-                    Text("Nanti")
-                }
-            }
-        }
-    )
-}
-
-@Composable
-private fun EditGitHubRepoDialog(
-    currentRepo: String,
-    onDismiss: () -> Unit,
-    onSave: (String) -> Boolean
-) {
-    var input by remember(currentRepo) { mutableStateOf(currentRepo) }
-    var errorMsg by remember { mutableStateOf<String?>(null) }
-
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        containerColor = MaterialTheme.colorScheme.surface,
-        title = {
-            Text(
-                text = "Repositori Update GitHub",
-                style = MaterialTheme.typography.titleLarge.copy(fontWeight = FontWeight.Bold)
-            )
-        },
-        text = {
-            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                Text(
-                    text = "Masukkan nama repositori GitHub Anda (contoh: budikopling10/Koplingfy atau tempel link https://github.com/username/repo).",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-                OutlinedTextField(
-                    value = input,
-                    onValueChange = {
-                        input = it
-                        errorMsg = null
-                    },
-                    label = { Text("Owner / Repo GitHub") },
-                    placeholder = { Text(GitHubUpdateChecker.DEFAULT_GITHUB_REPO) },
-                    isError = errorMsg != null,
-                    supportingText = errorMsg?.let { msg -> { Text(msg) } },
-                    singleLine = true,
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .testTag("edit_github_repo_input")
-                )
-            }
-        },
-        confirmButton = {
-            Button(
-                onClick = {
-                    val ok = onSave(input)
-                    if (!ok) {
-                        errorMsg = "Format tidak valid. Gunakan username/namarepo atau link github.com."
-                    }
-                },
-                modifier = Modifier.testTag("confirm_github_repo_button")
+            TextButton(
+                onClick = onDismiss,
+                modifier = Modifier.testTag("dialog_dismiss_update_button")
             ) {
-                Text("Simpan & Cek")
-            }
-        },
-        dismissButton = {
-            TextButton(onClick = onDismiss) {
-                Text("Batal")
+                Text("Nanti")
             }
         }
     )

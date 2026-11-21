@@ -25,7 +25,10 @@ import androidx.media3.datasource.cache.LeastRecentlyUsedCacheEvictor
 import androidx.media3.datasource.cache.SimpleCache
 import androidx.media3.datasource.okhttp.OkHttpDataSource
 import androidx.media3.exoplayer.DefaultLoadControl
+import androidx.media3.exoplayer.DefaultRenderersFactory
 import androidx.media3.exoplayer.ExoPlayer
+import androidx.media3.exoplayer.audio.AudioSink
+import androidx.media3.exoplayer.audio.DefaultAudioSink
 import androidx.media3.exoplayer.source.MergingMediaSource
 import androidx.media3.exoplayer.source.ProgressiveMediaSource
 import com.example.data.remote.InnerTubeClient
@@ -71,6 +74,7 @@ class KoplingfyAudioEngine(
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
 
     private var exoPlayer: ExoPlayer? = null
+    private val beatAudioProcessor = BeatDetectorAudioProcessor()
     private var equalizer: Equalizer? = null
     private var bassBoost: BassBoost? = null
     private var loudnessEnhancer: LoudnessEnhancer? = null
@@ -189,8 +193,10 @@ class KoplingfyAudioEngine(
             if (pos > 0L) lastKnownGoodPositionMs = pos
             val dur = player.duration.takeIf { it != C.TIME_UNSET && it > 0L } ?: _state.value.durationMs
             if (isPlaying) {
+                AudioBeatMonitor.setPlaybackActive(true)
                 startProgressPolling()
             } else {
+                AudioBeatMonitor.setPlaybackActive(false)
                 stopProgressPolling()
             }
             // Do not clear isBuffering during track-end handoff (ExoPlayer emits isPlaying=false right
@@ -268,7 +274,21 @@ class KoplingfyAudioEngine(
             .setContentType(C.AUDIO_CONTENT_TYPE_MUSIC)
             .build()
 
-        return ExoPlayer.Builder(appContext)
+        val renderersFactory = object : DefaultRenderersFactory(appContext) {
+            override fun buildAudioSink(
+                context: Context,
+                enableFloatOutput: Boolean,
+                enableAudioTrackPlaybackParams: Boolean
+            ): AudioSink {
+                return DefaultAudioSink.Builder(context)
+                    .setEnableFloatOutput(enableFloatOutput)
+                    .setEnableAudioTrackPlaybackParams(enableAudioTrackPlaybackParams)
+                    .setAudioProcessors(arrayOf(beatAudioProcessor))
+                    .build()
+            }
+        }
+
+        return ExoPlayer.Builder(appContext, renderersFactory)
             .setLoadControl(loadControl)
             .setAudioAttributes(audioAttributes, /* handleAudioFocus = */ true)
             .setHandleAudioBecomingNoisy(true)
@@ -306,6 +326,7 @@ class KoplingfyAudioEngine(
         pendingStartPositionMs = 0L
         pendingAutoStart = true
         lastKnownGoodPositionMs = safeStartPos
+        AudioBeatMonitor.resetForNewTrack()
 
         _state.value = AudioEngineState(
             isPlaying = false,

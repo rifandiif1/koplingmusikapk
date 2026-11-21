@@ -627,6 +627,7 @@ fun FullScreenPlayerModal(
                 accentGlow = accentGlow,
                 isPlaying = playerState.isPlaying,
                 backgroundStyle = settings.playerBackgroundStyle,
+                playbackSpeed = settings.playbackSpeed,
                 modifier = Modifier.fillMaxSize()
             )
         }

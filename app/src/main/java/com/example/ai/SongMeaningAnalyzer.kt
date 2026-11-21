@@ -259,9 +259,19 @@ object SongMeaningAnalyzer {
         val modelsToTry = listOf(meaningModel, fallbackMeaningModel)
         var lastError: Exception? = null
 
+        ensureAppCheckTokenReady(forceRefresh = false)
         for ((attemptIdx, model) in modelsToTry.withIndex()) {
             try {
-                if (attemptIdx > 0) delay(700L)
+                if (attemptIdx > 0) {
+                    val prevMsg = lastError?.localizedMessage.orEmpty()
+                    if (prevMsg.contains("403", ignoreCase = true) ||
+                        prevMsg.contains("App Check", ignoreCase = true) ||
+                        prevMsg.contains("attestation", ignoreCase = true)
+                    ) {
+                        ensureAppCheckTokenReady(forceRefresh = true)
+                    }
+                    delay(650L)
+                }
                 val response = withTimeout(55_000L) {
                     model.generateContent(prompt)
                 }

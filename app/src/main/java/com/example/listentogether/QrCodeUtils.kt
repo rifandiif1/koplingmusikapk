@@ -160,7 +160,7 @@ object QrCodeUtils {
             textSize = 30f
             textAlign = Paint.Align.CENTER
         }
-        canvas.drawText("Rilis Resmi GitHub • ${versionLabel.take(20)}", cardW / 2f, 148f, subtitlePaint)
+        canvas.drawText("Rilis Resmi Koplingfy • ${versionLabel.take(20)}", cardW / 2f, 148f, subtitlePaint)
 
         // QR Frame border
         val framePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {

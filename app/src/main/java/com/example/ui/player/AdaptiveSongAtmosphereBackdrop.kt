@@ -9,6 +9,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Modifier
@@ -23,6 +24,7 @@ import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.drawscope.rotate
 import com.example.model.PlayerBackgroundStyle
 import com.example.model.Track
+import com.example.player.AudioBeatMonitor
 import kotlin.math.PI
 import kotlin.math.cos
 import kotlin.math.sin
@@ -114,8 +116,9 @@ fun resolveSongAtmosphereTheme(
 }
 
 /**
- * Lightweight, 60fps song-reactive atmospheric particle & ambient glow layer
- * rendered behind Now Playing controls without interfering with readability or gestures.
+ * Lightweight, 60fps real-time beat-reactive atmospheric particle & ambient glow layer
+ * rendered behind Now Playing controls. Particle velocity, size/glow pulse, and wave
+ * expansion accelerate directly on every detected bass/kick beat and follow the song's live BPM.
  */
 @Composable
 fun AdaptiveSongAtmosphereBackdrop(
@@ -125,6 +128,7 @@ fun AdaptiveSongAtmosphereBackdrop(
     accentGlow: Color,
     isPlaying: Boolean,
     backgroundStyle: PlayerBackgroundStyle,
+    playbackSpeed: Float = 1.0f,
     modifier: Modifier = Modifier
 ) {
     val theme = remember(track.id, track.title, track.genre, moodTags) {
@@ -158,24 +162,45 @@ fun AdaptiveSongAtmosphereBackdrop(
 
     // Smooth energy scale so pausing gently settles the particles into a serene drift
     val activityScale by animateFloatAsState(
-        targetValue = if (isPlaying) 1.0f else 0.28f,
-        animationSpec = tween(durationMillis = 650),
+        targetValue = if (isPlaying) 1.0f else 0.22f,
+        animationSpec = tween(durationMillis = 550),
         label = "atmosphere_activity"
     )
+    val latestIsPlaying by rememberUpdatedState(isPlaying)
+    val latestPlaybackSpeed by rememberUpdatedState(playbackSpeed)
+    val latestActivityScale by rememberUpdatedState(activityScale)
+
     val styleIntensity = when (backgroundStyle) {
-        PlayerBackgroundStyle.SOLID -> 0.52f
+        PlayerBackgroundStyle.SOLID -> 0.54f
         PlayerBackgroundStyle.GRADIENT -> 0.92f
         PlayerBackgroundStyle.BLUR_ARTWORK -> 0.86f
     }
 
     var elapsedSeconds by remember { mutableFloatStateOf(0f) }
+    var liveBeatPulse by remember { mutableFloatStateOf(0f) }
+    var liveAudioEnergy by remember { mutableFloatStateOf(0f) }
+
     LaunchedEffect(track.id) {
         var lastFrameNanos = 0L
+        var smoothedSpeed = 0.75f
         while (true) {
             withFrameNanos { frameNanos ->
+                val beatFrame = AudioBeatMonitor.sample(
+                    nowNanos = frameNanos,
+                    isPlaying = latestIsPlaying,
+                    playbackSpeed = latestPlaybackSpeed
+                )
+                // Fast attack on beat hit, smooth glide on release so particles surge crisply with the beat
+                val targetSpeed = beatFrame.speedMultiplier * (0.22f + 0.78f * latestActivityScale)
+                val lerpFactor = if (targetSpeed > smoothedSpeed) 0.42f else 0.16f
+                smoothedSpeed += (targetSpeed - smoothedSpeed) * lerpFactor
+
+                liveBeatPulse = beatFrame.beatPulse * latestActivityScale
+                liveAudioEnergy = beatFrame.energy * latestActivityScale
+
                 if (lastFrameNanos != 0L) {
                     val dt = ((frameNanos - lastFrameNanos) / 1_000_000_000f).coerceIn(0f, 0.06f)
-                    elapsedSeconds += dt * (0.28f + 0.72f * activityScale)
+                    elapsedSeconds += dt * smoothedSpeed
                 }
                 lastFrameNanos = frameNanos
             }
@@ -190,26 +215,29 @@ fun AdaptiveSongAtmosphereBackdrop(
         if (w <= 0f || h <= 0f) return@Canvas
 
         val t = elapsedSeconds
-        val globalAlpha = styleIntensity * (0.62f + 0.38f * activityScale)
+        val beat = liveBeatPulse
+        val energy = liveAudioEnergy
+        val globalAlpha = (styleIntensity * (0.60f + 0.28f * activityScale + 0.18f * beat + 0.12f * energy))
+            .coerceIn(0.25f, 1.15f)
 
         when (theme) {
             SongAtmosphereTheme.EMBERS_ENERGY -> {
-                drawEmbersEnergy(w, h, t, globalAlpha, accentPrimary, accentGlow, particles)
+                drawEmbersEnergy(w, h, t, beat, globalAlpha, accentPrimary, accentGlow, particles)
             }
             SongAtmosphereTheme.RAIN_MELANCHOLY -> {
-                drawRainMelancholy(w, h, t, globalAlpha, accentPrimary, accentGlow, particles)
+                drawRainMelancholy(w, h, t, beat, globalAlpha, accentPrimary, accentGlow, particles)
             }
             SongAtmosphereTheme.PETALS_ROMANCE -> {
-                drawPetalsRomance(w, h, t, globalAlpha, accentPrimary, accentGlow, particles, reusablePetalPath)
+                drawPetalsRomance(w, h, t, beat, globalAlpha, accentPrimary, accentGlow, particles, reusablePetalPath)
             }
             SongAtmosphereTheme.NEON_PULSE -> {
-                drawNeonPulse(w, h, t, globalAlpha, accentPrimary, accentGlow, particles)
+                drawNeonPulse(w, h, t, beat, globalAlpha, accentPrimary, accentGlow, particles)
             }
             SongAtmosphereTheme.AURORA_COSMIC -> {
-                drawAuroraCosmic(w, h, t, globalAlpha, accentPrimary, accentGlow, particles)
+                drawAuroraCosmic(w, h, t, beat, globalAlpha, accentPrimary, accentGlow, particles)
             }
             SongAtmosphereTheme.FLOATING_BOKEH -> {
-                drawFloatingBokeh(w, h, t, globalAlpha, accentPrimary, accentGlow, particles)
+                drawFloatingBokeh(w, h, t, beat, globalAlpha, accentPrimary, accentGlow, particles)
             }
         }
     }
@@ -219,56 +247,55 @@ private fun DrawScope.drawEmbersEnergy(
     w: Float,
     h: Float,
     t: Float,
+    beat: Float,
     globalAlpha: Float,
     accentPrimary: Color,
     accentGlow: Color,
     particles: List<AtmosphereParticle>
 ) {
-    // Warm rising floor glow
-    val pulse = 0.85f + 0.15f * sin(t * 2.8f)
+    // Warm rising floor glow that flares on every kick/bass hit
+    val pulse = 0.80f + 0.15f * sin(t * 2.8f) + 0.42f * beat
     drawRect(
         brush = Brush.verticalGradient(
             colors = listOf(
                 Color.Transparent,
-                accentPrimary.copy(alpha = 0.08f * globalAlpha * pulse),
-                Color(0xFFFF6D2E).copy(alpha = 0.16f * globalAlpha * pulse)
+                accentPrimary.copy(alpha = (0.08f * globalAlpha * pulse).coerceAtMost(0.32f)),
+                Color(0xFFFF6D2E).copy(alpha = (0.16f * globalAlpha * pulse).coerceAtMost(0.42f))
             ),
-            startY = h * 0.48f,
+            startY = h * (0.48f - 0.06f * beat),
             endY = h
         )
     )
 
     val emberWarm = Color(0xFFFFA73B)
+    val radiusBoost = 1.0f + 0.34f * beat
+    val streakBoost = 1.0f + 0.85f * beat
     for (p in particles) {
         val progress = (p.baseY - t * p.speed * 1.45f).mod(1.0f)
         val xNorm = (p.baseX + sin(t * 1.9f + p.phase) * p.swayAmplitude).mod(1.0f)
         val x = xNorm * w
         val y = progress * h
-        // Fade gently near top edge
         val edgeFade = (progress * 3.2f).coerceIn(0f, 1f) * ((1f - progress) * 4f).coerceIn(0f, 1f)
-        val alpha = (p.alpha * edgeFade * globalAlpha * 0.88f).coerceIn(0f, 0.9f)
+        val alpha = (p.alpha * edgeFade * globalAlpha * 0.88f).coerceIn(0f, 0.94f)
         if (alpha < 0.01f) continue
 
         val baseColor = if (p.colorMix > 0.45f) emberWarm else accentGlow
-        val r = (2.2f + p.radiusFactor * 3.8f) * density / 2.6f
+        val r = (2.2f + p.radiusFactor * 3.8f) * (density / 2.6f) * radiusBoost
 
-        // Soft outer ember halo
         drawCircle(
-            color = baseColor.copy(alpha = alpha * 0.34f),
+            color = baseColor.copy(alpha = alpha * 0.36f),
             radius = r * 2.9f,
             center = Offset(x, y)
         )
-        // Bright ember core
         drawCircle(
-            color = Color.White.copy(alpha = alpha * 0.75f),
+            color = Color.White.copy(alpha = alpha * 0.78f),
             radius = r * 0.72f,
             center = Offset(x, y)
         )
-        // Subtle upward spark streak
         drawLine(
-            color = baseColor.copy(alpha = alpha * 0.42f),
+            color = baseColor.copy(alpha = alpha * 0.46f),
             start = Offset(x, y),
-            end = Offset(x - sin(t * 1.9f + p.phase) * 4f, y + r * 4.5f),
+            end = Offset(x - sin(t * 1.9f + p.phase) * 4f, y + r * 4.5f * streakBoost),
             strokeWidth = (r * 0.65f).coerceAtLeast(1f),
             cap = StrokeCap.Round
         )
@@ -279,35 +306,37 @@ private fun DrawScope.drawRainMelancholy(
     w: Float,
     h: Float,
     t: Float,
+    beat: Float,
     globalAlpha: Float,
     accentPrimary: Color,
     accentGlow: Color,
     particles: List<AtmosphereParticle>
 ) {
-    // Cool atmospheric mist shimmer near upper half
     val mistShift = sin(t * 0.5f) * w * 0.06f
+    val mistRadius = w * (0.70f + 0.08f * beat)
     drawCircle(
         brush = Brush.radialGradient(
             colors = listOf(
-                accentGlow.copy(alpha = 0.14f * globalAlpha),
+                accentGlow.copy(alpha = (0.14f * globalAlpha * (1f + 0.3f * beat)).coerceAtMost(0.32f)),
                 Color.Transparent
             ),
             center = Offset(w * 0.5f + mistShift, h * 0.24f),
-            radius = w * 0.72f
+            radius = mistRadius
         ),
-        radius = w * 0.72f,
+        radius = mistRadius,
         center = Offset(w * 0.5f + mistShift, h * 0.24f)
     )
 
     val coolTint = Color(0xFFA7D8FF)
+    val stretchBoost = 1.0f + 0.45f * beat
     for (p in particles) {
         val fallSpeed = 0.36f + p.speed * 2.1f
         val yNorm = (p.baseY + t * fallSpeed).mod(1.08f) - 0.04f
         val xNorm = (p.baseX - yNorm * 0.11f).mod(1.0f)
         val x = xNorm * w
         val y = yNorm * h
-        val len = (18f + p.radiusFactor * 26f) * (density / 2.6f)
-        val alpha = (p.alpha * globalAlpha * 0.46f).coerceIn(0f, 0.55f)
+        val len = (18f + p.radiusFactor * 26f) * (density / 2.6f) * stretchBoost
+        val alpha = (p.alpha * globalAlpha * 0.48f).coerceIn(0f, 0.62f)
         val dropColor = if (p.colorMix > 0.5f) coolTint else accentGlow
 
         drawLine(
@@ -319,17 +348,17 @@ private fun DrawScope.drawRainMelancholy(
         )
     }
 
-    // Occasional soft ripple glow near bottom
     for (i in 0..2) {
         val phase = (t * 0.42f + i * 0.33f).mod(1f)
         val rx = w * (0.22f + i * 0.28f)
         val ry = h * (0.78f + (i % 2) * 0.07f)
-        val rippleAlpha = (1f - phase) * 0.16f * globalAlpha
+        val rippleAlpha = ((1f - phase) * (0.16f + 0.14f * beat) * globalAlpha).coerceAtMost(0.4f)
+        val scale = 1f + 0.22f * beat
         drawOval(
             color = accentPrimary.copy(alpha = rippleAlpha),
-            topLeft = Offset(rx - phase * 58f, ry - phase * 14f),
-            size = Size(phase * 116f, phase * 28f),
-            style = Stroke(width = 1.6f)
+            topLeft = Offset(rx - phase * 58f * scale, ry - phase * 14f * scale),
+            size = Size(phase * 116f * scale, phase * 28f * scale),
+            style = Stroke(width = 1.6f + 0.8f * beat)
         )
     }
 }
@@ -338,6 +367,7 @@ private fun DrawScope.drawPetalsRomance(
     w: Float,
     h: Float,
     t: Float,
+    beat: Float,
     globalAlpha: Float,
     accentPrimary: Color,
     accentGlow: Color,
@@ -345,32 +375,33 @@ private fun DrawScope.drawPetalsRomance(
     petalPath: Path
 ) {
     val blush = Color(0xFFFFB7D5)
-    // Soft romantic radial bloom
+    val bloomRadius = w * (0.66f + 0.09f * beat)
     drawCircle(
         brush = Brush.radialGradient(
             colors = listOf(
-                accentPrimary.copy(alpha = 0.15f * globalAlpha),
-                blush.copy(alpha = 0.06f * globalAlpha),
+                accentPrimary.copy(alpha = (0.15f * globalAlpha * (1f + 0.35f * beat)).coerceAtMost(0.34f)),
+                blush.copy(alpha = (0.06f * globalAlpha * (1f + 0.3f * beat)).coerceAtMost(0.18f)),
                 Color.Transparent
             ),
             center = Offset(w * 0.5f, h * 0.34f),
-            radius = w * 0.68f
+            radius = bloomRadius
         ),
-        radius = w * 0.68f,
+        radius = bloomRadius,
         center = Offset(w * 0.5f, h * 0.34f)
     )
 
+    val sizeBoost = 1.0f + 0.18f * beat
     for (p in particles) {
         val yNorm = (p.baseY + t * p.speed * 0.65f).mod(1.06f) - 0.03f
-        val sway = sin(t * 1.15f + p.phase) * p.swayAmplitude * 1.6f
+        val sway = sin(t * 1.15f + p.phase) * p.swayAmplitude * (1.6f + 0.45f * beat)
         val xNorm = (p.baseX + sway + t * 0.015f).mod(1.0f)
         val x = xNorm * w
         val y = yNorm * h
         val fade = ((1f - yNorm) * 4f).coerceIn(0f, 1f) * (yNorm * 5f).coerceIn(0f, 1f)
-        val alpha = (p.alpha * fade * globalAlpha * 0.65f).coerceIn(0f, 0.72f)
+        val alpha = (p.alpha * fade * globalAlpha * 0.65f).coerceIn(0f, 0.78f)
         if (alpha < 0.01f) continue
 
-        val sz = (6.5f + p.radiusFactor * 7.5f) * (density / 2.6f)
+        val sz = (6.5f + p.radiusFactor * 7.5f) * (density / 2.6f) * sizeBoost
         val angle = (p.phase * 57.3f) + t * p.rotationSpeed
         val tint = if (p.colorMix > 0.5f) blush else accentGlow
 
@@ -397,6 +428,7 @@ private fun DrawScope.drawNeonPulse(
     w: Float,
     h: Float,
     t: Float,
+    beat: Float,
     globalAlpha: Float,
     accentPrimary: Color,
     accentGlow: Color,
@@ -406,38 +438,39 @@ private fun DrawScope.drawNeonPulse(
     val cy = h * 0.34f
     val maxR = maxOf(w, h) * 0.58f
 
-    // Rhythmic expanding neon sound-wave rings centered behind album art
+    // Rhythmic expanding neon sound-wave rings pulsing directly on every detected beat
     for (ring in 0..3) {
         val progress = (t * 0.34f + ring * 0.25f).mod(1f)
-        val r = 36f + progress * maxR
-        val ringAlpha = (1f - progress) * (1f - progress) * 0.26f * globalAlpha
+        val r = 36f + progress * maxR + beat * 14f
+        val ringAlpha = ((1f - progress) * (1f - progress) * (0.24f + 0.26f * beat) * globalAlpha)
+            .coerceIn(0f, 0.62f)
         drawCircle(
             color = if (ring % 2 == 0) accentGlow.copy(alpha = ringAlpha) else accentPrimary.copy(alpha = ringAlpha),
             radius = r,
             center = Offset(cx, cy),
-            style = Stroke(width = 2.2f * (1f - progress * 0.5f))
+            style = Stroke(width = (2.2f + 2.4f * beat) * (1f - progress * 0.45f))
         )
     }
 
-    // Crisp luminous starlight diamond prisms drifting outward/upward
+    val sizeBoost = 1.0f + 0.35f * beat
     for (p in particles) {
         val yNorm = (p.baseY - t * p.speed * 0.85f).mod(1.0f)
         val xNorm = (p.baseX + cos(t * 1.4f + p.phase) * p.swayAmplitude * 0.7f).mod(1.0f)
         val x = xNorm * w
         val y = yNorm * h
-        val twinkle = 0.45f + 0.55f * sin(t * 4.2f + p.phase)
-        val alpha = (p.alpha * twinkle * globalAlpha * 0.78f).coerceIn(0f, 0.85f)
-        val r = (2.8f + p.radiusFactor * 4.2f) * (density / 2.6f)
+        val twinkle = (0.45f + 0.40f * sin(t * 4.2f + p.phase) + 0.35f * beat).coerceIn(0.25f, 1.0f)
+        val alpha = (p.alpha * twinkle * globalAlpha * 0.80f).coerceIn(0f, 0.92f)
+        val r = (2.8f + p.radiusFactor * 4.2f) * (density / 2.6f) * sizeBoost
         val tint = if (p.colorMix > 0.5f) accentGlow else accentPrimary
 
         drawCircle(
-            color = tint.copy(alpha = alpha * 0.28f),
+            color = tint.copy(alpha = alpha * 0.30f),
             radius = r * 2.5f,
             center = Offset(x, y)
         )
         rotate(degrees = 45f + t * p.rotationSpeed * 0.4f, pivot = Offset(x, y)) {
             drawRect(
-                color = Color.White.copy(alpha = alpha * 0.82f),
+                color = Color.White.copy(alpha = alpha * 0.85f),
                 topLeft = Offset(x - r * 0.55f, y - r * 0.55f),
                 size = Size(r * 1.1f, r * 1.1f)
             )
@@ -449,12 +482,12 @@ private fun DrawScope.drawAuroraCosmic(
     w: Float,
     h: Float,
     t: Float,
+    beat: Float,
     globalAlpha: Float,
     accentPrimary: Color,
     accentGlow: Color,
     particles: List<AtmosphereParticle>
 ) {
-    // Twin drifting aurora nebulae
     val orb1 = Offset(
         x = w * (0.28f + 0.16f * sin(t * 0.38f)),
         y = h * (0.24f + 0.08f * cos(t * 0.31f))
@@ -463,35 +496,37 @@ private fun DrawScope.drawAuroraCosmic(
         x = w * (0.74f + 0.14f * cos(t * 0.33f)),
         y = h * (0.62f + 0.09f * sin(t * 0.29f))
     )
+    val r1 = w * (0.64f + 0.09f * beat)
+    val r2 = w * (0.58f + 0.09f * beat)
     drawCircle(
         brush = Brush.radialGradient(
-            colors = listOf(accentGlow.copy(alpha = 0.20f * globalAlpha), Color.Transparent),
+            colors = listOf(accentGlow.copy(alpha = (0.20f * globalAlpha * (1f + 0.32f * beat)).coerceAtMost(0.42f)), Color.Transparent),
             center = orb1,
-            radius = w * 0.65f
+            radius = r1
         ),
-        radius = w * 0.65f,
+        radius = r1,
         center = orb1
     )
     drawCircle(
         brush = Brush.radialGradient(
-            colors = listOf(accentPrimary.copy(alpha = 0.18f * globalAlpha), Color.Transparent),
+            colors = listOf(accentPrimary.copy(alpha = (0.18f * globalAlpha * (1f + 0.32f * beat)).coerceAtMost(0.38f)), Color.Transparent),
             center = orb2,
-            radius = w * 0.60f
+            radius = r2
         ),
-        radius = w * 0.60f,
+        radius = r2,
         center = orb2
     )
 
-    // Twinkling starlight dust motes
+    val starBoost = 1.0f + 0.28f * beat
     for (p in particles) {
         val x = ((p.baseX + sin(t * 0.22f + p.phase) * p.swayAmplitude).mod(1.0f)) * w
-        val y = ((p.baseY - t * p.speed * 0.22f).mod(1.0f)) * h
-        val twinkle = 0.30f + 0.70f * (0.5f + 0.5f * sin(t * 2.4f + p.phase))
-        val alpha = (p.alpha * twinkle * globalAlpha * 0.80f).coerceIn(0f, 0.85f)
-        val r = (1.6f + p.radiusFactor * 2.4f) * (density / 2.6f)
+        val y = ((p.baseY - t * p.speed * 0.24f).mod(1.0f)) * h
+        val twinkle = (0.30f + 0.55f * (0.5f + 0.5f * sin(t * 2.4f + p.phase)) + 0.32f * beat).coerceIn(0.2f, 1.0f)
+        val alpha = (p.alpha * twinkle * globalAlpha * 0.80f).coerceIn(0f, 0.90f)
+        val r = (1.6f + p.radiusFactor * 2.4f) * (density / 2.6f) * starBoost
         val color = if (p.colorMix > 0.6f) Color.White else accentGlow
 
-        drawCircle(color = color.copy(alpha = alpha * 0.32f), radius = r * 2.6f, center = Offset(x, y))
+        drawCircle(color = color.copy(alpha = alpha * 0.34f), radius = r * 2.6f, center = Offset(x, y))
         drawCircle(color = color.copy(alpha = alpha), radius = r * 0.85f, center = Offset(x, y))
     }
 }
@@ -500,18 +535,20 @@ private fun DrawScope.drawFloatingBokeh(
     w: Float,
     h: Float,
     t: Float,
+    beat: Float,
     globalAlpha: Float,
     accentPrimary: Color,
     accentGlow: Color,
     particles: List<AtmosphereParticle>
 ) {
+    val sizeBoost = 1.0f + 0.20f * beat
     for (p in particles) {
-        val yNorm = (p.baseY - t * p.speed * 0.35f).mod(1.12f) - 0.06f
+        val yNorm = (p.baseY - t * p.speed * 0.38f).mod(1.12f) - 0.06f
         val xNorm = (p.baseX + sin(t * 0.55f + p.phase) * p.swayAmplitude).mod(1.0f)
         val x = xNorm * w
         val y = yNorm * h
-        val radius = (14f + p.radiusFactor * 28f) * (density / 2.6f)
-        val alpha = (p.alpha * globalAlpha * 0.22f).coerceIn(0f, 0.26f)
+        val radius = (14f + p.radiusFactor * 28f) * (density / 2.6f) * sizeBoost
+        val alpha = (p.alpha * globalAlpha * (0.21f + 0.10f * beat)).coerceIn(0f, 0.34f)
         val color = if (p.colorMix > 0.45f) accentGlow else accentPrimary
 
         drawCircle(

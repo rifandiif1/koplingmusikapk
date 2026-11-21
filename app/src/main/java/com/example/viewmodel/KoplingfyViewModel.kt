@@ -2704,7 +2704,7 @@ class KoplingfyViewModel(application: Application) : AndroidViewModel(applicatio
         preferences.setAutoCheckUpdates(enabled)
         _updateState.update { it.copy(autoCheckEnabled = enabled) }
         showMessage(
-            if (enabled) "Cek update otomatis GitHub diaktifkan"
+            if (enabled) "Cek update otomatis diaktifkan"
             else "Cek update otomatis dimatikan"
         )
     }
@@ -2743,7 +2743,7 @@ class KoplingfyViewModel(application: Application) : AndroidViewModel(applicatio
                     isChecking = true,
                     repoSlug = repoSlug,
                     errorMessage = null,
-                    statusMessage = if (manual) "Memeriksa rilis terbaru di github.com/$repoSlug…" else it.statusMessage
+                    statusMessage = if (manual) "Memeriksa pembaruan terbaru Koplingfy…" else it.statusMessage
                 )
             }
             when (val res = GitHubUpdateChecker.fetchLatestRelease(repoSlug)) {
@@ -2757,7 +2757,7 @@ class KoplingfyViewModel(application: Application) : AndroidViewModel(applicatio
                                 latestRelease = release,
                                 hasUpdateAvailable = true,
                                 lastCheckedAtMillis = now,
-                                statusMessage = "Versi baru v${release.versionName} tersedia di GitHub!",
+                                statusMessage = "Versi baru v${release.versionName} tersedia!",
                                 errorMessage = null,
                                 showUpdateDialog = true
                             )
@@ -2784,7 +2784,7 @@ class KoplingfyViewModel(application: Application) : AndroidViewModel(applicatio
                 }
                 is UpdateCheckResult.NoReleasesYet -> {
                     val now = System.currentTimeMillis()
-                    val msg = "Belum ada rilis di github.com/${res.repoSlug}. Pastikan rilis APK sudah dipublikasikan."
+                    val msg = "Belum ada pembaruan baru yang tersedia saat ini."
                     _updateState.update {
                         it.copy(
                             isChecking = false,
@@ -2846,7 +2846,7 @@ class KoplingfyViewModel(application: Application) : AndroidViewModel(applicatio
                 is UpdateCheckResult.NoReleasesYet -> {
                     _updateState.update { it.copy(isResolvingShareLink = false) }
                     if (showToastOnResult) {
-                        showMessage("Belum ada rilis di github.com/${res.repoSlug}; QR mengarah ke halaman releases terbaru.")
+                        showMessage("Belum ada rilis APK baru yang dipublikasikan saat ini.")
                     }
                 }
                 is UpdateCheckResult.Error -> {
@@ -2914,7 +2914,7 @@ class KoplingfyViewModel(application: Application) : AndroidViewModel(applicatio
                 _updateState.update {
                     it.copy(
                         isLoadingHistory = false,
-                        historyError = err.message ?: "Gagal memuat riwayat rilis GitHub."
+                        historyError = err.message ?: "Gagal memuat riwayat rilis."
                     )
                 }
             }

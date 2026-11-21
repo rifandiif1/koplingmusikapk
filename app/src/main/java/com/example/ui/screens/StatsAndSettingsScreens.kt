@@ -570,9 +570,7 @@ fun SettingsScreen(
     onToggleAutoCheckUpdates: (Boolean) -> Unit = {},
     onCheckUpdatesNow: () -> Unit = {},
     onDownloadAppUpdate: (GitHubReleaseInfo) -> Unit = {},
-    onUpdateGitHubRepo: (String) -> Boolean = { false },
     onOpenTikTokOwner: () -> Unit = {},
-    onOpenGitHubRepo: () -> Unit = {},
     onShareApp: () -> Unit = {},
     onOpenShareApk: () -> Unit = {},
     onOpenChangelog: () -> Unit = {}
@@ -979,7 +977,7 @@ fun SettingsScreen(
                 )
                 SettingsToggleRow(
                     title = "Terjemahan Lirik Indonesia Otomatis",
-                    subtitle = "Otomatis menerjemahkan lirik lagu asing ke Bahasa Indonesia santai saat diputar",
+                    subtitle = "Otomatis menerjemahkan lirik lagu asing ke Bahasa Indonesia lewat Google Translate",
                     checked = settings.autoTranslateLyrics,
                     onCheckedChange = onAutoTranslateLyricsChange
                 )
@@ -1272,27 +1270,24 @@ fun SettingsScreen(
             }
         }
 
-        // ---- GitHub Auto & Manual Update Checker ----
+        // ---- Auto & Manual App Update Checker ----
         item {
             AppUpdateSectionCard(
                 updateState = updateState,
                 onToggleAutoCheck = onToggleAutoCheckUpdates,
                 onCheckUpdateNow = onCheckUpdatesNow,
                 onDownloadUpdate = onDownloadAppUpdate,
-                onUpdateGitHubRepo = onUpdateGitHubRepo,
                 onOpenShareApk = onOpenShareApk,
                 onOpenChangelog = onOpenChangelog
             )
         }
 
-        // ---- About Koplingfy & Owner Card (TikTok @budikopling10, GitHub, Share APK, Changelog) ----
+        // ---- About Koplingfy & Owner Card (TikTok @budikopling10, Share APK, Changelog) ----
         item {
             AboutKoplingfyCard(
                 currentVersionName = updateState.currentVersionName,
                 currentVersionCode = updateState.currentVersionCode,
-                githubRepoSlug = updateState.repoSlug,
                 onOpenTikTokOwner = onOpenTikTokOwner,
-                onOpenGitHubRepo = onOpenGitHubRepo,
                 onShareApp = onShareApp,
                 onOpenChangelog = onOpenChangelog
             )

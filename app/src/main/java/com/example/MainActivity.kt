@@ -888,9 +888,9 @@ private fun KoplingfyAppRoot(
         val targetUrl = release.apkDownloadUrl ?: release.releasePageUrl
         viewModel.dismissUpdateDialog()
         if (release.apkDownloadUrl != null) {
-            viewModel.showMessage("Memulai unduhan ${release.apkFileName ?: "Koplingfy v${release.versionName}"} dari GitHub…")
+            viewModel.showMessage("Memulai unduhan ${release.apkFileName ?: "Koplingfy v${release.versionName}"}…")
         } else {
-            viewModel.showMessage("Membuka halaman rilis GitHub v${release.versionName}…")
+            viewModel.showMessage("Membuka tautan rilis Koplingfy v${release.versionName}…")
         }
         openTrustedExternalUrl(targetUrl, "Tidak dapat membuka browser untuk mengunduh pembaruan.")
     }
@@ -915,7 +915,7 @@ private fun KoplingfyAppRoot(
                 "Unduh Koplingfy $versionLabel (klik langsung download APK):\n$url\n\n" +
                     "Ikuti TikTok Owner: ${GitHubUpdateChecker.OWNER_TIKTOK_URL}"
             } else {
-                "Unduh rilis terbaru Koplingfy ($versionLabel) di GitHub:\n$url\n\n" +
+                "Unduh rilis terbaru Koplingfy ($versionLabel):\n$url\n\n" +
                     "Ikuti TikTok Owner: ${GitHubUpdateChecker.OWNER_TIKTOK_URL}"
             }
             val shareIntent = Intent(Intent.ACTION_SEND).apply {
@@ -1171,17 +1171,10 @@ private fun KoplingfyAppRoot(
                                         onToggleAutoCheckUpdates = viewModel::setAutoCheckUpdates,
                                         onCheckUpdatesNow = { viewModel.checkForAppUpdates(manual = true) },
                                         onDownloadAppUpdate = downloadAppUpdateFromGitHub,
-                                        onUpdateGitHubRepo = viewModel::setGithubUpdateRepo,
                                         onOpenTikTokOwner = {
                                             openTrustedExternalUrl(
                                                 GitHubUpdateChecker.OWNER_TIKTOK_URL,
                                                 "Tidak dapat membuka profil TikTok @budikopling10"
-                                            )
-                                        },
-                                        onOpenGitHubRepo = {
-                                            openTrustedExternalUrl(
-                                                GitHubUpdateChecker.githubRepoUrl(updateState.repoSlug),
-                                                "Tidak dapat membuka repositori GitHub"
                                             )
                                         },
                                         onShareApp = viewModel::openShareApkDialog,
@@ -1806,21 +1799,14 @@ private fun KoplingfyAppRoot(
             )
         }
 
-        // ---- Automatic / Manual GitHub App Update Dialog ----
+        // ---- Automatic / Manual App Update Dialog ----
         val availableRelease = updateState.latestRelease
         if (updateState.showUpdateDialog && availableRelease != null) {
             AppUpdateAvailableDialog(
                 currentVersionName = updateState.currentVersionName,
                 release = availableRelease,
                 onDismiss = viewModel::dismissUpdateDialog,
-                onDownloadApk = { downloadAppUpdateFromGitHub(availableRelease) },
-                onOpenReleasePage = {
-                    viewModel.dismissUpdateDialog()
-                    openTrustedExternalUrl(
-                        availableRelease.releasePageUrl,
-                        "Tidak dapat membuka halaman rilis GitHub."
-                    )
-                }
+                onDownloadApk = { downloadAppUpdateFromGitHub(availableRelease) }
             )
         }
 

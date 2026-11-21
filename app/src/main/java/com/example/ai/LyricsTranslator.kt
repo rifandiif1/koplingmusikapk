@@ -2,12 +2,6 @@ package com.example.ai
 
 import android.content.Context
 import android.util.Log
-import com.google.firebase.Firebase
-import com.google.firebase.ai.ai
-import com.google.firebase.ai.type.HarmBlockThreshold
-import com.google.firebase.ai.type.HarmCategory
-import com.google.firebase.ai.type.SafetySetting
-import com.google.firebase.ai.type.generationConfig
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.TimeoutCancellationException
@@ -21,20 +15,26 @@ import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
+import okhttp3.FormBody
+import okhttp3.HttpUrl.Companion.toHttpUrl
+import okhttp3.OkHttpClient
+import okhttp3.Request
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
+import java.io.IOException
 import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.TimeUnit
 
 private const val TAG = "LyricsTranslator"
 private const val CACHE_DIR_NAME = "lyrics_ai_cache"
-private const val TRANSLATION_STYLE_VERSION = 5
-private const val ROMANIZATION_STYLE_VERSION = 2
-private const val CHUNK_THRESHOLD = 36
-private const val CHUNK_SIZE = 28
-private const val MAX_PARALLEL_CHUNKS = 3
-private const val PRIMARY_STREAM_TIMEOUT_MS = 35_000L
-private const val FALLBACK_STREAM_TIMEOUT_MS = 45_000L
+private const val TRANSLATION_STYLE_VERSION = 6
+private const val ROMANIZATION_STYLE_VERSION = 3
+private const val MAX_LINES_PER_CHUNK = 18
+private const val MAX_CHARS_PER_CHUNK = 950
+private const val MAX_PARALLEL_REQUESTS = 3
+private const val MAX_PARALLEL_LINE_FALLBACK = 5
+private const val REQUEST_TIMEOUT_MS = 25_000L
 
 data class TranslatedLyricsResult(
     val lines: List<String>,
@@ -63,17 +63,30 @@ private data class DeduplicatedLines(
     val originalToUniqueIndex: IntArray
 )
 
+private data class GoogleTranslateResponse(
+    val translatedText: String,
+    val sourceTranslit: String,
+    val detectedLang: String
+)
+
+private data class TranslateEndpoint(
+    val baseUrl: String,
+    val clientParam: String,
+    val usePost: Boolean
+)
+
 /**
- * Translates song lyrics line-by-line into natural casual Indonesian and generates accurate
- * phonetic romanization (Romaji, Korean Revised Romanization, Pinyin, Cyrillic, Thai, etc.)
- * via Firebase AI Logic using streaming `generateContentStream()` on ultra-fast
- * `gemini-3.5-flash-lite` (with `gemini-3.8-flash` automatic fallback).
+ * Translates song lyrics line-by-line into Indonesian and generates phonetic romanization
+ * (Romaji with Kanji readings, Korean Revised Romanization, Pinyin, Cyrillic, Thai, Arabic, etc.)
+ * directly via Google Translate (`translate.googleapis.com/translate_a/single`) — requiring
+ * zero API key, zero App Check attestation, and zero user setup.
  *
- * Uses strict `N|text` indexed line streaming so:
- * - First translated/romanized lines appear on screen within ~1 second!
- * - Line alignment can NEVER drift or shift even if a line is skipped or contains quotes!
- * - Repeated chorus lines are deduplicated (~50% fewer tokens & latency)!
- * - Built-in Hiragana/Katakana/Hangul fallback ensures zero blank lines on CJK/Korean songs!
+ * Reliability & speed features:
+ * - Deduplicates repeated chorus lines (~50% fewer lines sent).
+ * - Parallel chunked requests with progressive UI emission (`onPartialResult`).
+ * - Exact 1-to-1 line alignment with automatic per-line recovery if any chunk merges newlines.
+ * - Automatic multi-endpoint fallback (POST/GET, `gtx`/`tw-ob`, `.googleapis.com`/`.google.com`).
+ * - Persistent on-device JSON disk cache + deterministic Kana/Hangul offline safety net.
  */
 object LyricsTranslator {
     private val memoryCache = ConcurrentHashMap<String, CachedLyricsAiData>()
@@ -82,11 +95,36 @@ object LyricsTranslator {
     @Volatile
     private var cacheDir: File? = null
 
-    private val lyricsSafetySettings = listOf(
-        SafetySetting(HarmCategory.HARASSMENT, HarmBlockThreshold.ONLY_HIGH),
-        SafetySetting(HarmCategory.HATE_SPEECH, HarmBlockThreshold.ONLY_HIGH),
-        SafetySetting(HarmCategory.SEXUALLY_EXPLICIT, HarmBlockThreshold.ONLY_HIGH),
-        SafetySetting(HarmCategory.DANGEROUS_CONTENT, HarmBlockThreshold.ONLY_HIGH)
+    private val httpClient: OkHttpClient by lazy {
+        OkHttpClient.Builder()
+            .connectTimeout(12, TimeUnit.SECONDS)
+            .readTimeout(18, TimeUnit.SECONDS)
+            .writeTimeout(12, TimeUnit.SECONDS)
+            .retryOnConnectionFailure(true)
+            .build()
+    }
+
+    private val translateEndpoints = listOf(
+        TranslateEndpoint(
+            baseUrl = "https://translate.googleapis.com/translate_a/single",
+            clientParam = "gtx",
+            usePost = true
+        ),
+        TranslateEndpoint(
+            baseUrl = "https://translate.googleapis.com/translate_a/single",
+            clientParam = "gtx",
+            usePost = false
+        ),
+        TranslateEndpoint(
+            baseUrl = "https://translate.google.com/translate_a/single",
+            clientParam = "gtx",
+            usePost = false
+        ),
+        TranslateEndpoint(
+            baseUrl = "https://translate.googleapis.com/translate_a/single",
+            clientParam = "tw-ob",
+            usePost = false
+        )
     )
 
     private val indonesianStopWords = setOf(
@@ -100,9 +138,6 @@ object LyricsTranslator {
         "pergi", "pulang", "datang", "tinggal", "hilang", "lupa", "ingat", "tahu", "mengerti",
         "sendiri", "bersama", "dirimu", "diriku", "padamu", "untukmu", "bersamamu", "tentang", "dalam"
     )
-
-    // Indexed line parser matching "1|text", "1: text", "1. text", or "1) text"
-    private val indexedLineRegex = Regex("""^\s*(\d+)\s*[|:\.)]\s*(.*)$""")
 
     fun init(context: Context) {
         if (cacheDir != null) return
@@ -135,47 +170,6 @@ object LyricsTranslator {
         return freed
     }
 
-    // Plain-text streaming models: ultra-low TTFT, zero JSON escaping or schema failure overhead.
-    private val fastStreamModel by lazy {
-        Firebase.ai.generativeModel(
-            modelName = "gemini-3.5-flash-lite",
-            generationConfig = generationConfig {
-                temperature = 0.2f
-            },
-            safetySettings = lyricsSafetySettings
-        )
-    }
-
-    private val fallbackStreamModel by lazy {
-        Firebase.ai.generativeModel(
-            modelName = "gemini-3.8-flash",
-            generationConfig = generationConfig {
-                temperature = 0.25f
-            },
-            safetySettings = lyricsSafetySettings
-        )
-    }
-
-    private val fastRomajiModel by lazy {
-        Firebase.ai.generativeModel(
-            modelName = "gemini-3.5-flash-lite",
-            generationConfig = generationConfig {
-                temperature = 0.08f
-            },
-            safetySettings = lyricsSafetySettings
-        )
-    }
-
-    private val fallbackRomajiModel by lazy {
-        Firebase.ai.generativeModel(
-            modelName = "gemini-3.8-flash",
-            generationConfig = generationConfig {
-                temperature = 0.1f
-            },
-            safetySettings = lyricsSafetySettings
-        )
-    }
-
     private fun cacheFileFor(trackId: String): File? {
         val dir = cacheDir ?: return null
         val safeKey = trackId.replace(Regex("[^a-zA-Z0-9._-]"), "_").take(100)
@@ -201,7 +195,7 @@ object LyricsTranslator {
             val styleVersion = obj.optInt("translationStyleVersion", 1)
             val romVersion = obj.optInt("romanizationStyleVersion", 1)
             val validTransList = if (styleVersion >= 3 && transList.any { it.isNotBlank() }) transList else emptyList()
-            val validRomList = if (romVersion >= ROMANIZATION_STYLE_VERSION && romList.any { it.isNotBlank() }) romList else emptyList()
+            val validRomList = if (romVersion >= 2 && romList.any { it.isNotBlank() }) romList else emptyList()
 
             CachedLyricsAiData(
                 lineCount = obj.optInt("lineCount", maxOf(validTransList.size, validRomList.size)),
@@ -246,7 +240,7 @@ object LyricsTranslator {
                 tmp.delete()
             }
         }.onFailure { err ->
-            Log.w(TAG, "Failed to persist local lyrics AI cache for $trackId", err)
+            Log.w(TAG, "Failed to persist local lyrics cache for $trackId", err)
         }
     }
 
@@ -365,120 +359,241 @@ object LyricsTranslator {
     }
 
     /**
-     * Parses a streamed `N|value` line, strips accidental markdown/quotes, and returns (0-based index, text).
+     * Groups unique lines into compact chunks respecting both line count and character count limits
+     * so every Google Translate HTTP call stays fast and safe from URL/payload limits.
      */
-    private fun parseStreamedIndexedLine(rawLine: String, maxCount: Int): Pair<Int, String>? {
-        val cleaned = rawLine.trim()
-            .removePrefix("```")
-            .removePrefix("- ")
-            .removePrefix("* ")
-            .trim()
-        if (cleaned.isEmpty() || cleaned.startsWith("LANG:", ignoreCase = true)) return null
-        val match = indexedLineRegex.matchEntire(cleaned) ?: return null
-        val num = match.groupValues[1].toIntOrNull() ?: return null
-        val idx = num - 1
-        if (idx !in 0 until maxCount) return null
-        val text = match.groupValues[2]
-            .trim()
-            .removeSurrounding("\"")
-            .trim()
-        return idx to text
+    private fun buildChunks(uniqueLines: List<String>): List<Pair<Int, List<String>>> {
+        val chunks = mutableListOf<Pair<Int, List<String>>>()
+        var currentStart = 0
+        val currentList = mutableListOf<String>()
+        var currentChars = 0
+
+        for (i in uniqueLines.indices) {
+            val line = uniqueLines[i]
+            val lineCost = line.length + 2
+            if (currentList.isNotEmpty() &&
+                (currentList.size >= MAX_LINES_PER_CHUNK || currentChars + lineCost > MAX_CHARS_PER_CHUNK)
+            ) {
+                chunks.add(currentStart to currentList.toList())
+                currentList.clear()
+                currentStart = i
+                currentChars = 0
+            }
+            currentList.add(line)
+            currentChars += lineCost
+        }
+        if (currentList.isNotEmpty()) {
+            chunks.add(currentStart to currentList.toList())
+        }
+        return chunks
     }
 
-    private suspend fun streamTranslateChunk(
-        trackTitle: String,
-        artist: String,
-        chunk: List<String>,
-        onLineReady: suspend (Int, String) -> Unit
-    ): Pair<Array<String>, Boolean> {
-        val numberedInput = chunk.mapIndexed { idx, line ->
-            "${idx + 1}|$line"
-        }.joinToString("\n")
-
-        val prompt = buildString {
-            appendLine("Terjemahkan lirik \"$trackTitle\" - $artist ke Bahasa Indonesia santai, luwes, tidak baku (pakai aku/kamu, hindari saya/Anda/engkau).")
-            appendLine("Format WAJIB setiap baris: nomor|terjemahan (tanpa pembuka, tanpa markdown, tanpa penjelasan).")
-            appendLine("Jika sebagian besar lirik asli sudah Bahasa Indonesia, tulis baris pertama: LANG:ID lalu tetap terjemahkan/pertahankan barisnya.")
-            append(numberedInput)
+    private fun parseGoogleTranslatePayload(rawBody: String): GoogleTranslateResponse {
+        val trimmed = rawBody.trim()
+        if (trimmed.isEmpty()) {
+            throw IOException("Respon kosong dari Google Translate.")
         }
 
-        val attempts = listOf(
-            fastStreamModel to PRIMARY_STREAM_TIMEOUT_MS,
-            fallbackStreamModel to FALLBACK_STREAM_TIMEOUT_MS
-        )
+        // Preferred structured `dj=1` JSON object response
+        if (trimmed.startsWith("{")) {
+            val root = JSONObject(trimmed)
+            val sentences = root.optJSONArray("sentences")
+            val transBuilder = StringBuilder()
+            val translitBuilder = StringBuilder()
+            if (sentences != null) {
+                for (i in 0 until sentences.length()) {
+                    val item = sentences.optJSONObject(i) ?: continue
+                    if (item.has("trans") && !item.isNull("trans")) {
+                        transBuilder.append(item.optString("trans", ""))
+                    }
+                    if (item.has("src_translit") && !item.isNull("src_translit")) {
+                        translitBuilder.append(item.optString("src_translit", ""))
+                    }
+                }
+            }
+            val detectedLang = root.optString("src", "").trim().lowercase()
+            return GoogleTranslateResponse(
+                translatedText = transBuilder.toString(),
+                sourceTranslit = translitBuilder.toString(),
+                detectedLang = detectedLang
+            )
+        }
+
+        // Classic nested JSON array response fallback
+        if (trimmed.startsWith("[")) {
+            val root = JSONArray(trimmed)
+            val blocks = root.optJSONArray(0)
+            val transBuilder = StringBuilder()
+            val translitBuilder = StringBuilder()
+            if (blocks != null) {
+                for (i in 0 until blocks.length()) {
+                    val seg = blocks.optJSONArray(i) ?: continue
+                    val transPiece = if (!seg.isNull(0)) seg.optString(0, "") else ""
+                    if (transPiece.isNotEmpty()) transBuilder.append(transPiece)
+                    val translitPiece = if (seg.length() > 3 && !seg.isNull(3)) seg.optString(3, "") else ""
+                    if (translitPiece.isNotEmpty()) translitBuilder.append(translitPiece)
+                }
+            }
+            val detectedLang = if (root.length() > 2 && !root.isNull(2)) {
+                root.optString(2, "").trim().lowercase()
+            } else ""
+            return GoogleTranslateResponse(
+                translatedText = transBuilder.toString(),
+                sourceTranslit = translitBuilder.toString(),
+                detectedLang = detectedLang
+            )
+        }
+
+        throw IOException("Format respon Google Translate tidak dikenali.")
+    }
+
+    private suspend fun callGoogleTranslate(
+        text: String,
+        targetLang: String = "id",
+        sourceLang: String = "auto",
+        includeRomanization: Boolean = false
+    ): GoogleTranslateResponse {
         var lastError: Exception? = null
+        val userAgent = "Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Mobile Safari/537.36"
 
-        for ((attemptIdx, pair) in attempts.withIndex()) {
-            val (model, timeoutMs) = pair
-            val results = Array(chunk.size) { "" }
-            var detectedId = false
-            var filledCount = 0
+        for ((idx, endpoint) in translateEndpoints.withIndex()) {
+            // Skip GET endpoints if payload is very large (> 1600 encoded chars risk HTTP 414)
+            if (!endpoint.usePost && text.length > 1200) continue
             try {
-                if (attemptIdx > 0) delay(250L)
-                val lineBuffer = StringBuilder()
+                if (idx > 0) delay(150L)
+                val urlBuilder = endpoint.baseUrl.toHttpUrl().newBuilder()
+                    .addQueryParameter("client", endpoint.clientParam)
+                    .addQueryParameter("sl", sourceLang)
+                    .addQueryParameter("tl", targetLang)
+                    .addQueryParameter("dt", "t")
+                    .addQueryParameter("dj", "1")
+                    .addQueryParameter("ie", "UTF-8")
+                    .addQueryParameter("oe", "UTF-8")
 
-                withTimeout(timeoutMs) {
-                    model.generateContentStream(prompt).collect { response ->
-                        val piece = response.text.orEmpty()
-                        if (piece.isEmpty()) return@collect
-                        lineBuffer.append(piece)
+                if (includeRomanization) {
+                    urlBuilder.addQueryParameter("dt", "rm")
+                }
 
-                        while (true) {
-                            val nl = lineBuffer.indexOf("\n")
-                            if (nl < 0) break
-                            val rawLine = lineBuffer.substring(0, nl)
-                            lineBuffer.delete(0, nl + 1)
-                            if (rawLine.trim().equals("LANG:ID", ignoreCase = true)) {
-                                detectedId = true
-                                continue
-                            }
-                            parseStreamedIndexedLine(rawLine, chunk.size)?.let { (idx, value) ->
-                                if (value.isNotBlank() && results[idx].isBlank()) {
-                                    results[idx] = value
-                                    filledCount++
-                                    onLineReady(idx, value)
-                                }
-                            }
+                val request = if (endpoint.usePost) {
+                    val formBody = FormBody.Builder(Charsets.UTF_8)
+                        .add("q", text)
+                        .build()
+                    Request.Builder()
+                        .url(urlBuilder.build())
+                        .post(formBody)
+                        .header("User-Agent", userAgent)
+                        .header("Accept", "application/json, text/plain, */*")
+                        .build()
+                } else {
+                    urlBuilder.addQueryParameter("q", text)
+                    Request.Builder()
+                        .url(urlBuilder.build())
+                        .get()
+                        .header("User-Agent", userAgent)
+                        .header("Accept", "application/json, text/plain, */*")
+                        .build()
+                }
+
+                val body = withTimeout(REQUEST_TIMEOUT_MS) {
+                    httpClient.newCall(request).execute().use { response ->
+                        if (!response.isSuccessful) {
+                            throw IOException("HTTP ${response.code} dari Google Translate")
                         }
+                        response.body?.string().orEmpty()
                     }
                 }
-                // Flush trailing final line without newline
-                val remainder = lineBuffer.toString().trim()
-                if (remainder.isNotBlank()) {
-                    if (remainder.equals("LANG:ID", ignoreCase = true)) {
-                        detectedId = true
-                    } else {
-                        parseStreamedIndexedLine(remainder, chunk.size)?.let { (idx, value) ->
-                            if (value.isNotBlank() && results[idx].isBlank()) {
-                                results[idx] = value
-                                filledCount++
-                                onLineReady(idx, value)
-                            }
-                        }
-                    }
+                val parsed = parseGoogleTranslatePayload(body)
+                if (parsed.translatedText.isNotBlank() || parsed.sourceTranslit.isNotBlank()) {
+                    return parsed
                 }
-
-                if (filledCount > 0) {
-                    return results to detectedId
-                }
-                throw IllegalStateException("Respon terjemahan kosong dari layanan AI.")
-            } catch (e: TimeoutCancellationException) {
-                Log.w(TAG, "Stream translation attempt ${attemptIdx + 1} timed out for $trackTitle")
-                if (filledCount >= (chunk.size * 0.6f).toInt().coerceAtLeast(1)) {
-                    return results to detectedId
-                }
-                lastError = e
+                throw IOException("Respon Google Translate kosong.")
             } catch (e: CancellationException) {
-                throw e
-            } catch (e: Exception) {
-                Log.w(TAG, "Stream translation attempt ${attemptIdx + 1} failed for $trackTitle: ${e.message}")
-                if (filledCount >= (chunk.size * 0.6f).toInt().coerceAtLeast(1)) {
-                    return results to detectedId
+                if (e is TimeoutCancellationException) {
+                    lastError = e
+                } else {
+                    throw e
                 }
+            } catch (e: Exception) {
+                Log.w(TAG, "Google Translate endpoint #${idx + 1} failed: ${e.message}")
                 lastError = e
             }
         }
-        throw lastError ?: IllegalStateException("Gagal menerjemahkan lirik.")
+        throw lastError ?: IOException("Gagal terhubung ke Google Translate.")
+    }
+
+    private fun cleanTranslatedLine(raw: String): String {
+        return raw
+            .replace("\r", "")
+            .replace(Regex("\\s{2,}"), " ")
+            .trim()
+    }
+
+    private fun splitPreservingLines(raw: String, expectedCount: Int): List<String>? {
+        val normalized = raw.replace("\r\n", "\n").replace("\r", "\n").trim('\n')
+        val split = normalized.split("\n").map { cleanTranslatedLine(it) }
+        if (split.size == expectedCount) return split
+        val nonEmpty = split.filter { it.isNotEmpty() }
+        if (nonEmpty.size == expectedCount) return nonEmpty
+        return null
+    }
+
+    /**
+     * Translates a chunk via Google Translate with guaranteed 1-to-1 line alignment.
+     * If Google Translate ever merges or splits newlines in a batch, automatically recovers
+     * line-by-line in parallel so timestamps never drift.
+     */
+    private suspend fun translateChunkGoogle(
+        chunk: List<String>,
+        includeRomanization: Boolean
+    ): Triple<Array<String>, Array<String>?, Boolean> {
+        val joined = chunk.joinToString("\n")
+        val response = callGoogleTranslate(
+            text = joined,
+            targetLang = "id",
+            sourceLang = "auto",
+            includeRomanization = includeRomanization
+        )
+        val isIndonesian = response.detectedLang == "id" || response.detectedLang == "in"
+        val alignedTrans = splitPreservingLines(response.translatedText, chunk.size)
+        val alignedRom = if (includeRomanization && response.sourceTranslit.isNotBlank()) {
+            splitPreservingLines(response.sourceTranslit, chunk.size)?.toTypedArray()
+        } else null
+
+        if (alignedTrans != null) {
+            return Triple(alignedTrans.toTypedArray(), alignedRom, isIndonesian)
+        }
+
+        // Exact line-by-line recovery if Google Translate altered newline count
+        Log.d(TAG, "Chunk newline count mismatch (expected ${chunk.size}); falling back to exact per-line translation.")
+        val recovered = Array(chunk.size) { "" }
+        val recoveredRom = if (includeRomanization) Array(chunk.size) { "" } else null
+        var idCount = 0
+        val lineSem = Semaphore(MAX_PARALLEL_LINE_FALLBACK)
+        val countLock = Mutex()
+
+        coroutineScope {
+            chunk.indices.map { idx ->
+                async {
+                    lineSem.withPermit {
+                        val single = callGoogleTranslate(
+                            text = chunk[idx],
+                            targetLang = "id",
+                            sourceLang = "auto",
+                            includeRomanization = includeRomanization
+                        )
+                        recovered[idx] = cleanTranslatedLine(single.translatedText.replace("\n", " "))
+                        if (recoveredRom != null && single.sourceTranslit.isNotBlank()) {
+                            recoveredRom[idx] = cleanTranslatedLine(single.sourceTranslit.replace("\n", " "))
+                        }
+                        if (single.detectedLang == "id" || single.detectedLang == "in") {
+                            countLock.withLock { idCount++ }
+                        }
+                    }
+                }
+            }.awaitAll()
+        }
+        val majorityId = idCount > (chunk.size / 2)
+        return Triple(recovered, recoveredRom, majorityId)
     }
 
     suspend fun translateLinesToIndonesian(
@@ -511,55 +626,47 @@ object LyricsTranslator {
             return@withContext Result.success(TranslatedLyricsResult(lines = blank, detectedIndonesian = false))
         }
 
+        val hasNonLatin = containsNonLatinScript(lines)
+        val detectedScript = if (hasNonLatin) detectScriptLabel(lines) else ""
+
         try {
             val uniqueTranslated = Array(dedup.uniqueLines.size) { "" }
-            val chunkDescriptors = if (dedup.uniqueLines.size > CHUNK_THRESHOLD) {
-                dedup.uniqueLines.chunked(CHUNK_SIZE).mapIndexed { chunkIdx, chunkLines ->
-                    (chunkIdx * CHUNK_SIZE) to chunkLines
-                }
-            } else {
-                listOf(0 to dedup.uniqueLines)
-            }
+            val uniqueTranslit = if (hasNonLatin) Array(dedup.uniqueLines.size) { "" } else null
+            val chunkDescriptors = buildChunks(dedup.uniqueLines)
 
-            val semaphore = Semaphore(MAX_PARALLEL_CHUNKS)
+            val semaphore = Semaphore(MAX_PARALLEL_REQUESTS)
             val progressMutex = Mutex()
             var indonesianVoteCount = 0
-            var lastEmitTimeMs = 0L
-            var pendingSinceLastEmit = 0
 
             coroutineScope {
                 chunkDescriptors.map { (startOffset, chunkLines) ->
                     async {
                         semaphore.withPermit {
-                            val (_, chunkIsId) = streamTranslateChunk(
-                                trackTitle = trackTitle,
-                                artist = artist,
+                            val (chunkTranslated, chunkRom, chunkIsId) = translateChunkGoogle(
                                 chunk = chunkLines,
-                                onLineReady = { localIdx, translatedText ->
-                                    var snapshotToEmit: List<String>? = null
-                                    progressMutex.withLock {
-                                        val targetIdx = startOffset + localIdx
-                                        if (targetIdx in uniqueTranslated.indices) {
-                                            uniqueTranslated[targetIdx] = translatedText
-                                            pendingSinceLastEmit++
-                                            val now = System.currentTimeMillis()
-                                            if (onPartialResult != null && (pendingSinceLastEmit >= 3 || now - lastEmitTimeMs >= 260L)) {
-                                                lastEmitTimeMs = now
-                                                pendingSinceLastEmit = 0
-                                                snapshotToEmit = expandUniqueResults(
-                                                    originalSize = lines.size,
-                                                    mapping = dedup.originalToUniqueIndex,
-                                                    uniqueTranslated = uniqueTranslated
-                                                )
-                                            }
+                                includeRomanization = hasNonLatin
+                            )
+                            var snapshotToEmit: List<String>? = null
+                            progressMutex.withLock {
+                                for (i in chunkTranslated.indices) {
+                                    val targetIdx = startOffset + i
+                                    if (targetIdx in uniqueTranslated.indices) {
+                                        uniqueTranslated[targetIdx] = chunkTranslated[i]
+                                        if (uniqueTranslit != null && chunkRom != null && i in chunkRom.indices) {
+                                            uniqueTranslit[targetIdx] = chunkRom[i]
                                         }
                                     }
-                                    snapshotToEmit?.let { onPartialResult?.invoke(it) }
                                 }
-                            )
-                            progressMutex.withLock {
                                 if (chunkIsId) indonesianVoteCount++
+                                if (onPartialResult != null) {
+                                    snapshotToEmit = expandUniqueResults(
+                                        originalSize = lines.size,
+                                        mapping = dedup.originalToUniqueIndex,
+                                        uniqueTranslated = uniqueTranslated
+                                    )
+                                }
                             }
+                            snapshotToEmit?.let { onPartialResult?.invoke(it) }
                         }
                     }
                 }.awaitAll()
@@ -571,124 +678,89 @@ object LyricsTranslator {
                 mapping = dedup.originalToUniqueIndex,
                 uniqueTranslated = uniqueTranslated
             )
+
+            // Opportunistically cache aligned romanization obtained in the same Google Translate pass!
+            val opportunisticRom = if (uniqueTranslit != null && uniqueTranslit.any { it.isNotBlank() }) {
+                val expandedRom = expandUniqueResults(
+                    originalSize = lines.size,
+                    mapping = dedup.originalToUniqueIndex,
+                    uniqueTranslated = uniqueTranslit
+                )
+                // Only keep romanization on lines that actually have non-Latin script
+                expandedRom.mapIndexed { idx, rom ->
+                    if (lineHasNonLatinScript(lines[idx])) rom else ""
+                }
+            } else emptyList()
+
             mergeAndSaveCache(trackId, lines.size) { cur ->
+                val keepRom = cur.romanizedLines.any { it.isNotBlank() }
                 cur.copy(
                     translatedLines = normalized,
                     detectedIndonesian = alreadyId,
-                    translationStyleVersion = TRANSLATION_STYLE_VERSION
+                    translationStyleVersion = TRANSLATION_STYLE_VERSION,
+                    romanizedLines = if (!keepRom && opportunisticRom.any { it.isNotBlank() }) opportunisticRom else cur.romanizedLines,
+                    needsRomanization = if (!keepRom && opportunisticRom.any { it.isNotBlank() }) true else cur.needsRomanization,
+                    scriptLabel = if (!keepRom && opportunisticRom.any { it.isNotBlank() }) detectedScript else cur.scriptLabel,
+                    romanizationStyleVersion = if (!keepRom && opportunisticRom.any { it.isNotBlank() }) ROMANIZATION_STYLE_VERSION else cur.romanizationStyleVersion
                 )
             }
             Result.success(TranslatedLyricsResult(lines = normalized, detectedIndonesian = alreadyId))
         } catch (e: TimeoutCancellationException) {
-            Log.e(TAG, "Lyrics translation timed out", e)
+            Log.e(TAG, "Google Translate timed out for $trackTitle - $artist", e)
             Result.failure(Exception("Terjemahan lirik melewati batas waktu. Ketuk Coba Lagi sebentar ya."))
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
-            Log.e(TAG, "Firebase AI lyrics translation failed", e)
-            Result.failure(Exception(formatFriendlyAiError(e, "Gagal menerjemahkan lirik ke Bahasa Indonesia.")))
+            Log.e(TAG, "Google Translate lyrics failed for $trackTitle - $artist", e)
+            Result.failure(Exception(formatFriendlyTranslateError(e, "Gagal menerjemahkan lirik ke Bahasa Indonesia.")))
         }
     }
 
-    private suspend fun streamRomanizeChunk(
-        trackTitle: String,
-        artist: String,
-        scriptHint: String,
-        chunk: List<String>,
-        onLineReady: suspend (Int, String) -> Unit
-    ): Array<String> {
-        val numberedInput = chunk.mapIndexed { idx, line -> "${idx + 1}|$line" }.joinToString("\n")
-        val prompt = buildString {
-            appendLine("Ubah lirik \"$trackTitle\" - $artist ($scriptHint) menjadi pelafalan alfabet Latin (Romaji Hepburn untuk Jepang dengan spasi antar kata, Revised Romanization untuk Korea, Pinyin tanpa nada ribet untuk Mandarin, fonetik Latin untuk aksara lain).")
-            appendLine("Format WAJIB setiap baris: nomor|pelafalan_latin (tanpa pembuka, tanpa markdown, pertahankan kata bahasa Inggris jika bercampur).")
-            append(numberedInput)
-        }
-
-        val attempts = listOf(
-            fastRomajiModel to PRIMARY_STREAM_TIMEOUT_MS,
-            fallbackRomajiModel to FALLBACK_STREAM_TIMEOUT_MS
+    private suspend fun romanizeChunkGoogle(chunk: List<String>): Array<String> {
+        val joined = chunk.joinToString("\n")
+        val response = callGoogleTranslate(
+            text = joined,
+            targetLang = "en",
+            sourceLang = "auto",
+            includeRomanization = true
         )
-        var lastErr: Exception? = null
 
-        for ((attemptIdx, pair) in attempts.withIndex()) {
-            val (model, timeoutMs) = pair
-            val results = Array(chunk.size) { "" }
-            var filledCount = 0
-            try {
-                if (attemptIdx > 0) delay(250L)
-                val lineBuffer = StringBuilder()
+        val aligned = if (response.sourceTranslit.isNotBlank()) {
+            splitPreservingLines(response.sourceTranslit, chunk.size)
+        } else null
 
-                withTimeout(timeoutMs) {
-                    model.generateContentStream(prompt).collect { response ->
-                        val piece = response.text.orEmpty()
-                        if (piece.isEmpty()) return@collect
-                        lineBuffer.append(piece)
-
-                        while (true) {
-                            val nl = lineBuffer.indexOf("\n")
-                            if (nl < 0) break
-                            val rawLine = lineBuffer.substring(0, nl)
-                            lineBuffer.delete(0, nl + 1)
-                            parseStreamedIndexedLine(rawLine, chunk.size)?.let { (idx, value) ->
-                                if (value.isNotBlank() && results[idx].isBlank()) {
-                                    results[idx] = value
-                                    filledCount++
-                                    onLineReady(idx, value)
-                                }
-                            }
-                        }
-                    }
-                }
-                val remainder = lineBuffer.toString().trim()
-                if (remainder.isNotBlank()) {
-                    parseStreamedIndexedLine(remainder, chunk.size)?.let { (idx, value) ->
-                        if (value.isNotBlank() && results[idx].isBlank()) {
-                            results[idx] = value
-                            filledCount++
-                            onLineReady(idx, value)
-                        }
-                    }
-                }
-
-                // Fill any single missed Kana/Hangul line deterministically so zero lines stay blank
-                for (i in chunk.indices) {
-                    if (results[i].isBlank()) {
-                        val fallbackRom = quickLocalPhoneticFallback(chunk[i])
-                        if (fallbackRom.isNotBlank()) {
-                            results[i] = fallbackRom
-                            filledCount++
-                            onLineReady(i, fallbackRom)
-                        }
-                    }
-                }
-
-                if (filledCount > 0) {
-                    return results
-                }
-                throw IllegalStateException("Respon romanisasi kosong.")
-            } catch (e: TimeoutCancellationException) {
-                Log.w(TAG, "Stream romanization attempt ${attemptIdx + 1} timed out for $trackTitle")
-                if (filledCount >= (chunk.size * 0.6f).toInt().coerceAtLeast(1)) {
-                    return results
-                }
-                lastErr = e
-            } catch (e: CancellationException) {
-                throw e
-            } catch (e: Exception) {
-                Log.w(TAG, "Stream romanization attempt ${attemptIdx + 1} failed for $trackTitle: ${e.message}")
-                if (filledCount >= (chunk.size * 0.6f).toInt().coerceAtLeast(1)) {
-                    return results
-                }
-                lastErr = e
+        if (aligned != null && aligned.count { it.isNotBlank() } >= (chunk.size * 0.7f).toInt().coerceAtLeast(1)) {
+            return Array(chunk.size) { i ->
+                aligned[i].ifBlank { quickLocalPhoneticFallback(chunk[i]) }
             }
         }
 
-        // Last-resort deterministic fallback for pure Kana/Hangul lyrics if offline/AI temporarily down
-        val localFallback = Array(chunk.size) { i -> quickLocalPhoneticFallback(chunk[i]) }
-        if (localFallback.any { it.isNotBlank() }) {
-            return localFallback
+        // Exact per-line romanization when Google Translate merges `src_translit` lines
+        val recovered = Array(chunk.size) { "" }
+        val lineSem = Semaphore(MAX_PARALLEL_LINE_FALLBACK)
+        coroutineScope {
+            chunk.indices.map { idx ->
+                async {
+                    lineSem.withPermit {
+                        val single = runCatching {
+                            callGoogleTranslate(
+                                text = chunk[idx],
+                                targetLang = "en",
+                                sourceLang = "auto",
+                                includeRomanization = true
+                            )
+                        }.getOrNull()
+                        val rom = single?.sourceTranslit
+                            ?.replace("\r", "")
+                            ?.replace("\n", " ")
+                            ?.trim()
+                            .orEmpty()
+                        recovered[idx] = rom.ifBlank { quickLocalPhoneticFallback(chunk[idx]) }
+                    }
+                }
+            }.awaitAll()
         }
-        throw lastErr ?: IllegalStateException("Gagal membuat romanisasi lirik.")
+        return recovered
     }
 
     suspend fun romanizeLines(
@@ -703,7 +775,7 @@ object LyricsTranslator {
         }
         val existing = getCachedEntry(trackId)
         if (existing != null &&
-            existing.romanizationStyleVersion >= ROMANIZATION_STYLE_VERSION &&
+            existing.romanizationStyleVersion >= 2 &&
             existing.romanizedLines.size == lines.size &&
             existing.romanizedLines.any { it.isNotBlank() }
         ) {
@@ -726,7 +798,7 @@ object LyricsTranslator {
             )
         }
 
-        // Only send unique non-Latin lines to AI (English chorus lines in J-Pop/K-Pop stay clean & don't slow down!)
+        // Only send unique non-Latin lines (English chorus lines in J-Pop/K-Pop stay clean & fast!)
         val dedup = deduplicateLines(lines, nonLatinOnly = true)
         if (dedup.uniqueLines.isEmpty()) {
             return@withContext Result.success(
@@ -742,58 +814,40 @@ object LyricsTranslator {
 
         try {
             val uniqueRomanized = Array(dedup.uniqueLines.size) { "" }
-            val chunkDescriptors = if (dedup.uniqueLines.size > CHUNK_THRESHOLD) {
-                dedup.uniqueLines.chunked(CHUNK_SIZE).mapIndexed { chunkIdx, chunkLines ->
-                    (chunkIdx * CHUNK_SIZE) to chunkLines
-                }
-            } else {
-                listOf(0 to dedup.uniqueLines)
-            }
+            val chunkDescriptors = buildChunks(dedup.uniqueLines)
 
-            val semaphore = Semaphore(MAX_PARALLEL_CHUNKS)
+            val semaphore = Semaphore(MAX_PARALLEL_REQUESTS)
             val progressMutex = Mutex()
-            var lastEmitTimeMs = 0L
-            var pendingSinceLastEmit = 0
 
             coroutineScope {
                 chunkDescriptors.map { (startOffset, chunkLines) ->
                     async {
                         semaphore.withPermit {
-                            val chunkResult = streamRomanizeChunk(
-                                trackTitle = trackTitle,
-                                artist = artist,
-                                scriptHint = detectedScript,
-                                chunk = chunkLines,
-                                onLineReady = { localIdx, romText ->
-                                    var snapshotToEmit: List<String>? = null
-                                    progressMutex.withLock {
-                                        val targetIdx = startOffset + localIdx
-                                        if (targetIdx in uniqueRomanized.indices) {
-                                            uniqueRomanized[targetIdx] = romText
-                                            pendingSinceLastEmit++
-                                            val now = System.currentTimeMillis()
-                                            if (onPartialResult != null && (pendingSinceLastEmit >= 3 || now - lastEmitTimeMs >= 260L)) {
-                                                lastEmitTimeMs = now
-                                                pendingSinceLastEmit = 0
-                                                snapshotToEmit = expandUniqueResults(
-                                                    originalSize = lines.size,
-                                                    mapping = dedup.originalToUniqueIndex,
-                                                    uniqueTranslated = uniqueRomanized
-                                                )
-                                            }
-                                        }
-                                    }
-                                    snapshotToEmit?.let { onPartialResult?.invoke(it, detectedScript) }
-                                }
-                            )
+                            val chunkResult = try {
+                                romanizeChunkGoogle(chunkLines)
+                            } catch (e: CancellationException) {
+                                throw e
+                            } catch (e: Exception) {
+                                Log.w(TAG, "Google romanize chunk failed, using local fallback: ${e.message}")
+                                Array(chunkLines.size) { i -> quickLocalPhoneticFallback(chunkLines[i]) }
+                            }
+                            var snapshotToEmit: List<String>? = null
                             progressMutex.withLock {
                                 for (i in chunkResult.indices) {
                                     val targetIdx = startOffset + i
-                                    if (targetIdx in uniqueRomanized.indices && uniqueRomanized[targetIdx].isBlank()) {
+                                    if (targetIdx in uniqueRomanized.indices) {
                                         uniqueRomanized[targetIdx] = chunkResult[i]
                                     }
                                 }
+                                if (onPartialResult != null) {
+                                    snapshotToEmit = expandUniqueResults(
+                                        originalSize = lines.size,
+                                        mapping = dedup.originalToUniqueIndex,
+                                        uniqueTranslated = uniqueRomanized
+                                    )
+                                }
                             }
+                            snapshotToEmit?.let { onPartialResult?.invoke(it, detectedScript) }
                         }
                     }
                 }.awaitAll()
@@ -823,19 +877,19 @@ object LyricsTranslator {
                 )
             )
         } catch (e: TimeoutCancellationException) {
-            Log.e(TAG, "Lyrics romanization timed out", e)
+            Log.e(TAG, "Google romanization timed out for $trackTitle - $artist", e)
             Result.failure(Exception("Romanisasi lirik melewati batas waktu. Silakan coba lagi."))
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
-            Log.e(TAG, "Firebase AI lyrics romanization failed", e)
-            Result.failure(Exception(formatFriendlyAiError(e, "Gagal membuat romanisasi lirik.")))
+            Log.e(TAG, "Google romanization failed for $trackTitle - $artist", e)
+            Result.failure(Exception(formatFriendlyTranslateError(e, "Gagal membuat romanisasi lirik.")))
         }
     }
 
     /**
      * Lightweight deterministic romanizer for Korean Hangul syllables and Japanese Hiragana/Katakana
-     * used only as an instant safety net if any single line is missed by AI.
+     * used as an instant safety net if any single line has no remote transliteration.
      */
     private fun quickLocalPhoneticFallback(text: String): String {
         var hasHangulOrKana = false
@@ -847,7 +901,6 @@ object LyricsTranslator {
             ) {
                 hasHangulOrKana = true
             } else if (block == Character.UnicodeBlock.CJK_UNIFIED_IDEOGRAPHS) {
-                // Kanji/Hanzi needs contextual AI reading; don't emit broken partial output
                 return ""
             }
         }
@@ -875,7 +928,6 @@ object LyricsTranslator {
     }
 
     private fun kanaToRomaji(ch: Char): String? {
-        // Normalize Katakana to Hiragana range
         val h = if (ch.code in 0x30A1..0x30F6) (ch.code - 0x60).toChar() else ch
         return when (h) {
             'あ' -> "a"; 'い' -> "i"; 'う' -> "u"; 'え' -> "e"; 'お' -> "o"
@@ -900,11 +952,34 @@ object LyricsTranslator {
         }
     }
 
+    private fun formatFriendlyTranslateError(e: Exception, fallback: String): String {
+        val raw = e.localizedMessage.orEmpty()
+        return when {
+            raw.contains("429", ignoreCase = true) ->
+                "Google Translate sedang padat sebentar. Tunggu beberapa detik lalu ketuk Coba Lagi."
+            raw.contains("Unable to resolve host", ignoreCase = true) ||
+                raw.contains("network", ignoreCase = true) ||
+                raw.contains("timeout", ignoreCase = true) ||
+                raw.contains("failed to connect", ignoreCase = true) ->
+                "Koneksi internet tidak stabil. Periksa jaringan lalu coba lagi."
+            raw.isNotBlank() -> raw
+            else -> fallback
+        }
+    }
+
     internal fun formatFriendlyAiError(e: Exception, fallback: String): String {
         val raw = e.localizedMessage.orEmpty()
         return when {
-            raw.contains("403", ignoreCase = true) || raw.contains("App Check", ignoreCase = true) ->
-                "Verifikasi layanan AI gagal sementara. Periksa koneksi internet lalu coba lagi."
+            raw.contains("403", ignoreCase = true) ||
+                raw.contains("App Check", ignoreCase = true) ||
+                raw.contains("attestation", ignoreCase = true) -> {
+                val diag = lastAppCheckDiagnostic?.take(120)
+                if (!diag.isNullOrBlank()) {
+                    "Verifikasi keamanan AI gagal ($diag). Pastikan tanggal/jam HP otomatis, layanan Google Play aktif, & tidak memakai VPN pemblokir lalu coba lagi."
+                } else {
+                    "Verifikasi layanan AI ditolak server (403). Pastikan jam HP otomatis & Google Play Services aktif lalu coba lagi."
+                }
+            }
             raw.contains("429", ignoreCase = true) || raw.contains("quota", ignoreCase = true) ->
                 "Layanan AI sedang sibuk. Tunggu beberapa detik lalu coba lagi."
             raw.contains("Unable to resolve host", ignoreCase = true) ||

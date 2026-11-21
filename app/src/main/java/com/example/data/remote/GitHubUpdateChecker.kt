@@ -178,12 +178,12 @@ object GitHubUpdateChecker {
                     }
                     403 -> {
                         return@withContext UpdateCheckResult.Error(
-                            "Batas permintaan GitHub API tercapai sementara. Coba lagi beberapa menit lagi."
+                            "Server pembaruan sedang sibuk. Coba lagi beberapa menit lagi."
                         )
                     }
                     else -> {
                         return@withContext UpdateCheckResult.Error(
-                            "Server GitHub merespons kode ${resp.code}. Periksa kembali nama repositori."
+                            "Tidak dapat memeriksa pembaruan saat ini (kode ${resp.code})."
                         )
                     }
                 }
@@ -207,21 +207,21 @@ object GitHubUpdateChecker {
                     }
                     else -> {
                         return@withContext UpdateCheckResult.Error(
-                            "Tidak dapat memeriksa rilis GitHub (kode ${resp.code})."
+                            "Tidak dapat memeriksa pembaruan saat ini (kode ${resp.code})."
                         )
                     }
                 }
             }
         } catch (e: Exception) {
-            Log.w(TAG, "GitHub update check failed for $validSlug: ${e.message}")
+            Log.w(TAG, "Update check failed: ${e.message}")
             UpdateCheckResult.Error(
-                "Gagal terhubung ke GitHub. Periksa koneksi internet Anda lalu coba lagi."
+                "Gagal terhubung ke server pembaruan. Periksa koneksi internet Anda lalu coba lagi."
             )
         }
     }
 
     /**
-     * Fetches up to [limit] published GitHub Releases for the interactive Changelog history tab.
+     * Fetches up to [limit] published releases for the interactive Changelog history tab.
      */
     suspend fun fetchReleaseHistory(
         repoSlug: String,
@@ -230,7 +230,7 @@ object GitHubUpdateChecker {
     ): Result<List<GitHubReleaseInfo>> = withContext(Dispatchers.IO) {
         val validSlug = normalizeAndValidateRepo(repoSlug)
             ?: return@withContext Result.failure(
-                IllegalArgumentException("Format repositori GitHub tidak valid.")
+                IllegalArgumentException("Sumber pembaruan tidak tersedia.")
             )
         try {
             val safeLimit = limit.coerceIn(1, 15)
@@ -249,13 +249,13 @@ object GitHubUpdateChecker {
                         Result.success(list)
                     }
                     404 -> Result.success(emptyList())
-                    403 -> Result.failure(Exception("Batas permintaan GitHub API tercapai sementara. Coba lagi nanti."))
-                    else -> Result.failure(Exception("Server GitHub merespons kode ${resp.code}."))
+                    403 -> Result.failure(Exception("Server pembaruan sedang sibuk. Coba lagi nanti."))
+                    else -> Result.failure(Exception("Gagal memuat riwayat rilis (kode ${resp.code})."))
                 }
             }
         } catch (e: Exception) {
-            Log.w(TAG, "GitHub release history fetch failed for $validSlug: ${e.message}")
-            Result.failure(Exception("Gagal memuat riwayat rilis GitHub. Periksa koneksi internet Anda."))
+            Log.w(TAG, "Release history fetch failed: ${e.message}")
+            Result.failure(Exception("Gagal memuat riwayat rilis. Periksa koneksi internet Anda."))
         }
     }
 
@@ -265,20 +265,20 @@ object GitHubUpdateChecker {
     val installedVersionHighlights: List<LocalChangelogItem> = listOf(
         LocalChangelogItem(
             title = "Bagikan Link Download APK Langsung + QR Code",
-            summary = "Kirim link yang langsung mengunduh file APK Koplingfy dari GitHub lengkap dengan QR Code.",
-            details = "Cukup scan QR Code dengan kamera HP lain atau salin/bagikan tautannya via WhatsApp. Saat diklik, tautan otomatis mengarahkan ke aset APK rilis terbaru dari repositori GitHub Anda.",
+            summary = "Kirim link yang langsung mengunduh file APK Koplingfy lengkap dengan QR Code.",
+            details = "Cukup scan QR Code dengan kamera HP lain, simpan kartu QR ke Galeri, atau salin/bagikan tautannya via WhatsApp agar teman dapat langsung mengunduh versi terbaru Koplingfy.",
             category = ChangelogCategory.NEW
         ),
         LocalChangelogItem(
-            title = "Cek Update Otomatis & Manual dari GitHub",
+            title = "Cek Update Otomatis & Manual + Changelog Interaktif",
             summary = "Deteksi versi terbaru otomatis saat membuka aplikasi serta tombol cek manual di Pengaturan.",
-            details = "Anda bisa mengatur nama repositori GitHub sendiri di Pengaturan. Begitu rilis baru terdeteksi, dialog pembaruan tampil dengan catatan rilis dan tombol unduh APK 1-ketuk.",
+            details = "Begitu pembaruan baru tersedia, dialog pembaruan tampil otomatis lengkap dengan catatan rilis dan tombol unduh APK 1-ketuk.",
             category = ChangelogCategory.NEW
         ),
         LocalChangelogItem(
             title = "Tentang Koplingfy & Profil TikTok Owner",
-            summary = "Kartu Tentang baru lengkap dengan tautan langsung TikTok @budikopling10 dan GitHub.",
-            details = "Menampilkan informasi versi & build aktif, pintasan profil TikTok Owner tiktok.com/@budikopling10, repositori GitHub, dan tombol berbagi aplikasi.",
+            summary = "Kartu Tentang baru lengkap dengan tautan langsung TikTok @budikopling10.",
+            details = "Menampilkan informasi versi & build aktif, pintasan profil TikTok Owner tiktok.com/@budikopling10, bagikan APK dengan QR Code, serta Changelog interaktif.",
             category = ChangelogCategory.UI
         ),
         LocalChangelogItem(
