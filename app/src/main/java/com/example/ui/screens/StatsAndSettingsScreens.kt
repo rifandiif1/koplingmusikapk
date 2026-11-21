@@ -539,7 +539,10 @@ fun SettingsScreen(
     onKeepScreenOnLyricsChange: (Boolean) -> Unit,
     onGaplessChange: (Boolean) -> Unit,
     onDynamicArtworkColorChange: (Boolean) -> Unit = {},
+    onAutoTranslateLyricsChange: (Boolean) -> Unit = {},
     onDynamicIslandLyricsChange: (Boolean) -> Unit = {},
+    canDrawSystemOverlays: Boolean = false,
+    onRequestSystemOverlayPermission: () -> Unit = {},
     onNotificationBarLyricsChange: (Boolean) -> Unit = {},
     onCrossfadeSecondsChange: (Int) -> Unit = {},
     onDataSaverCellularChange: (Boolean) -> Unit = {},
@@ -961,11 +964,79 @@ fun SettingsScreen(
                     onCheckedChange = onKeepScreenOnLyricsChange
                 )
                 SettingsToggleRow(
-                    title = "Dynamic Island Lirik (Non-Klik)",
-                    subtitle = "Tampilkan pill lirik berjalan di bawah status bar tanpa mengganggu sentuhan layar",
+                    title = "Terjemahan Lirik Indonesia Otomatis",
+                    subtitle = "Otomatis menerjemahkan lirik lagu asing ke Bahasa Indonesia santai saat diputar",
+                    checked = settings.autoTranslateLyrics,
+                    onCheckedChange = onAutoTranslateLyricsChange
+                )
+                SettingsToggleRow(
+                    title = "Dynamic Island Lirik (Di Atas Aplikasi Lain)",
+                    subtitle = "Tampilkan pill lirik berjalan di bawah status bar di atas semua aplikasi tanpa mengganggu sentuhan layar",
                     checked = settings.dynamicIslandLyrics,
                     onCheckedChange = onDynamicIslandLyricsChange
                 )
+                if (settings.dynamicIslandLyrics) {
+                    Surface(
+                        shape = RoundedCornerShape(14.dp),
+                        color = if (canDrawSystemOverlays) {
+                            MaterialTheme.colorScheme.primary.copy(alpha = 0.12f)
+                        } else {
+                            MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.45f)
+                        },
+                        border = BorderStroke(
+                            1.dp,
+                            if (canDrawSystemOverlays) {
+                                MaterialTheme.colorScheme.primary.copy(alpha = 0.35f)
+                            } else {
+                                MaterialTheme.colorScheme.outline.copy(alpha = 0.35f)
+                            }
+                        ),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(top = 4.dp, bottom = 6.dp)
+                    ) {
+                        Column(
+                            modifier = Modifier.padding(12.dp),
+                            verticalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                            ) {
+                                Icon(
+                                    imageVector = if (canDrawSystemOverlays) Icons.Rounded.Check else Icons.Rounded.AutoAwesome,
+                                    contentDescription = null,
+                                    tint = if (canDrawSystemOverlays) {
+                                        MaterialTheme.colorScheme.primary
+                                    } else {
+                                        MaterialTheme.colorScheme.onSecondaryContainer
+                                    },
+                                    modifier = Modifier.size(18.dp)
+                                )
+                                Text(
+                                    text = if (canDrawSystemOverlays) {
+                                        "Aktif di atas semua aplikasi • Tidak bisa diklik (sentuhan tembus)"
+                                    } else {
+                                        "Saat ini hanya tampil di dalam Koplingfy. Izinkan overlay agar Dynamic Island muncul di atas aplikasi lain."
+                                    },
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurface
+                                )
+                            }
+                            if (!canDrawSystemOverlays) {
+                                Button(
+                                    onClick = onRequestSystemOverlayPermission,
+                                    shape = RoundedCornerShape(12.dp),
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .testTag("grant_dynamic_island_overlay_button")
+                                ) {
+                                    Text("Izinkan Tampil di Atas Aplikasi Lain")
+                                }
+                            }
+                        }
+                    }
+                }
                 SettingsToggleRow(
                     title = "Lirik di Notifikasi Bar Mini Player",
                     subtitle = "Tampilkan baris lirik aktif di notifikasi pemutar & layar kunci",

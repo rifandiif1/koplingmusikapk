@@ -17,19 +17,20 @@ data class MediaBridgeSnapshot(
     val isTransitioning: Boolean = false,
     val positionMs: Long = 0L,
     val durationMs: Long = 0L,
-    val activeLyricLine: String? = null
+    val activeLyricLine: String? = null,
+    val activeTranslatedLyricLine: String? = null,
+    val dynamicIslandEnabled: Boolean = true,
+    val notificationLyricsEnabled: Boolean = true,
+    val accentColorArgb: Int = 0xFF00E5A0.toInt(),
+    val suppressSystemDynamicIsland: Boolean = false
 ) {
     val isPlaybackActive: Boolean
         get() = isPlaying || isBuffering || isTransitioning
 }
 
 /**
- * Process-wide bridge connecting KoplingfyViewModel, KoplingfyPlaybackService (MediaSession + Notification),
- * and KoplingfyWidgetProvider (Home Screen Widget).
- *
- * Once KoplingfyPlaybackService is running, all state/track/lyric updates flow in-process via [snapshot]
- * StateFlow without repeatedly calling startService() from the background (preventing Android 12+
- * BackgroundServiceStartNotAllowedException / ForegroundServiceStartNotAllowedException).
+ * Process-wide bridge connecting KoplingfyViewModel, KoplingfyPlaybackService (MediaSession + Notification
+ * + System-Wide Dynamic Island Overlay), and KoplingfyWidgetProvider (Home Screen Widget).
  */
 object KoplingfyMediaBridge {
     private val _snapshot = MutableStateFlow(MediaBridgeSnapshot())
@@ -56,6 +57,13 @@ object KoplingfyMediaBridge {
         }
     }
 
+    fun setSystemDynamicIslandSuppressed(suppressed: Boolean) {
+        val current = _snapshot.value
+        if (current.suppressSystemDynamicIsland != suppressed) {
+            _snapshot.value = current.copy(suppressSystemDynamicIsland = suppressed)
+        }
+    }
+
     fun publishState(
         context: Context,
         track: Track?,
@@ -64,9 +72,14 @@ object KoplingfyMediaBridge {
         positionMs: Long,
         durationMs: Long,
         activeLyricLine: String? = null,
-        isTransitioning: Boolean = false
+        activeTranslatedLyricLine: String? = null,
+        isTransitioning: Boolean = false,
+        dynamicIslandEnabled: Boolean = true,
+        notificationLyricsEnabled: Boolean = true,
+        accentColorArgb: Int = _snapshot.value.accentColorArgb
     ) {
         val cleanedLyric = activeLyricLine?.trim()?.takeIf { it.isNotEmpty() }
+        val cleanedTrans = activeTranslatedLyricLine?.trim()?.takeIf { it.isNotEmpty() }
         val nextSnapshot = MediaBridgeSnapshot(
             track = track,
             isPlaying = isPlaying,
@@ -74,7 +87,12 @@ object KoplingfyMediaBridge {
             isTransitioning = isTransitioning,
             positionMs = positionMs,
             durationMs = durationMs,
-            activeLyricLine = cleanedLyric
+            activeLyricLine = cleanedLyric,
+            activeTranslatedLyricLine = cleanedTrans,
+            dynamicIslandEnabled = dynamicIslandEnabled,
+            notificationLyricsEnabled = notificationLyricsEnabled,
+            accentColorArgb = accentColorArgb,
+            suppressSystemDynamicIsland = _snapshot.value.suppressSystemDynamicIsland
         )
         _snapshot.value = nextSnapshot
 

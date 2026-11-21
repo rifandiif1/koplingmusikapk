@@ -56,6 +56,7 @@ import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withTimeoutOrNull
 
 data class HomeUiState(
     val isLoading: Boolean = true,
@@ -263,14 +264,23 @@ class KoplingfyViewModel(application: Application) : AndroidViewModel(applicatio
         KoplingfyMediaBridge.onSeekTo = { seekTo(it) }
     }
 
-    private fun publishMediaBridgeState(state: PlayerUiState) {
-        val activeLyric = if (settings.value.notificationBarLyrics &&
-            state.isPlaying &&
-            state.lyricsState.syncedLines.isNotEmpty()
-        ) {
+    private fun publishMediaBridgeState(
+        state: PlayerUiState,
+        dynamicIslandOverride: Boolean? = null,
+        notificationLyricsOverride: Boolean? = null
+    ) {
+        val currentSettings = settings.value
+        val activeSyncedIdx = if (state.isPlaying && state.lyricsState.syncedLines.isNotEmpty()) {
             val adjPos = (state.positionMs + state.lyricsOffsetMs).coerceAtLeast(0L)
-            val idx = state.lyricsState.syncedLines.indexOfLast { it.timestampMs <= adjPos + 250L }
-            state.lyricsState.syncedLines.getOrNull(idx)?.text?.trim()?.takeIf { it.isNotEmpty() }
+            state.lyricsState.syncedLines.indexOfLast { it.timestampMs <= adjPos + 250L }
+        } else -1
+
+        val activeLyric = if (activeSyncedIdx >= 0) {
+            state.lyricsState.syncedLines.getOrNull(activeSyncedIdx)?.text?.trim()?.takeIf { it.isNotEmpty() }
+        } else null
+
+        val activeTranslatedLyric = if (activeSyncedIdx >= 0 && state.lyricsState.showTranslation) {
+            state.lyricsState.translatedSyncedLines.getOrNull(activeSyncedIdx)?.trim()?.takeIf { it.isNotEmpty() }
         } else null
 
         KoplingfyMediaBridge.publishState(
@@ -281,8 +291,16 @@ class KoplingfyViewModel(application: Application) : AndroidViewModel(applicatio
             positionMs = state.positionMs,
             durationMs = state.durationMs,
             activeLyricLine = activeLyric,
-            isTransitioning = isTransitioningTrack
+            activeTranslatedLyricLine = activeTranslatedLyric,
+            isTransitioning = isTransitioningTrack,
+            dynamicIslandEnabled = dynamicIslandOverride ?: currentSettings.dynamicIslandLyrics,
+            notificationLyricsEnabled = notificationLyricsOverride ?: currentSettings.notificationBarLyrics,
+            accentColorArgb = currentSettings.accentPreset.hexColor.toInt()
         )
+    }
+
+    fun refreshMediaBridgeOverlayState() {
+        publishMediaBridgeState(_playerState.value)
     }
 
     private fun observeAccountAuth() {
@@ -1106,19 +1124,29 @@ class KoplingfyViewModel(application: Application) : AndroidViewModel(applicatio
         lyricsJob = viewModelScope.launch {
             _playerState.update { it.copy(lyricsState = LyricsState(isLoading = true)) }
             val result = repository.fetchLyrics(track)
+            if (_playerState.value.currentTrack?.id != track.id) return@launch
+
             val cachedAi = LyricsTranslator.getCachedEntry(track.id)
             val cachedMeaning = SongMeaningAnalyzer.getCached(track.id)
             val hasSynced = result.syncedLines.isNotEmpty()
-            val plainCount = result.plainLyrics?.lines()?.count { it.isNotBlank() } ?: 0
+            val sourceLines = if (hasSynced) {
+                result.syncedLines.map { it.text }
+            } else {
+                result.plainLyrics?.lines()?.map { it.trim() }?.filter { it.isNotBlank() }.orEmpty()
+            }
+            val plainCount = if (!hasSynced) sourceLines.size else 0
 
             var hydrated = result
+            var hasCachedTranslation = false
             if (cachedAi != null) {
                 if (cachedAi.translatedLines.isNotEmpty()) {
-                    hydrated = if (hasSynced && cachedAi.translatedLines.size == result.syncedLines.size) {
-                        hydrated.copy(translatedSyncedLines = cachedAi.translatedLines)
+                    if (hasSynced && cachedAi.translatedLines.size == result.syncedLines.size) {
+                        hydrated = hydrated.copy(translatedSyncedLines = cachedAi.translatedLines)
+                        hasCachedTranslation = true
                     } else if (!hasSynced && cachedAi.translatedLines.size == plainCount) {
-                        hydrated.copy(translatedPlainLines = cachedAi.translatedLines)
-                    } else hydrated
+                        hydrated = hydrated.copy(translatedPlainLines = cachedAi.translatedLines)
+                        hasCachedTranslation = true
+                    }
                 }
                 if (cachedAi.romanizedLines.isNotEmpty() && cachedAi.needsRomanization) {
                     hydrated = if (hasSynced && cachedAi.romanizedLines.size == result.syncedLines.size) {
@@ -1137,11 +1165,33 @@ class KoplingfyViewModel(application: Application) : AndroidViewModel(applicatio
             if (cachedMeaning != null) {
                 hydrated = hydrated.copy(songMeaning = cachedMeaning)
             }
+
+            val alreadyIndonesian = (cachedAi?.detectedIndonesian == true) ||
+                LyricsTranslator.isLikelyAlreadyIndonesian(sourceLines)
+            val shouldAutoTranslate = settings.value.autoTranslateLyrics &&
+                !result.isInstrumental &&
+                sourceLines.isNotEmpty() &&
+                !alreadyIndonesian
+
+            if (shouldAutoTranslate && hasCachedTranslation) {
+                hydrated = hydrated.copy(showTranslation = true)
+            }
+
             _playerState.update { it.copy(lyricsState = hydrated) }
+            publishMediaBridgeState(_playerState.value)
+
+            if (shouldAutoTranslate && !hasCachedTranslation) {
+                runLyricsTranslation(
+                    track = track,
+                    hasSynced = hasSynced,
+                    sourceLines = sourceLines,
+                    isAuto = true
+                )
+            }
         }
     }
 
-    // ---- Indonesian Lyrics Translation via Firebase AI Logic (Gemini 3.8 Flash + Local Disk Cache) ----
+    // ---- Indonesian Lyrics Translation via Firebase AI Logic (Gemini 3.8 Flash + Fallback + Local Disk Cache) ----
     fun toggleLyricsTranslation() {
         val state = _playerState.value
         val track = state.currentTrack ?: return
@@ -1153,20 +1203,22 @@ class KoplingfyViewModel(application: Application) : AndroidViewModel(applicatio
             _playerState.update {
                 it.copy(lyricsState = it.lyricsState.copy(showTranslation = false, translationError = null))
             }
+            publishMediaBridgeState(_playerState.value)
             return
         }
 
         // If translation is already available in state (e.g. from local disk cache), show immediately
         val hasSynced = lyrics.syncedLines.isNotEmpty()
         val alreadyTranslated = if (hasSynced) {
-            lyrics.translatedSyncedLines.size == lyrics.syncedLines.size && lyrics.translatedSyncedLines.isNotEmpty()
+            lyrics.translatedSyncedLines.size == lyrics.syncedLines.size && lyrics.translatedSyncedLines.any { it.isNotBlank() }
         } else {
-            lyrics.translatedPlainLines.isNotEmpty()
+            lyrics.translatedPlainLines.any { it.isNotBlank() }
         }
         if (alreadyTranslated) {
             _playerState.update {
                 it.copy(lyricsState = it.lyricsState.copy(showTranslation = true, translationError = null))
             }
+            publishMediaBridgeState(_playerState.value)
             return
         }
 
@@ -1180,6 +1232,15 @@ class KoplingfyViewModel(application: Application) : AndroidViewModel(applicatio
             return
         }
 
+        runLyricsTranslation(track = track, hasSynced = hasSynced, sourceLines = sourceLines, isAuto = false)
+    }
+
+    private fun runLyricsTranslation(
+        track: Track,
+        hasSynced: Boolean,
+        sourceLines: List<String>,
+        isAuto: Boolean
+    ) {
         translateLyricsJob?.cancel()
         translateLyricsJob = viewModelScope.launch {
             _playerState.update {
@@ -1200,24 +1261,26 @@ class KoplingfyViewModel(application: Application) : AndroidViewModel(applicatio
             if (_playerState.value.currentTrack?.id != track.id) return@launch
 
             result.onSuccess { translated ->
+                val displayNow = if (isAuto && translated.detectedIndonesian) false else true
                 _playerState.update { cur ->
                     val updatedLyrics = if (hasSynced) {
                         cur.lyricsState.copy(
                             translatedSyncedLines = translated.lines,
-                            showTranslation = true,
+                            showTranslation = displayNow,
                             isTranslating = false,
                             translationError = null
                         )
                     } else {
                         cur.lyricsState.copy(
                             translatedPlainLines = translated.lines,
-                            showTranslation = true,
+                            showTranslation = displayNow,
                             isTranslating = false,
                             translationError = null
                         )
                     }
                     cur.copy(lyricsState = updatedLyrics)
                 }
+                publishMediaBridgeState(_playerState.value)
             }.onFailure { err ->
                 val message = err.message ?: "Gagal menerjemahkan lirik ke Bahasa Indonesia."
                 _playerState.update { cur ->
@@ -1229,7 +1292,9 @@ class KoplingfyViewModel(application: Application) : AndroidViewModel(applicatio
                         )
                     )
                 }
-                showMessage(message)
+                if (!isAuto) {
+                    showMessage(message)
+                }
             }
         }
     }
@@ -1342,29 +1407,18 @@ class KoplingfyViewModel(application: Application) : AndroidViewModel(applicatio
 
     // ---- Song Meaning Breakdown ("Bedah Makna Lagu") via Firebase AI Logic + Local Disk Cache ----
     fun analyzeCurrentSongMeaning(forceRefresh: Boolean = false) {
-        val state = _playerState.value
-        val track = state.currentTrack ?: return
-        val lyrics = state.lyricsState
-        if (lyrics.isLoading) return
-        if (lyrics.isInstrumental) {
-            showMessage("Lagu instrumental tidak memiliki lirik untuk dibedah")
-            return
-        }
-        if (!forceRefresh && lyrics.songMeaning != null) {
-            return
-        }
-
-        val sourceLines = if (lyrics.syncedLines.isNotEmpty()) {
-            lyrics.syncedLines.map { it.text }
-        } else {
-            lyrics.plainLyrics?.lines()?.map { it.trim() }?.filter { it.isNotBlank() }.orEmpty()
-        }
-        if (sourceLines.isEmpty()) {
-            val msg = "Belum ada lirik yang bisa dibedah untuk lagu ini."
+        val initialState = _playerState.value
+        val track = initialState.currentTrack ?: return
+        val initialLyrics = initialState.lyricsState
+        if (initialLyrics.isInstrumental) {
+            val msg = "Lagu instrumental tidak memiliki lirik untuk dibedah."
             _playerState.update { cur ->
                 cur.copy(lyricsState = cur.lyricsState.copy(isAnalyzingMeaning = false, meaningError = msg))
             }
             showMessage(msg)
+            return
+        }
+        if (!forceRefresh && initialLyrics.songMeaning != null) {
             return
         }
 
@@ -1378,10 +1432,24 @@ class KoplingfyViewModel(application: Application) : AndroidViewModel(applicatio
                     )
                 )
             }
+            // If lyrics are still being fetched from LrcLib, wait briefly so we include full lyrics when available
+            if (_playerState.value.lyricsState.isLoading && lyricsJob?.isActive == true) {
+                withTimeoutOrNull(4_000L) { lyricsJob?.join() }
+            }
+            if (_playerState.value.currentTrack?.id != track.id) return@launch
+
+            val latestLyrics = _playerState.value.lyricsState
+            val sourceLines = if (latestLyrics.syncedLines.isNotEmpty()) {
+                latestLyrics.syncedLines.map { it.text }
+            } else {
+                latestLyrics.plainLyrics?.lines()?.map { it.trim() }?.filter { it.isNotBlank() }.orEmpty()
+            }
+
             val result = SongMeaningAnalyzer.analyzeSongMeaning(
                 trackId = track.id,
                 trackTitle = track.title,
                 artist = track.artist,
+                album = track.album,
                 lyricsLines = sourceLines,
                 forceRefresh = forceRefresh
             )
@@ -2226,24 +2294,37 @@ class KoplingfyViewModel(application: Application) : AndroidViewModel(applicatio
     fun setCrossfadeSeconds(seconds: Int) = viewModelScope.launch { preferences.setCrossfadeSeconds(seconds) }
     fun setDataSaverCellular(enabled: Boolean) = viewModelScope.launch { preferences.setDataSaverCellular(enabled) }
     fun setDownloadWifiOnly(enabled: Boolean) = viewModelScope.launch { preferences.setDownloadWifiOnly(enabled) }
-    fun setDynamicIslandLyrics(enabled: Boolean) = viewModelScope.launch { preferences.setDynamicIslandLyrics(enabled) }
+    fun setAutoTranslateLyrics(enabled: Boolean) = viewModelScope.launch {
+        preferences.setAutoTranslateLyrics(enabled)
+        val state = _playerState.value
+        val track = state.currentTrack ?: return@launch
+        val lyrics = state.lyricsState
+        if (!enabled) {
+            if (lyrics.showTranslation) {
+                _playerState.update { it.copy(lyricsState = it.lyricsState.copy(showTranslation = false)) }
+                publishMediaBridgeState(_playerState.value)
+            }
+        } else if (!lyrics.isLoading && !lyrics.isInstrumental && !lyrics.showTranslation) {
+            val hasSynced = lyrics.syncedLines.isNotEmpty()
+            val sourceLines = if (hasSynced) {
+                lyrics.syncedLines.map { it.text }
+            } else {
+                lyrics.plainLyrics?.lines()?.map { it.trim() }?.filter { it.isNotBlank() }.orEmpty()
+            }
+            if (sourceLines.isNotEmpty() && !LyricsTranslator.isLikelyAlreadyIndonesian(sourceLines)) {
+                toggleLyricsTranslation()
+            }
+        }
+    }
+
+    fun setDynamicIslandLyrics(enabled: Boolean) = viewModelScope.launch {
+        preferences.setDynamicIslandLyrics(enabled)
+        publishMediaBridgeState(_playerState.value, dynamicIslandOverride = enabled)
+    }
+
     fun setNotificationBarLyrics(enabled: Boolean) = viewModelScope.launch {
         preferences.setNotificationBarLyrics(enabled)
-        val st = _playerState.value
-        KoplingfyMediaBridge.publishState(
-            context = getApplication(),
-            track = st.currentTrack,
-            isPlaying = st.isPlaying,
-            isBuffering = st.isBuffering,
-            positionMs = st.positionMs,
-            durationMs = st.durationMs,
-            activeLyricLine = if (enabled && st.isPlaying && st.lyricsState.syncedLines.isNotEmpty()) {
-                val adj = (st.positionMs + st.lyricsOffsetMs).coerceAtLeast(0L)
-                val idx = st.lyricsState.syncedLines.indexOfLast { it.timestampMs <= adj + 250L }
-                st.lyricsState.syncedLines.getOrNull(idx)?.text?.trim()?.takeIf { it.isNotEmpty() }
-            } else null,
-            isTransitioning = isTransitioningTrack
-        )
+        publishMediaBridgeState(_playerState.value, notificationLyricsOverride = enabled)
     }
 
     fun showMessage(msg: String) {

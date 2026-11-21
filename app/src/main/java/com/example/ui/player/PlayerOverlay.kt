@@ -2257,8 +2257,8 @@ internal fun SyncedLyricsStage(
                 }
             }
 
-            // Second compact toolbar: Terjemahan ID + Sync Offset + Kartu Lirik
-            if (hasSelectableLines && !lyrics.isLoading && !lyrics.isInstrumental) {
+            // Second compact toolbar: Terjemahan ID + Romaji + Makna Lagu + Sync Offset + Kartu Lirik
+            if (!lyrics.isLoading && !lyrics.isInstrumental) {
                 Column(
                     modifier = Modifier
                         .fillMaxWidth()
@@ -2270,83 +2270,85 @@ internal fun SyncedLyricsStage(
                         horizontalArrangement = Arrangement.spacedBy(6.dp),
                         verticalAlignment = Alignment.CenterVertically
                     ) {
-                        item {
-                            Surface(
-                                onClick = onToggleTranslation,
-                                shape = RoundedCornerShape(50),
-                                color = if (lyrics.showTranslation) Color.White else Color.Black.copy(alpha = 0.28f),
-                                modifier = Modifier.testTag("toggle_lyrics_translation")
-                            ) {
-                                Row(
-                                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp),
-                                    verticalAlignment = Alignment.CenterVertically,
-                                    horizontalArrangement = Arrangement.spacedBy(5.dp)
+                        if (hasSelectableLines) {
+                            item {
+                                Surface(
+                                    onClick = onToggleTranslation,
+                                    shape = RoundedCornerShape(50),
+                                    color = if (lyrics.showTranslation) Color.White else Color.Black.copy(alpha = 0.28f),
+                                    modifier = Modifier.testTag("toggle_lyrics_translation")
                                 ) {
-                                    if (lyrics.isTranslating) {
-                                        CircularProgressIndicator(
-                                            modifier = Modifier.size(13.dp),
-                                            strokeWidth = 1.8.dp,
+                                    Row(
+                                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp),
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.spacedBy(5.dp)
+                                    ) {
+                                        if (lyrics.isTranslating) {
+                                            CircularProgressIndicator(
+                                                modifier = Modifier.size(13.dp),
+                                                strokeWidth = 1.8.dp,
+                                                color = if (lyrics.showTranslation) Color(0xFF0A0A0C) else Color.White
+                                            )
+                                        } else {
+                                            Icon(
+                                                imageVector = Icons.Rounded.Translate,
+                                                contentDescription = "Terjemahan Bahasa Indonesia",
+                                                tint = if (lyrics.showTranslation) Color(0xFF0A0A0C) else Color.White,
+                                                modifier = Modifier.size(14.dp)
+                                            )
+                                        }
+                                        Text(
+                                            text = when {
+                                                lyrics.isTranslating -> "Menerjemahkan…"
+                                                lyrics.showTranslation -> "ID Aktif"
+                                                else -> "Terjemahan ID"
+                                            },
+                                            style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.SemiBold),
                                             color = if (lyrics.showTranslation) Color(0xFF0A0A0C) else Color.White
                                         )
-                                    } else {
-                                        Icon(
-                                            imageVector = Icons.Rounded.Translate,
-                                            contentDescription = "Terjemahan Bahasa Indonesia",
-                                            tint = if (lyrics.showTranslation) Color(0xFF0A0A0C) else Color.White,
-                                            modifier = Modifier.size(14.dp)
-                                        )
                                     }
-                                    Text(
-                                        text = when {
-                                            lyrics.isTranslating -> "Menerjemahkan…"
-                                            lyrics.showTranslation -> "ID Aktif"
-                                            else -> "Terjemahan ID"
-                                        },
-                                        style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.SemiBold),
-                                        color = if (lyrics.showTranslation) Color(0xFF0A0A0C) else Color.White
-                                    )
                                 }
                             }
-                        }
 
-                        item {
-                            Surface(
-                                onClick = onToggleRomanization,
-                                shape = RoundedCornerShape(50),
-                                color = if (lyrics.showRomanization) Color.White else Color.Black.copy(alpha = 0.28f),
-                                modifier = Modifier.testTag("toggle_lyrics_romanization")
-                            ) {
-                                Row(
-                                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp),
-                                    verticalAlignment = Alignment.CenterVertically,
-                                    horizontalArrangement = Arrangement.spacedBy(5.dp)
+                            item {
+                                Surface(
+                                    onClick = onToggleRomanization,
+                                    shape = RoundedCornerShape(50),
+                                    color = if (lyrics.showRomanization) Color.White else Color.Black.copy(alpha = 0.28f),
+                                    modifier = Modifier.testTag("toggle_lyrics_romanization")
                                 ) {
-                                    if (lyrics.isRomanizing) {
-                                        CircularProgressIndicator(
-                                            modifier = Modifier.size(13.dp),
-                                            strokeWidth = 1.8.dp,
+                                    Row(
+                                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp),
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.spacedBy(5.dp)
+                                    ) {
+                                        if (lyrics.isRomanizing) {
+                                            CircularProgressIndicator(
+                                                modifier = Modifier.size(13.dp),
+                                                strokeWidth = 1.8.dp,
+                                                color = if (lyrics.showRomanization) Color(0xFF0A0A0C) else Color.White
+                                            )
+                                        } else {
+                                            Icon(
+                                                imageVector = Icons.Rounded.Spellcheck,
+                                                contentDescription = "Romanisasi Romaji Hangul Pinyin",
+                                                tint = if (lyrics.showRomanization) Color(0xFF0A0A0C) else Color.White,
+                                                modifier = Modifier.size(14.dp)
+                                            )
+                                        }
+                                        val activeRomLabel = lyrics.romanizationScriptLabel
+                                            .takeIf { it.isNotBlank() && !it.equals("Latin", ignoreCase = true) }
+                                            ?: "Romaji"
+                                        Text(
+                                            text = when {
+                                                lyrics.isRomanizing -> "Romanisasi…"
+                                                lyrics.showRomanization -> "$activeRomLabel Aktif"
+                                                else -> "Romaji / Baca"
+                                            },
+                                            style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.SemiBold),
                                             color = if (lyrics.showRomanization) Color(0xFF0A0A0C) else Color.White
                                         )
-                                    } else {
-                                        Icon(
-                                            imageVector = Icons.Rounded.Spellcheck,
-                                            contentDescription = "Romanisasi Romaji Hangul Pinyin",
-                                            tint = if (lyrics.showRomanization) Color(0xFF0A0A0C) else Color.White,
-                                            modifier = Modifier.size(14.dp)
-                                        )
                                     }
-                                    val activeRomLabel = lyrics.romanizationScriptLabel
-                                        .takeIf { it.isNotBlank() && !it.equals("Latin", ignoreCase = true) }
-                                        ?: "Romaji"
-                                    Text(
-                                        text = when {
-                                            lyrics.isRomanizing -> "Romanisasi…"
-                                            lyrics.showRomanization -> "$activeRomLabel Aktif"
-                                            else -> "Romaji / Baca"
-                                        },
-                                        style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.SemiBold),
-                                        color = if (lyrics.showRomanization) Color(0xFF0A0A0C) else Color.White
-                                    )
                                 }
                             }
                         }
@@ -2441,32 +2443,34 @@ internal fun SyncedLyricsStage(
                             }
                         }
 
-                        item {
-                            Surface(
-                                onClick = {
-                                    isSelectingCard = !isSelectingCard
-                                    if (!isSelectingCard) selectedLineIndices.clear()
-                                },
-                                shape = RoundedCornerShape(50),
-                                color = if (isSelectingCard) Color.White else Color.Black.copy(alpha = 0.26f),
-                                modifier = Modifier.testTag("toggle_lyric_card_mode")
-                            ) {
-                                Row(
-                                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp),
-                                    verticalAlignment = Alignment.CenterVertically,
-                                    horizontalArrangement = Arrangement.spacedBy(5.dp)
+                        if (hasSelectableLines) {
+                            item {
+                                Surface(
+                                    onClick = {
+                                        isSelectingCard = !isSelectingCard
+                                        if (!isSelectingCard) selectedLineIndices.clear()
+                                    },
+                                    shape = RoundedCornerShape(50),
+                                    color = if (isSelectingCard) Color.White else Color.Black.copy(alpha = 0.26f),
+                                    modifier = Modifier.testTag("toggle_lyric_card_mode")
                                 ) {
-                                    Icon(
-                                        imageVector = Icons.Rounded.AutoAwesome,
-                                        contentDescription = null,
-                                        tint = if (isSelectingCard) Color(0xFF0A0A0C) else Color.White,
-                                        modifier = Modifier.size(14.dp)
-                                    )
-                                    Text(
-                                        text = if (isSelectingCard) "Pilih (1–4)" else "Kartu Lirik",
-                                        style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.SemiBold),
-                                        color = if (isSelectingCard) Color(0xFF0A0A0C) else Color.White
-                                    )
+                                    Row(
+                                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp),
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.spacedBy(5.dp)
+                                    ) {
+                                        Icon(
+                                            imageVector = Icons.Rounded.AutoAwesome,
+                                            contentDescription = null,
+                                            tint = if (isSelectingCard) Color(0xFF0A0A0C) else Color.White,
+                                            modifier = Modifier.size(14.dp)
+                                        )
+                                        Text(
+                                            text = if (isSelectingCard) "Pilih (1–4)" else "Kartu Lirik",
+                                            style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.SemiBold),
+                                            color = if (isSelectingCard) Color(0xFF0A0A0C) else Color.White
+                                        )
+                                    }
                                 }
                             }
                         }
@@ -2479,12 +2483,35 @@ internal fun SyncedLyricsStage(
                             color = Color.Black.copy(alpha = 0.36f),
                             modifier = Modifier.fillMaxWidth()
                         ) {
-                            Text(
-                                text = activeLyricsError,
-                                style = MaterialTheme.typography.labelSmall,
-                                color = Color(0xFFFFB4AB),
-                                modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp)
-                            )
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(horizontal = 10.dp, vertical = 6.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                            ) {
+                                Text(
+                                    text = activeLyricsError,
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = Color(0xFFFFB4AB),
+                                    modifier = Modifier.weight(1f)
+                                )
+                                Surface(
+                                    onClick = {
+                                        if (lyrics.translationError != null) onToggleTranslation()
+                                        else onToggleRomanization()
+                                    },
+                                    shape = RoundedCornerShape(50),
+                                    color = Color.White.copy(alpha = 0.16f)
+                                ) {
+                                    Text(
+                                        text = "Coba Lagi",
+                                        style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold),
+                                        color = Color.White,
+                                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
+                                    )
+                                }
+                            }
                         }
                     }
                 }
@@ -2713,12 +2740,41 @@ internal fun SyncedLyricsStage(
                     }
                     else -> {
                         Box(Modifier.fillMaxSize().padding(24.dp), contentAlignment = Alignment.Center) {
-                            Text(
-                                text = lyrics.error ?: "Lirik belum tersedia untuk lagu ini.",
-                                style = MaterialTheme.typography.bodyMedium,
-                                color = Color.White.copy(alpha = 0.78f),
-                                textAlign = TextAlign.Center
-                            )
+                            Column(
+                                horizontalAlignment = Alignment.CenterHorizontally,
+                                verticalArrangement = Arrangement.spacedBy(12.dp)
+                            ) {
+                                Text(
+                                    text = lyrics.error ?: "Lirik belum tersedia untuk lagu ini.",
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    color = Color.White.copy(alpha = 0.78f),
+                                    textAlign = TextAlign.Center
+                                )
+                                Surface(
+                                    onClick = onOpenSongMeaning,
+                                    shape = RoundedCornerShape(50),
+                                    color = Color.White.copy(alpha = 0.16f),
+                                    border = BorderStroke(1.dp, Color.White.copy(alpha = 0.28f))
+                                ) {
+                                    Row(
+                                        modifier = Modifier.padding(horizontal = 14.dp, vertical = 8.dp),
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                                    ) {
+                                        Icon(
+                                            imageVector = Icons.Rounded.AutoStories,
+                                            contentDescription = null,
+                                            tint = Color.White,
+                                            modifier = Modifier.size(16.dp)
+                                        )
+                                        Text(
+                                            text = "Tetap Bedah Makna Lagu Ini",
+                                            style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Bold),
+                                            color = Color.White
+                                        )
+                                    }
+                                }
+                            }
                         }
                     }
                 }

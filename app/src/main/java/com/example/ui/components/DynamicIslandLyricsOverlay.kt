@@ -13,6 +13,7 @@ import androidx.compose.foundation.basicMarquee
 import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
@@ -39,11 +40,10 @@ import androidx.compose.ui.unit.sp
 import com.example.viewmodel.PlayerUiState
 
 /**
- * Fixed, NON-CLICKABLE Dynamic Island pill positioned right below the status/notification bar
- * displaying live synced lyrics in real time.
- *
- * Intentionally uses ZERO clickable or pointer-consuming modifiers so all touch events
- * pass seamlessly through to controls underneath without blocking screen taps.
+ * In-app fallback for the fixed, NON-CLICKABLE Dynamic Island pill positioned right below the
+ * status bar. Used automatically whenever Android's system-wide overlay permission
+ * (SYSTEM_ALERT_WINDOW) is not yet granted; when overlay permission IS granted,
+ * DynamicIslandWindowController renders this pill system-wide above ALL apps.
  */
 @Composable
 fun DynamicIslandLyricsOverlay(
@@ -53,11 +53,21 @@ fun DynamicIslandLyricsOverlay(
     modifier: Modifier = Modifier
 ) {
     val track = playerState.currentTrack
-    val syncedLines = playerState.lyricsState.syncedLines
+    val lyricsState = playerState.lyricsState
+    val syncedLines = lyricsState.syncedLines
     val adjustedPosMs = (playerState.positionMs + playerState.lyricsOffsetMs).coerceAtLeast(0L)
-    val activeLyric = remember(syncedLines, adjustedPosMs) {
-        val idx = syncedLines.indexOfLast { it.timestampMs <= adjustedPosMs + 250L }
-        syncedLines.getOrNull(idx)?.text?.trim()?.takeIf { it.isNotEmpty() }
+    val activeIdx = remember(syncedLines, adjustedPosMs) {
+        syncedLines.indexOfLast { it.timestampMs <= adjustedPosMs + 250L }
+    }
+    val activeLyric = remember(syncedLines, activeIdx) {
+        syncedLines.getOrNull(activeIdx)?.text?.trim()?.takeIf { it.isNotEmpty() }
+    }
+    val activeTranslation = remember(lyricsState.showTranslation, lyricsState.translatedSyncedLines, activeIdx, activeLyric) {
+        if (lyricsState.showTranslation && activeLyric != null) {
+            lyricsState.translatedSyncedLines.getOrNull(activeIdx)
+                ?.trim()
+                ?.takeIf { it.isNotEmpty() && !it.equals(activeLyric, ignoreCase = true) }
+        } else null
     }
 
     val shouldShow = visible &&
@@ -104,25 +114,39 @@ fun DynamicIslandLyricsOverlay(
                     )
 
                     AnimatedContent(
-                        targetState = activeLyric.orEmpty(),
+                        targetState = activeLyric.orEmpty() to activeTranslation,
                         transitionSpec = {
                             (slideInVertically { it / 2 } + fadeIn(tween(200))) togetherWith
                                 (slideOutVertically { -it / 2 } + fadeOut(tween(150)))
                         },
                         modifier = Modifier.weight(1f, fill = false),
                         label = "dynamic_island_lyric_text"
-                    ) { lyricText ->
-                        Text(
-                            text = lyricText,
-                            style = MaterialTheme.typography.labelMedium.copy(
-                                fontSize = 12.sp,
-                                fontWeight = FontWeight.SemiBold
-                            ),
-                            color = Color(0xFFF6F7FB),
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis,
-                            modifier = Modifier.basicMarquee(iterations = Int.MAX_VALUE)
-                        )
+                    ) { (lyricText, transText) ->
+                        Column {
+                            Text(
+                                text = lyricText,
+                                style = MaterialTheme.typography.labelMedium.copy(
+                                    fontSize = 12.sp,
+                                    fontWeight = FontWeight.SemiBold
+                                ),
+                                color = Color(0xFFF6F7FB),
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                                modifier = Modifier.basicMarquee(iterations = Int.MAX_VALUE)
+                            )
+                            if (!transText.isNullOrBlank()) {
+                                Text(
+                                    text = transText,
+                                    style = MaterialTheme.typography.labelSmall.copy(
+                                        fontSize = 10.sp,
+                                        fontWeight = FontWeight.Normal
+                                    ),
+                                    color = Color(0xFFB8F2D6),
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+                            }
+                        }
                     }
 
                     AudioVisualizerBars(

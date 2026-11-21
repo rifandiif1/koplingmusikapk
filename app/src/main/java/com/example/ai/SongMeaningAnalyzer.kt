@@ -6,11 +6,15 @@ import com.example.model.SongMeaningAnalysis
 import com.example.model.SongMeaningLineInsight
 import com.google.firebase.Firebase
 import com.google.firebase.ai.ai
+import com.google.firebase.ai.type.HarmBlockThreshold
+import com.google.firebase.ai.type.HarmCategory
+import com.google.firebase.ai.type.SafetySetting
 import com.google.firebase.ai.type.Schema
 import com.google.firebase.ai.type.generationConfig
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.TimeoutCancellationException
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
 import org.json.JSONArray
@@ -23,14 +27,22 @@ private const val CACHE_DIR_NAME = "lyrics_ai_cache"
 
 /**
  * Generates an insightful Indonesian song meaning breakdown ("Bedah Makna Lagu")
- * via Firebase AI Logic (Gemini 3.8 Flash) with structured JSON schema and local
- * disk caching inside `lyrics_ai_cache/` so analyzed songs remain available offline.
+ * via Firebase AI Logic (Gemini 3.8 Flash with Gemini 3.5 Flash-Lite fallback) with
+ * structured JSON schema, permissive song-lyrics safety thresholds, support for tracks
+ * both with and without fetched LrcLib lyrics, and persistent offline local disk caching.
  */
 object SongMeaningAnalyzer {
     private val memoryCache = ConcurrentHashMap<String, SongMeaningAnalysis>()
 
     @Volatile
     private var cacheDir: File? = null
+
+    private val meaningSafetySettings = listOf(
+        SafetySetting(HarmCategory.HARASSMENT, HarmBlockThreshold.ONLY_HIGH),
+        SafetySetting(HarmCategory.HATE_SPEECH, HarmBlockThreshold.ONLY_HIGH),
+        SafetySetting(HarmCategory.SEXUALLY_EXPLICIT, HarmBlockThreshold.ONLY_HIGH),
+        SafetySetting(HarmCategory.DANGEROUS_CONTENT, HarmBlockThreshold.ONLY_HIGH)
+    )
 
     fun init(context: Context) {
         if (cacheDir != null) return
@@ -64,19 +76,20 @@ object SongMeaningAnalyzer {
                 items = Schema.obj(
                     properties = mapOf(
                         "lyricExcerpt" to Schema.string(
-                            description = "Potongan 1-2 baris lirik asli yang paling kuat atau penuh metafora dari lagu."
+                            description = "Potongan 1-2 baris lirik atau tema kunci yang paling kuat dan bermakna dari lagu."
                         ),
                         "explanation" to Schema.string(
-                            description = "Penjelasan arti tersirat, metafora, atau rasa di balik potongan lirik tersebut dalam Bahasa Indonesia yang santai dan mudah dicerna."
+                            description = "Penjelasan arti tersirat, metafora, atau rasa di balik potongan lirik/tema tersebut dalam Bahasa Indonesia yang santai dan mudah dicerna."
                         )
                     )
                 ),
-                description = "2 sampai 4 potongan lirik kunci paling ikonik beserta bedah maknanya."
+                description = "2 sampai 4 potongan lirik atau simbol kunci paling ikonik beserta bedah maknanya."
             ),
             "takeaway" to Schema.string(
                 description = "1-2 kalimat penutup tentang pesan utama atau alasan kenapa lagu ini terasa relate buat pendengar."
             )
-        )
+        ),
+        optionalProperties = listOf("moodTags", "emotionalArc", "keyLineInsights", "takeaway")
     )
 
     private val meaningModel by lazy {
@@ -86,7 +99,20 @@ object SongMeaningAnalyzer {
                 responseMimeType = "application/json"
                 responseSchema = meaningSchema
                 temperature = 0.45f
-            }
+            },
+            safetySettings = meaningSafetySettings
+        )
+    }
+
+    private val fallbackMeaningModel by lazy {
+        Firebase.ai.generativeModel(
+            modelName = "gemini-3.5-flash-lite",
+            generationConfig = generationConfig {
+                responseMimeType = "application/json"
+                responseSchema = meaningSchema
+                temperature = 0.45f
+            },
+            safetySettings = meaningSafetySettings
         )
     }
 
@@ -144,6 +170,17 @@ object SongMeaningAnalyzer {
         }
     }
 
+    private fun extractJsonObject(raw: String): JSONObject {
+        val trimmed = raw.trim()
+        runCatching { return JSONObject(trimmed) }
+        val start = trimmed.indexOf('{')
+        val end = trimmed.lastIndexOf('}')
+        if (start >= 0 && end > start) {
+            return JSONObject(trimmed.substring(start, end + 1))
+        }
+        throw IllegalStateException("Format JSON analisis makna tidak valid.")
+    }
+
     private fun parseMeaningJson(obj: JSONObject): SongMeaningAnalysis {
         val tagsArr = obj.optJSONArray("moodTags")
         val tags = if (tagsArr != null) {
@@ -165,13 +202,18 @@ object SongMeaningAnalyzer {
             }.take(4)
         } else emptyList()
 
+        val headline = obj.optString("headline", "").trim()
+        val story = obj.optString("storyOverview", "").trim()
+        val arc = obj.optString("emotionalArc", "").trim()
+        val takeaway = obj.optString("takeaway", "").trim()
+
         return SongMeaningAnalysis(
-            headline = obj.optString("headline", "").trim(),
+            headline = headline.ifBlank { story.substringBefore(".").take(120) },
             moodTags = tags,
-            storyOverview = obj.optString("storyOverview", "").trim(),
-            emotionalArc = obj.optString("emotionalArc", "").trim(),
+            storyOverview = story.ifBlank { headline },
+            emotionalArc = arc,
             keyLineInsights = insights,
-            takeaway = obj.optString("takeaway", "").trim()
+            takeaway = takeaway
         )
     }
 
@@ -179,64 +221,76 @@ object SongMeaningAnalyzer {
         trackId: String,
         trackTitle: String,
         artist: String,
-        lyricsLines: List<String>,
+        album: String = "",
+        lyricsLines: List<String> = emptyList(),
         forceRefresh: Boolean = false
     ): Result<SongMeaningAnalysis> = withContext(Dispatchers.IO) {
-        if (lyricsLines.isEmpty()) {
-            return@withContext Result.failure(
-                IllegalArgumentException("Belum ada lirik yang bisa dibedah untuk lagu ini.")
-            )
-        }
         if (!forceRefresh) {
             getCached(trackId)?.let { cached ->
                 return@withContext Result.success(cached)
             }
         }
 
-        try {
-            val cleanedLyrics = lyricsLines
-                .map { it.trim() }
-                .filter { it.isNotBlank() && it != "♪" && it != "♫" }
-                .take(120)
-                .joinToString("\n")
+        val cleanedLyrics = lyricsLines
+            .map { it.trim() }
+            .filter { it.isNotBlank() && it != "♪" && it != "♫" }
+            .take(100)
+            .joinToString("\n")
 
-            val prompt = buildString {
-                appendLine("Bedah makna, cerita, dan metafora di balik lirik lagu berikut.")
-                appendLine("Judul: $trackTitle")
-                appendLine("Artis: $artist")
-                appendLine("GAYA PENULISAN:")
-                appendLine("- Tulis seluruh hasil dalam Bahasa Indonesia yang santai, hangat, mengalir, dan enak dibaca (hindari gaya bahasa kaku seperti laporan resmi/esai akademik).")
-                appendLine("- Fokus ke makna nyata dari teks liriknya, jangan mengarang fakta biografi artis yang belum pasti.")
-                appendLine("- Untuk `keyLineInsights`, kutip langsung potongan baris asli dari lirik di bawah lalu jelaskan makna tersirat/emosinya.")
+        val prompt = buildString {
+            appendLine("Bedah makna, cerita, nuansa emosi, dan metafora di balik lagu berikut.")
+            appendLine("Judul: $trackTitle")
+            appendLine("Artis: $artist")
+            if (album.isNotBlank()) appendLine("Album: $album")
+            appendLine("GAYA PENULISAN:")
+            appendLine("- Tulis seluruh hasil dalam Bahasa Indonesia sehari-hari yang santai, hangat, mengalir, dan enak dibaca (hindari gaya bahasa kaku/akademik).")
+            if (cleanedLyrics.isNotBlank()) {
+                appendLine("- Fokus ke makna nyata dari teks lirik di bawah, jangan mengarang fakta biografi artis yang belum pasti.")
+                appendLine("- Untuk `keyLineInsights`, kutip langsung 2-4 potongan baris paling ikonik dari lirik di bawah lalu jelaskan makna tersirat/emosinya.")
                 appendLine()
                 appendLine("LIRIK LAGU:")
                 append(cleanedLyrics)
+            } else {
+                appendLine("- Teks lirik lengkap tidak tersedia di perangkat. Bedah makna, tema besar, nuansa emosional, dan pesan lagu berdasarkan pengetahuan tentang lagu \"$trackTitle\" oleh $artist.")
+                appendLine("- Untuk `keyLineInsights`, sorot 2-3 tema, metafora, atau bagian paling berkesan dari lagu tersebut beserta penjelasannya (tanpa mengarang kutipan lirik palsu).")
             }
-
-            val response = withTimeout(60_000L) {
-                meaningModel.generateContent(prompt)
-            }
-            val rawJson = response.text?.takeIf { it.isNotBlank() }
-                ?: return@withContext Result.failure(
-                    IllegalStateException("Respon bedah makna kosong dari layanan AI.")
-                )
-
-            val parsed = parseMeaningJson(JSONObject(rawJson))
-            if (parsed.headline.isBlank() || parsed.storyOverview.isBlank()) {
-                return@withContext Result.failure(
-                    IllegalStateException("Format analisis makna lagu tidak lengkap.")
-                )
-            }
-            saveCache(trackId, parsed)
-            Result.success(parsed)
-        } catch (e: TimeoutCancellationException) {
-            Log.e(TAG, "Song meaning analysis timed out", e)
-            Result.failure(Exception("Bedah makna melewati batas waktu (60 detik). Coba lagi sebentar ya."))
-        } catch (e: CancellationException) {
-            throw e
-        } catch (e: Exception) {
-            Log.e(TAG, "Firebase AI song meaning analysis failed", e)
-            Result.failure(Exception(e.localizedMessage ?: "Gagal membedah makna lagu."))
         }
+
+        val modelsToTry = listOf(meaningModel, fallbackMeaningModel)
+        var lastError: Exception? = null
+
+        for ((attemptIdx, model) in modelsToTry.withIndex()) {
+            try {
+                if (attemptIdx > 0) delay(700L)
+                val response = withTimeout(55_000L) {
+                    model.generateContent(prompt)
+                }
+                val rawJson = response.text?.takeIf { it.isNotBlank() }
+                    ?: throw IllegalStateException("Respon bedah makna kosong dari layanan AI.")
+
+                val parsed = parseMeaningJson(extractJsonObject(rawJson))
+                if (parsed.headline.isBlank() && parsed.storyOverview.isBlank()) {
+                    throw IllegalStateException("Format analisis makna lagu tidak lengkap.")
+                }
+                saveCache(trackId, parsed)
+                return@withContext Result.success(parsed)
+            } catch (e: TimeoutCancellationException) {
+                Log.w(TAG, "Song meaning attempt ${attemptIdx + 1} timed out for $trackTitle")
+                lastError = Exception("Bedah makna melewati batas waktu. Ketuk Coba Lagi sebentar ya.")
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                Log.w(TAG, "Song meaning attempt ${attemptIdx + 1} failed for $trackTitle: ${e.message}", e)
+                lastError = e
+            }
+        }
+
+        val finalErr = lastError
+        val message = if (finalErr != null) {
+            LyricsTranslator.formatFriendlyAiError(finalErr, "Gagal membedah makna lagu.")
+        } else {
+            "Gagal membedah makna lagu."
+        }
+        Result.failure(Exception(message))
     }
 }

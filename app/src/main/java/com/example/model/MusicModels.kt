@@ -220,6 +220,7 @@ data class AudioSettings(
     val downloadWifiOnly: Boolean = false,
     val skipSilence: Boolean = false,
     val reverbEnabled: Boolean = false,
+    val autoTranslateLyrics: Boolean = true,
     val dynamicIslandLyrics: Boolean = true,
     val notificationBarLyrics: Boolean = true
 )

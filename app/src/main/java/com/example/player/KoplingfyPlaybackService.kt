@@ -56,6 +56,7 @@ class KoplingfyPlaybackService : Service() {
 
     private var wakeLock: PowerManager.WakeLock? = null
     private var lastWakeLockRefreshElapsedMs: Long = 0L
+    private var dynamicIslandController: DynamicIslandWindowController? = null
 
     private var cachedArtUrl: String? = null
     private var cachedBitmap: Bitmap? = null
@@ -76,6 +77,7 @@ class KoplingfyPlaybackService : Service() {
         super.onCreate()
         createNotificationChannel()
         initWakeLock()
+        dynamicIslandController = DynamicIslandWindowController(this)
 
         mediaSession = MediaSession(this, "KoplingfyMediaSession").apply {
             setCallback(object : MediaSession.Callback() {
@@ -126,6 +128,7 @@ class KoplingfyPlaybackService : Service() {
             ACTION_PREV -> KoplingfyMediaBridge.dispatchPrevious()
             ACTION_STOP -> {
                 KoplingfyMediaBridge.dispatchPause()
+                dynamicIslandController?.detach()
                 releaseWakeLock()
                 stopForegroundCompat(removeNotification = true)
                 stopSelf()
@@ -163,7 +166,11 @@ class KoplingfyPlaybackService : Service() {
         forcePromote: Boolean,
         forceVisualRefresh: Boolean = false
     ) {
-        val track = snap.track ?: return
+        val track = snap.track
+        if (track == null) {
+            dynamicIslandController?.detach()
+            return
+        }
 
         if (track.artworkUrl != cachedArtUrl) {
             cachedArtUrl = track.artworkUrl
@@ -172,6 +179,9 @@ class KoplingfyPlaybackService : Service() {
                 loadArtworkAsync(track.artworkUrl)
             }
         }
+
+        // Keep system-wide Dynamic Island overlay in sync across ALL apps (zero-touch pass-through)
+        dynamicIslandController?.update(snap, cachedBitmap)
 
         if (!mediaSession.isActive) {
             mediaSession.isActive = true
@@ -218,7 +228,9 @@ class KoplingfyPlaybackService : Service() {
             mediaSession.setPlaybackState(pbState)
         }
 
-        val liveLyric = snap.activeLyricLine?.takeIf { it.isNotBlank() && snap.isPlaying }
+        val liveLyric = snap.activeLyricLine?.takeIf {
+            it.isNotBlank() && snap.isPlaying && snap.notificationLyricsEnabled
+        }
         val displaySubtitle = when {
             snap.isTransitioning && !snap.isPlaying -> "Memuat lagu berikutnya…"
             liveLyric != null -> "♪ $liveLyric"
@@ -524,6 +536,8 @@ class KoplingfyPlaybackService : Service() {
         lyricThrottleJob?.cancel()
         artworkLoadJob?.cancel()
         snapshotCollectJob?.cancel()
+        dynamicIslandController?.destroy()
+        dynamicIslandController = null
         releaseWakeLock()
         serviceScope.cancel()
         runCatching {

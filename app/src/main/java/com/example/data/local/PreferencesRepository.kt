@@ -45,6 +45,7 @@ class PreferencesRepository(private val context: Context) {
         val DOWNLOAD_WIFI_ONLY = booleanPreferencesKey("download_wifi_only")
         val SKIP_SILENCE = booleanPreferencesKey("skip_silence")
         val REVERB_ENABLED = booleanPreferencesKey("reverb_enabled")
+        val AUTO_TRANSLATE_LYRICS = booleanPreferencesKey("auto_translate_lyrics")
         val DYNAMIC_ISLAND_LYRICS = booleanPreferencesKey("dynamic_island_lyrics")
         val NOTIFICATION_BAR_LYRICS = booleanPreferencesKey("notification_bar_lyrics")
 
@@ -98,6 +99,7 @@ class PreferencesRepository(private val context: Context) {
             downloadWifiOnly = prefs[Keys.DOWNLOAD_WIFI_ONLY] ?: false,
             skipSilence = prefs[Keys.SKIP_SILENCE] ?: false,
             reverbEnabled = prefs[Keys.REVERB_ENABLED] ?: false,
+            autoTranslateLyrics = prefs[Keys.AUTO_TRANSLATE_LYRICS] ?: true,
             dynamicIslandLyrics = prefs[Keys.DYNAMIC_ISLAND_LYRICS] ?: true,
             notificationBarLyrics = prefs[Keys.NOTIFICATION_BAR_LYRICS] ?: true
         )
@@ -234,6 +236,10 @@ class PreferencesRepository(private val context: Context) {
 
     suspend fun setReverbEnabled(enabled: Boolean) {
         context.koplingfyDataStore.edit { it[Keys.REVERB_ENABLED] = enabled }
+    }
+
+    suspend fun setAutoTranslateLyrics(enabled: Boolean) {
+        context.koplingfyDataStore.edit { it[Keys.AUTO_TRANSLATE_LYRICS] = enabled }
     }
 
     suspend fun setDynamicIslandLyrics(enabled: Boolean) {

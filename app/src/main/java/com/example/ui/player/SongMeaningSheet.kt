@@ -543,6 +543,45 @@ fun SongMeaningBottomSheet(
                         Spacer(modifier = Modifier.height(6.dp))
                     }
                 }
+
+                else -> {
+                    Surface(
+                        modifier = Modifier.fillMaxWidth(),
+                        shape = RoundedCornerShape(20.dp),
+                        color = cardSurface,
+                        border = BorderStroke(1.dp, accentPrimary.copy(alpha = 0.22f))
+                    ) {
+                        Column(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(vertical = 32.dp, horizontal = 24.dp),
+                            horizontalAlignment = Alignment.CenterHorizontally,
+                            verticalArrangement = Arrangement.spacedBy(12.dp)
+                        ) {
+                            Text(
+                                text = "Siap membedah makna lagu ini",
+                                style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.SemiBold),
+                                color = Color.White
+                            )
+                            FilledTonalButton(
+                                onClick = onRefresh,
+                                colors = ButtonDefaults.filledTonalButtonColors(
+                                    containerColor = accentPrimary.copy(alpha = 0.22f),
+                                    contentColor = Color.White
+                                ),
+                                modifier = Modifier.testTag("song_meaning_start_button")
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Rounded.AutoStories,
+                                    contentDescription = null,
+                                    modifier = Modifier.size(18.dp)
+                                )
+                                Spacer(modifier = Modifier.width(6.dp))
+                                Text("Mulai Bedah Makna")
+                            }
+                        }
+                    }
+                }
             }
         }
     }

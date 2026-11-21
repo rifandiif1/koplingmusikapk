@@ -6,8 +6,10 @@ import android.content.Intent
 import android.content.pm.ActivityInfo
 import android.content.pm.PackageManager
 import android.content.res.Configuration
+import android.net.Uri
 import android.os.Build
 import android.os.Bundle
+import android.provider.Settings
 import android.util.Rational
 import android.view.TextureView
 import androidx.activity.ComponentActivity
@@ -90,12 +92,16 @@ import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.ViewModelProvider.AndroidViewModelFactory.Companion.APPLICATION_KEY
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.lifecycle.viewmodel.initializer
 import androidx.lifecycle.viewmodel.viewModelFactory
 import com.example.ai.configureAppCheck
+import com.example.player.KoplingfyMediaBridge
 import com.example.listentogether.ListenRoom
 import com.example.listentogether.ListenSessionUiState
 import com.example.listentogether.ListenTogetherRepository
@@ -439,6 +445,60 @@ private fun KoplingfyAppRoot(
     var showShazamSearchSheet by remember { mutableStateOf(false) }
     var showLyricsSearchSheet by remember { mutableStateOf(false) }
     var showStandByVisualizer by remember { mutableStateOf(false) }
+
+    // Track Android "Display over other apps" permission & foreground status for system-wide Dynamic Island
+    val lifecycleOwner = LocalLifecycleOwner.current
+    var canDrawSystemOverlays by remember {
+        mutableStateOf(runCatching { Settings.canDrawOverlays(context) }.getOrDefault(false))
+    }
+    var isAppInForeground by remember { mutableStateOf(true) }
+
+    DisposableEffect(lifecycleOwner, context) {
+        val observer = LifecycleEventObserver { _, event ->
+            when (event) {
+                Lifecycle.Event.ON_RESUME -> {
+                    isAppInForeground = true
+                    canDrawSystemOverlays = runCatching { Settings.canDrawOverlays(context) }.getOrDefault(false)
+                    viewModel.refreshMediaBridgeOverlayState()
+                }
+                Lifecycle.Event.ON_STOP -> {
+                    isAppInForeground = false
+                }
+                else -> Unit
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
+    }
+
+    val openSystemOverlaySettings: () -> Unit = {
+        runCatching {
+            val intent = Intent(
+                Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
+                Uri.parse("package:${context.packageName}")
+            ).apply {
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            }
+            context.startActivity(intent)
+        }.onFailure {
+            viewModel.showMessage("Buka Pengaturan HP > Aplikasi > Koplingfy > Tampilkan di atas aplikasi lain")
+        }
+    }
+
+    // Only suppress the system-wide Dynamic Island while Koplingfy is in foreground fullscreen/StandBy/Driving mode;
+    // when minimized (using WhatsApp, IG, Home Screen, etc.), always allow it to float above other apps!
+    LaunchedEffect(
+        isAppInForeground,
+        showStandByVisualizer,
+        isVideoFullscreen,
+        isInPipMode,
+        playerState.isDrivingMode
+    ) {
+        val suppress = isAppInForeground && (
+            showStandByVisualizer || isVideoFullscreen || isInPipMode || playerState.isDrivingMode
+            )
+        KoplingfyMediaBridge.setSystemDynamicIslandSuppressed(suppress)
+    }
 
     // Keep MainActivity informed whether auto-PiP on Home press should trigger
     LaunchedEffect(playerState.isVideoMode, playerState.isPlaying, playerState.isPlayerExpanded) {
@@ -926,7 +986,16 @@ private fun KoplingfyAppRoot(
                                         onKeepScreenOnLyricsChange = viewModel::setKeepScreenOnLyrics,
                                         onGaplessChange = viewModel::setGaplessPlayback,
                                         onDynamicArtworkColorChange = viewModel::setDynamicArtworkColor,
-                                        onDynamicIslandLyricsChange = viewModel::setDynamicIslandLyrics,
+                                        onAutoTranslateLyricsChange = viewModel::setAutoTranslateLyrics,
+                                        onDynamicIslandLyricsChange = { enabled ->
+                                            viewModel.setDynamicIslandLyrics(enabled)
+                                            if (enabled && !canDrawSystemOverlays) {
+                                                viewModel.showMessage("Aktifkan izin \"Tampilkan di atas aplikasi lain\" agar Dynamic Island muncul di luar Koplingfy")
+                                                openSystemOverlaySettings()
+                                            }
+                                        },
+                                        canDrawSystemOverlays = canDrawSystemOverlays,
+                                        onRequestSystemOverlayPermission = openSystemOverlaySettings,
                                         onNotificationBarLyricsChange = viewModel::setNotificationBarLyrics,
                                         onCrossfadeSecondsChange = viewModel::setCrossfadeSeconds,
                                         onDataSaverCellularChange = viewModel::setDataSaverCellular,
@@ -1382,11 +1451,12 @@ private fun KoplingfyAppRoot(
                         )
                     }
 
-                    // ---- Fixed Non-Clickable Dynamic Island Lyrics Pill (Below Status Bar) ----
+                    // ---- Fixed Non-Clickable Dynamic Island Lyrics Pill (In-App Fallback when system overlay isn't granted) ----
                     DynamicIslandLyricsOverlay(
                         playerState = playerState,
                         accentColor = MaterialTheme.colorScheme.primary,
-                        visible = settings.dynamicIslandLyrics &&
+                        visible = !canDrawSystemOverlays &&
+                            settings.dynamicIslandLyrics &&
                             !showStandByVisualizer &&
                             !isVideoFullscreen &&
                             !isInPipMode &&
