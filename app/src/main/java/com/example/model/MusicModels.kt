@@ -89,6 +89,22 @@ data class VideoCandidate(
 )
 
 @Immutable
+data class SongMeaningLineInsight(
+    val lyricExcerpt: String,
+    val explanation: String
+)
+
+@Immutable
+data class SongMeaningAnalysis(
+    val headline: String,
+    val moodTags: List<String> = emptyList(),
+    val storyOverview: String,
+    val emotionalArc: String = "",
+    val keyLineInsights: List<SongMeaningLineInsight> = emptyList(),
+    val takeaway: String = ""
+)
+
+@Immutable
 data class LyricsState(
     val isLoading: Boolean = false,
     val syncedLines: List<LyricLine> = emptyList(),
@@ -106,7 +122,10 @@ data class LyricsState(
     val showRomanization: Boolean = false,
     val isRomanizing: Boolean = false,
     val romanizationError: String? = null,
-    val romanizationScriptLabel: String = ""
+    val romanizationScriptLabel: String = "",
+    val songMeaning: SongMeaningAnalysis? = null,
+    val isAnalyzingMeaning: Boolean = false,
+    val meaningError: String? = null
 )
 
 @Immutable

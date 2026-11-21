@@ -14,9 +14,15 @@ import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.slideInVertically
+import androidx.compose.animation.slideOutVertically
+import androidx.compose.animation.togetherWith
 import androidx.compose.ui.graphics.lerp
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
+import androidx.compose.foundation.basicMarquee
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.gestures.detectHorizontalDragGestures
@@ -24,6 +30,7 @@ import androidx.compose.foundation.gestures.detectVerticalDragGestures
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
@@ -56,6 +63,7 @@ import androidx.compose.material.icons.rounded.ArrowUpward
 import androidx.compose.material.icons.rounded.Bedtime
 import android.content.Intent
 import androidx.compose.material.icons.rounded.AutoAwesome
+import androidx.compose.material.icons.rounded.ChatBubble
 import androidx.compose.material.icons.rounded.Check
 import androidx.compose.material.icons.rounded.CheckCircle
 import androidx.compose.material.icons.rounded.Close
@@ -72,6 +80,7 @@ import androidx.compose.material.icons.rounded.FullscreenExit
 import androidx.compose.material.icons.rounded.Groups
 import androidx.compose.material.icons.rounded.KeyboardArrowDown
 import androidx.compose.material.icons.rounded.LocalFireDepartment
+import androidx.compose.material.icons.rounded.AutoStories
 import androidx.compose.material.icons.rounded.Login
 import androidx.compose.material.icons.rounded.Lyrics
 import androidx.compose.material.icons.rounded.MoreHoriz
@@ -94,6 +103,8 @@ import androidx.compose.material.icons.rounded.Spellcheck
 import androidx.compose.material.icons.rounded.TextDecrease
 import androidx.compose.material.icons.rounded.TextIncrease
 import androidx.compose.material.icons.rounded.Translate
+import androidx.compose.material3.Badge
+import androidx.compose.material3.BadgedBox
 import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
@@ -151,7 +162,8 @@ import androidx.compose.ui.graphics.toArgb
 import com.example.ui.components.AlbumArtImage
 import com.example.ui.components.AudioVisualizerBars
 import com.example.ui.components.FloatingReactionsOverlay
-import com.example.ui.components.LyricCardGenerator
+import com.example.ui.components.LyricShareStudioSheet
+import com.example.ui.components.WaveformSeekbar
 import com.example.ui.components.formatDuration
 import com.example.ui.screens.AddToSharedQueueSearchSheet
 import com.example.ui.theme.rememberDynamicArtworkPalette
@@ -192,6 +204,18 @@ fun FloatingMiniPlayer(
     val currentOnNext by rememberUpdatedState(onNext)
     val currentOnPrev by rememberUpdatedState(onPrevious)
     val currentOnExpand by rememberUpdatedState(onExpand)
+
+    val syncedLines = playerState.lyricsState.syncedLines
+    val adjustedMiniPosMs = (playerState.positionMs + playerState.lyricsOffsetMs).coerceAtLeast(0L)
+    val activeMiniLyric = remember(syncedLines, adjustedMiniPosMs) {
+        val idx = syncedLines.indexOfLast { it.timestampMs <= adjustedMiniPosMs + 250L }
+        syncedLines.getOrNull(idx)?.text?.trim()?.takeIf { it.isNotEmpty() }
+    }
+    var showMiniLiveLyrics by remember { mutableStateOf(true) }
+    val showingLiveLyric = showMiniLiveLyrics &&
+        !playerState.isBuffering &&
+        !playerState.isVideoMode &&
+        activeMiniLyric != null
 
     val miniSurfaceColor = remember(dynamicPalette.deepAmbient, MaterialTheme.colorScheme.surfaceContainerHigh) {
         lerp(Color(0xFF18181E), dynamicPalette.deepAmbient, 0.38f)
@@ -278,17 +302,66 @@ fun FloatingMiniPlayer(
                         overflow = TextOverflow.Ellipsis
                     )
                     Spacer(modifier = Modifier.height(1.dp))
-                    Text(
-                        text = when {
-                            playerState.isBuffering -> "Memuat audio…"
-                            playerState.isVideoMode -> "Video • ${track.artist}"
-                            else -> track.artist
+                    val subtitleText = when {
+                        playerState.isBuffering -> "Memuat audio…"
+                        playerState.isVideoMode -> "Video • ${track.artist}"
+                        showingLiveLyric -> activeMiniLyric!!
+                        else -> track.artist
+                    }
+                    AnimatedContent(
+                        targetState = subtitleText to showingLiveLyric,
+                        transitionSpec = {
+                            (slideInVertically { it / 2 } + fadeIn(tween(220))) togetherWith
+                                (slideOutVertically { -it / 2 } + fadeOut(tween(180)))
                         },
-                        style = MaterialTheme.typography.bodySmall,
-                        color = Color.White.copy(alpha = 0.68f),
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis
-                    )
+                        label = "mini_live_lyric_anim"
+                    ) { (lineText, isLiveLyric) ->
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(4.dp)
+                        ) {
+                            if (isLiveLyric) {
+                                Text(
+                                    text = "♪",
+                                    style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold),
+                                    color = lerp(accent, Color.White, 0.35f)
+                                )
+                            }
+                            Text(
+                                text = lineText,
+                                style = MaterialTheme.typography.bodySmall.copy(
+                                    fontWeight = if (isLiveLyric) FontWeight.Medium else FontWeight.Normal
+                                ),
+                                color = if (isLiveLyric) {
+                                    lerp(accent, Color.White, 0.68f)
+                                } else {
+                                    Color.White.copy(alpha = 0.68f)
+                                },
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                                modifier = Modifier
+                                    .weight(1f, fill = false)
+                                    .then(
+                                        if (isLiveLyric) Modifier.basicMarquee(iterations = Int.MAX_VALUE)
+                                        else Modifier
+                                    )
+                            )
+                        }
+                    }
+                }
+
+                if (syncedLines.isNotEmpty() && !playerState.isVideoMode) {
+                    IconButton(
+                        onClick = { showMiniLiveLyrics = !showMiniLiveLyrics },
+                        modifier = Modifier.size(38.dp).testTag("mini_lyrics_toggle")
+                    ) {
+                        Icon(
+                            imageVector = Icons.Rounded.Lyrics,
+                            contentDescription = if (showMiniLiveLyrics) "Sembunyikan lirik mini-player" else "Tampilkan lirik mini-player",
+                            tint = if (showMiniLiveLyrics) lerp(accent, Color.White, 0.35f) else Color.White.copy(alpha = 0.45f),
+                            modifier = Modifier.size(18.dp)
+                        )
+                    }
                 }
 
                 IconButton(
@@ -402,6 +475,9 @@ fun FullScreenPlayerModal(
     onEnterPipMode: () -> Unit = {},
     onToggleLyricsTranslation: () -> Unit = {},
     onToggleLyricsRomanization: () -> Unit = {},
+    onAnalyzeSongMeaning: (Boolean) -> Unit = {},
+    unreadRoomChatCount: Int = 0,
+    onOpenRoomChatPopup: (() -> Unit)? = null,
     onShowSnackbar: (String) -> Unit = {}
 ) {
     val track = playerState.currentTrack ?: return
@@ -411,6 +487,7 @@ fun FullScreenPlayerModal(
     var showSleepSheet by remember { mutableStateOf(false) }
     var showAudioFxSheet by remember { mutableStateOf(false) }
     var showSharedQueueSearchSheet by remember { mutableStateOf(false) }
+    var showSongMeaningSheet by remember(track.id) { mutableStateOf(false) }
 
     BackHandler(onBack = {
         when {
@@ -539,6 +616,78 @@ fun FullScreenPlayerModal(
             PlayerBackgroundStyle.SOLID -> Unit
         }
 
+        BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
+        val isDualColumnLandscape = maxWidth >= 580.dp && maxWidth > maxHeight && !isVideoFullscreen
+        if (isDualColumnLandscape) {
+            DualColumnLandscapePlayer(
+                track = track,
+                playerState = playerState,
+                settings = settings,
+                availableHeight = maxHeight,
+                isLiked = isLiked,
+                likeScale = likeScale,
+                isDownloaded = isDownloaded,
+                downloadProgress = downloadProgress,
+                accentPrimary = accentPrimary,
+                accentGlow = accentGlow,
+                activeRoomCode = activeRoomCode,
+                activeRoom = activeRoom,
+                currentUserId = currentUserId,
+                unreadRoomChatCount = unreadRoomChatCount,
+                onCollapse = onCollapse,
+                onTogglePlayPause = onTogglePlayPause,
+                onSeek = onSeek,
+                onNext = onNext,
+                onPrevious = onPrevious,
+                onToggleShuffle = onToggleShuffle,
+                onCycleRepeat = onCycleRepeat,
+                onToggleLike = onToggleLike,
+                onDownloadClick = onDownloadClick,
+                onAddToPlaylist = onAddToPlaylist,
+                onTrackOptions = onTrackOptions,
+                onStartRadio = onStartRadio,
+                onShareTrack = onShareTrack,
+                onShareLyrics = onShareLyrics,
+                onOpenYouTubeLogin = onOpenYouTubeLogin,
+                onOpenListenTogether = onOpenListenTogether,
+                onOpenRoomChatPopup = onOpenRoomChatPopup,
+                onOpenSleepSheet = { showSleepSheet = true },
+                onOpenAudioFxSheet = { showAudioFxSheet = true },
+                onOpenSharedQueueSearch = if (onQuickSearchTracks != null && onAddTrackToSharedQueue != null) {
+                    { showSharedQueueSearchSheet = true }
+                } else null,
+                onToggleDrivingMode = onToggleDrivingMode,
+                onSetVideoMode = onSetVideoMode,
+                onSelectVideoCandidate = onSelectVideoCandidate,
+                onAttachVideoTextureView = onAttachVideoTextureView,
+                onClearVideoTextureView = onClearVideoTextureView,
+                onEnterPipMode = onEnterPipMode,
+                onEnterVideoFullscreen = { onToggleVideoFullscreen(true) },
+                onLyricsFontScaleChange = onLyricsFontScaleChange,
+                onNudgeLyricsOffset = onNudgeLyricsOffset,
+                onResetLyricsOffset = onResetLyricsOffset,
+                onToggleLyricsTranslation = onToggleLyricsTranslation,
+                onToggleLyricsRomanization = onToggleLyricsRomanization,
+                onOpenSongMeaning = {
+                    showSongMeaningSheet = true
+                    if (playerState.lyricsState.songMeaning == null && !playerState.lyricsState.isAnalyzingMeaning) {
+                        onAnalyzeSongMeaning(false)
+                    }
+                },
+                onClearAbLoop = onClearAbLoop,
+                onToggleAutoplay = onToggleAutoplay,
+                onSelectQueueItem = onSelectQueueItem,
+                onMoveQueueItem = onMoveQueueItem,
+                onRemoveQueueItem = onRemoveQueueItem,
+                onClearUpcomingQueue = onClearUpcomingQueue,
+                onSaveQueueAsPlaylist = onSaveQueueAsPlaylist,
+                onUpvoteSharedQueueItem = onUpvoteSharedQueueItem,
+                onMoveSharedQueueItem = onMoveSharedQueueItem,
+                onRemoveSharedQueueItem = onRemoveSharedQueueItem,
+                onPlaySharedQueueItem = onPlaySharedQueueItem,
+                onShowSnackbar = onShowSnackbar
+            )
+        } else {
         Column(
             modifier = Modifier
                 .fillMaxSize()
@@ -670,6 +819,32 @@ fun FullScreenPlayerModal(
                 }
 
                 Row(verticalAlignment = Alignment.CenterVertically) {
+                    if (onOpenRoomChatPopup != null) {
+                        IconButton(
+                            onClick = onOpenRoomChatPopup,
+                            modifier = Modifier.size(40.dp).testTag("player_room_chat_button")
+                        ) {
+                            BadgedBox(
+                                badge = {
+                                    if (unreadRoomChatCount > 0) {
+                                        Badge(containerColor = accentPrimary) {
+                                            Text(
+                                                text = unreadRoomChatCount.coerceAtMost(9).toString(),
+                                                color = Color(0xFF0A0A0C)
+                                            )
+                                        }
+                                    }
+                                }
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Rounded.ChatBubble,
+                                    contentDescription = "Buka obrolan room",
+                                    tint = accentPrimary,
+                                    modifier = Modifier.size(20.dp)
+                                )
+                            }
+                        }
+                    }
                     IconButton(
                         onClick = { onToggleDrivingMode(true) },
                         modifier = Modifier.size(40.dp).testTag("player_driving_mode_button")
@@ -756,6 +931,12 @@ fun FullScreenPlayerModal(
                             onResetOffset = onResetLyricsOffset,
                             onToggleTranslation = onToggleLyricsTranslation,
                             onToggleRomanization = onToggleLyricsRomanization,
+                            onOpenSongMeaning = {
+                                showSongMeaningSheet = true
+                                if (playerState.lyricsState.songMeaning == null && !playerState.lyricsState.isAnalyzingMeaning) {
+                                    onAnalyzeSongMeaning(false)
+                                }
+                            },
                             onShareLyrics = onShareLyrics,
                             onShowSnackbar = onShowSnackbar,
                             onSeekTo = onSeek
@@ -980,28 +1161,24 @@ fun FullScreenPlayerModal(
 
             Spacer(modifier = Modifier.height(6.dp))
 
-            // ---- Scrubber & Timestamps ----
+            // ---- Animated Waveform Scrubber & Timestamps ----
             val duration = playerState.durationMs.coerceAtLeast(1L)
             var isDragging by remember { mutableStateOf(false) }
             var dragFraction by remember { mutableFloatStateOf(0f) }
-            val currentFraction = if (isDragging) dragFraction else (playerState.positionMs.toFloat() / duration.toFloat()).coerceIn(0f, 1f)
+            val currentFraction = (playerState.positionMs.toFloat() / duration.toFloat()).coerceIn(0f, 1f)
 
-            Slider(
-                value = currentFraction,
-                onValueChange = {
-                    isDragging = true
-                    dragFraction = it
-                },
-                onValueChangeFinished = {
-                    onSeek((dragFraction * duration).toLong())
-                    isDragging = false
-                },
-                colors = SliderDefaults.colors(
-                    thumbColor = Color.White,
-                    activeTrackColor = Color.White,
-                    inactiveTrackColor = Color.White.copy(alpha = 0.20f)
-                ),
-                modifier = Modifier.fillMaxWidth().testTag("player_seek_slider")
+            WaveformSeekbar(
+                trackId = track.id,
+                progress = currentFraction,
+                isPlaying = playerState.isPlaying,
+                activeColor = accentPrimary,
+                abLoopStartFraction = playerState.abLoopStartMs?.let { (it.toFloat() / duration.toFloat()).coerceIn(0f, 1f) },
+                abLoopEndFraction = playerState.abLoopEndMs?.let { (it.toFloat() / duration.toFloat()).coerceIn(0f, 1f) },
+                onSeekProgress = { fraction -> onSeek((fraction * duration).toLong()) },
+                onDragStateChange = { dragging, fraction ->
+                    isDragging = dragging
+                    dragFraction = fraction
+                }
             )
 
             Row(
@@ -1204,6 +1381,8 @@ fun FullScreenPlayerModal(
             }
             }
         }
+        }
+        }
 
         // Fullscreen Landscape Video Overlay (Edge-to-Edge)
         if (isVideoFullscreen && playerState.isVideoMode) {
@@ -1293,10 +1472,22 @@ fun FullScreenPlayerModal(
             }
         )
     }
+
+    if (showSongMeaningSheet) {
+        SongMeaningBottomSheet(
+            track = track,
+            meaning = playerState.lyricsState.songMeaning,
+            isLoading = playerState.lyricsState.isAnalyzingMeaning,
+            errorMessage = playerState.lyricsState.meaningError,
+            accentPrimary = accentPrimary,
+            onRefresh = { onAnalyzeSongMeaning(true) },
+            onDismiss = { showSongMeaningSheet = false }
+        )
+    }
 }
 
 @Composable
-private fun PlayerVideoStage(
+internal fun PlayerVideoStage(
     playerState: PlayerUiState,
     onSelectCandidate: (VideoCandidate) -> Unit,
     onRetryVideo: () -> Unit,
@@ -1777,7 +1968,7 @@ private fun FullscreenVideoLandscapeOverlay(
 }
 
 @Composable
-private fun PlayerArtworkStage(
+internal fun PlayerArtworkStage(
     track: Track,
     isPlaying: Boolean,
     artStyle: PlayerArtStyle,
@@ -1870,7 +2061,7 @@ private fun PlayerArtworkStage(
 }
 
 @Composable
-private fun SyncedLyricsStage(
+internal fun SyncedLyricsStage(
     track: Track,
     playerState: PlayerUiState,
     fontScale: Float,
@@ -1883,6 +2074,7 @@ private fun SyncedLyricsStage(
     onResetOffset: () -> Unit,
     onToggleTranslation: () -> Unit,
     onToggleRomanization: () -> Unit,
+    onOpenSongMeaning: () -> Unit,
     onShareLyrics: (String) -> Unit,
     onShowSnackbar: (String) -> Unit,
     onSeekTo: (Long) -> Unit
@@ -1894,7 +2086,7 @@ private fun SyncedLyricsStage(
 
     var isSelectingCard by remember(track.id) { mutableStateOf(false) }
     val selectedLineIndices = remember(track.id) { mutableStateListOf<Int>() }
-    var isSavingCard by remember { mutableStateOf(false) }
+    var showLyricStudio by remember(track.id) { mutableStateOf(false) }
 
     val adjustedPosMs = (playerState.positionMs + playerState.lyricsOffsetMs).coerceAtLeast(0L)
     val activeLineIndex = remember(lyrics.syncedLines, adjustedPosMs) {
@@ -1926,45 +2118,30 @@ private fun SyncedLyricsStage(
         }
     }
 
-    val saveOrShareCard: (Boolean) -> Unit = { shareImmediately ->
-        if (!isSavingCard && selectedLineIndices.isNotEmpty()) {
-            val chosenLines = if (lyrics.syncedLines.isNotEmpty()) {
-                selectedLineIndices.mapNotNull { lyrics.syncedLines.getOrNull(it)?.text }
-            } else {
-                selectedLineIndices.mapNotNull { plainLines.getOrNull(it) }
-            }
-            if (chosenLines.isNotEmpty()) {
-                isSavingCard = true
-                scope.launch {
-                    val res = withContext(Dispatchers.IO) {
-                        LyricCardGenerator.saveLyricCardToGallery(
-                            context = context,
-                            track = track,
-                            selectedLines = chosenLines,
-                            accentColorInt = accentPrimary.toArgb()
-                        )
-                    }
-                    isSavingCard = false
-                    res.onSuccess { uri ->
-                        isSelectingCard = false
-                        selectedLineIndices.clear()
-                        if (shareImmediately) {
-                            val intent = Intent(Intent.ACTION_SEND).apply {
-                                type = "image/png"
-                                putExtra(Intent.EXTRA_STREAM, uri)
-                                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
-                            }
-                            runCatching {
-                                context.startActivity(Intent.createChooser(intent, "Bagikan Kartu Lirik"))
-                            }
-                        } else {
-                            onShowSnackbar("Kartu Lirik disimpan ke Galeri!")
-                        }
-                    }.onFailure { err ->
-                        onShowSnackbar("Gagal membuat Kartu Lirik: ${err.message}")
-                    }
+    if (showLyricStudio && selectedLineIndices.isNotEmpty()) {
+        val chosenLines = if (lyrics.syncedLines.isNotEmpty()) {
+            selectedLineIndices.mapNotNull { lyrics.syncedLines.getOrNull(it)?.text }
+        } else {
+            selectedLineIndices.mapNotNull { plainLines.getOrNull(it) }
+        }
+        val chosenTranslations = if (lyrics.syncedLines.isNotEmpty()) {
+            selectedLineIndices.map { idx -> lyrics.translatedSyncedLines.getOrNull(idx).orEmpty() }
+        } else {
+            selectedLineIndices.map { idx -> lyrics.translatedPlainLines.getOrNull(idx).orEmpty() }
+        }
+        if (chosenLines.isNotEmpty()) {
+            LyricShareStudioSheet(
+                track = track,
+                selectedLines = chosenLines,
+                translatedLines = chosenTranslations,
+                accentColor = accentPrimary,
+                onDismiss = { showLyricStudio = false },
+                onShowSnackbar = onShowSnackbar,
+                onExportCompleted = {
+                    isSelectingCard = false
+                    selectedLineIndices.clear()
                 }
-            }
+            )
         }
     }
 
@@ -2155,6 +2332,46 @@ private fun SyncedLyricsStage(
                                         },
                                         style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.SemiBold),
                                         color = if (lyrics.showRomanization) Color(0xFF0A0A0C) else Color.White
+                                    )
+                                }
+                            }
+                        }
+
+                        item {
+                            val hasMeaning = lyrics.songMeaning != null
+                            Surface(
+                                onClick = onOpenSongMeaning,
+                                shape = RoundedCornerShape(50),
+                                color = if (hasMeaning) Color.White else Color.Black.copy(alpha = 0.28f),
+                                modifier = Modifier.testTag("open_song_meaning_button")
+                            ) {
+                                Row(
+                                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(5.dp)
+                                ) {
+                                    if (lyrics.isAnalyzingMeaning) {
+                                        CircularProgressIndicator(
+                                            modifier = Modifier.size(13.dp),
+                                            strokeWidth = 1.8.dp,
+                                            color = if (hasMeaning) Color(0xFF0A0A0C) else Color.White
+                                        )
+                                    } else {
+                                        Icon(
+                                            imageVector = Icons.Rounded.AutoStories,
+                                            contentDescription = "Bedah makna lagu",
+                                            tint = if (hasMeaning) Color(0xFF0A0A0C) else Color.White,
+                                            modifier = Modifier.size(14.dp)
+                                        )
+                                    }
+                                    Text(
+                                        text = when {
+                                            lyrics.isAnalyzingMeaning -> "Membedah…"
+                                            hasMeaning -> "Bedah Makna"
+                                            else -> "Makna Lagu"
+                                        },
+                                        style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.SemiBold),
+                                        color = if (hasMeaning) Color(0xFF0A0A0C) else Color.White
                                     )
                                 }
                             }
@@ -2493,7 +2710,7 @@ private fun SyncedLyricsStage(
                 }
             }
 
-            // Bottom Action Bar when creating a Lyric Quote Card
+            // Bottom Action Bar when creating a Lyric Quote Card -> Opens LyricShareStudioSheet
             if (isSelectingCard) {
                 Surface(
                     color = MaterialTheme.colorScheme.surfaceContainerHigh,
@@ -2507,31 +2724,36 @@ private fun SyncedLyricsStage(
                         horizontalArrangement = Arrangement.spacedBy(8.dp),
                         verticalAlignment = Alignment.CenterVertically
                     ) {
-                        Button(
-                            onClick = { saveOrShareCard(false) },
-                            enabled = selectedLineIndices.isNotEmpty() && !isSavingCard,
+                        Surface(
+                            onClick = {
+                                selectedLineIndices.clear()
+                                isSelectingCard = false
+                            },
                             shape = RoundedCornerShape(12.dp),
-                            contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp),
-                            modifier = Modifier.weight(1f).testTag("save_lyric_card_button")
+                            color = MaterialTheme.colorScheme.surfaceContainerHighest,
+                            modifier = Modifier.testTag("cancel_lyric_card_button")
                         ) {
-                            if (isSavingCard) {
-                                CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp, color = MaterialTheme.colorScheme.onPrimary)
-                            } else {
-                                Icon(Icons.Rounded.Download, contentDescription = null, modifier = Modifier.size(16.dp))
-                                Spacer(modifier = Modifier.width(6.dp))
-                                Text("Simpan (${selectedLineIndices.size})", maxLines = 1)
-                            }
+                            Text(
+                                text = "Batal",
+                                style = MaterialTheme.typography.labelLarge.copy(fontWeight = FontWeight.SemiBold),
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp)
+                            )
                         }
                         Button(
-                            onClick = { saveOrShareCard(true) },
-                            enabled = selectedLineIndices.isNotEmpty() && !isSavingCard,
+                            onClick = { showLyricStudio = true },
+                            enabled = selectedLineIndices.isNotEmpty(),
                             shape = RoundedCornerShape(12.dp),
-                            contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp),
-                            modifier = Modifier.weight(1f).testTag("share_lyric_card_button")
+                            contentPadding = PaddingValues(horizontal = 14.dp, vertical = 10.dp),
+                            modifier = Modifier.weight(1f).testTag("open_lyric_studio_button")
                         ) {
-                            Icon(Icons.Rounded.Share, contentDescription = null, modifier = Modifier.size(16.dp))
+                            Icon(Icons.Rounded.AutoAwesome, contentDescription = null, modifier = Modifier.size(16.dp))
                             Spacer(modifier = Modifier.width(6.dp))
-                            Text("Bagikan", maxLines = 1)
+                            Text(
+                                text = if (selectedLineIndices.isEmpty()) "Pilih 1–4 baris lirik" else "Pratinjau & Bagikan (${selectedLineIndices.size})",
+                                maxLines = 1,
+                                fontWeight = FontWeight.Bold
+                            )
                         }
                     }
                 }
@@ -2541,7 +2763,7 @@ private fun SyncedLyricsStage(
 }
 
 @Composable
-private fun QueueStage(
+internal fun QueueStage(
     queue: List<Track>,
     currentIndex: Int,
     isPlaying: Boolean,
@@ -2908,7 +3130,7 @@ private fun QueueStage(
 }
 
 @Composable
-private fun UtilityChip(
+internal fun UtilityChip(
     icon: androidx.compose.ui.graphics.vector.ImageVector,
     label: String,
     active: Boolean,

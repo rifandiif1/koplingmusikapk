@@ -18,6 +18,7 @@ import java.util.concurrent.ConcurrentHashMap
 
 private const val TAG = "LyricsTranslator"
 private const val CACHE_DIR_NAME = "lyrics_ai_cache"
+private const val TRANSLATION_STYLE_VERSION = 2
 
 data class TranslatedLyricsResult(
     val lines: List<String>,
@@ -34,6 +35,7 @@ data class CachedLyricsAiData(
     val lineCount: Int = 0,
     val translatedLines: List<String> = emptyList(),
     val detectedIndonesian: Boolean = false,
+    val translationStyleVersion: Int = 0,
     val romanizedLines: List<String> = emptyList(),
     val needsRomanization: Boolean = true,
     val scriptLabel: String = ""
@@ -70,6 +72,7 @@ object LyricsTranslator {
     fun clearLocalCache(): Long {
         val freed = getCacheSizeBytes()
         memoryCache.clear()
+        SongMeaningAnalyzer.clearMemoryCache()
         val dir = cacheDir
         if (dir != null && dir.exists()) {
             runCatching {
@@ -150,10 +153,14 @@ object LyricsTranslator {
                 List(romArr.length()) { idx -> romArr.optString(idx, "") }
             } else emptyList()
 
+            val styleVersion = obj.optInt("translationStyleVersion", 1)
+            val validTransList = if (styleVersion >= TRANSLATION_STYLE_VERSION) transList else emptyList()
+
             CachedLyricsAiData(
-                lineCount = obj.optInt("lineCount", maxOf(transList.size, romList.size)),
-                translatedLines = transList,
+                lineCount = obj.optInt("lineCount", maxOf(validTransList.size, romList.size)),
+                translatedLines = validTransList,
                 detectedIndonesian = obj.optBoolean("detectedIndonesian", false),
+                translationStyleVersion = styleVersion,
                 romanizedLines = romList,
                 needsRomanization = obj.optBoolean("needsRomanization", romList.any { it.isNotBlank() }),
                 scriptLabel = obj.optString("scriptLabel", "")
@@ -171,6 +178,7 @@ object LyricsTranslator {
             val obj = JSONObject().apply {
                 put("lineCount", entry.lineCount)
                 put("detectedIndonesian", entry.detectedIndonesian)
+                put("translationStyleVersion", entry.translationStyleVersion)
                 put("translatedLines", JSONArray(entry.translatedLines))
                 put("needsRomanization", entry.needsRomanization)
                 put("scriptLabel", entry.scriptLabel)
@@ -224,7 +232,11 @@ object LyricsTranslator {
             return@withContext Result.failure(IllegalArgumentException("Tidak ada baris lirik untuk diterjemahkan."))
         }
         val existing = getCachedEntry(trackId)
-        if (existing != null && existing.translatedLines.size == lines.size && existing.translatedLines.isNotEmpty()) {
+        if (existing != null &&
+            existing.translationStyleVersion >= TRANSLATION_STYLE_VERSION &&
+            existing.translatedLines.size == lines.size &&
+            existing.translatedLines.isNotEmpty()
+        ) {
             return@withContext Result.success(
                 TranslatedLyricsResult(
                     lines = existing.translatedLines,
@@ -239,13 +251,18 @@ object LyricsTranslator {
             }.joinToString("\n")
 
             val prompt = buildString {
-                appendLine("Terjemahkan lirik lagu berikut ke Bahasa Indonesia yang natural, puitis, dan sesuai konteks lagunya.")
+                appendLine("Terjemahkan lirik lagu berikut ke Bahasa Indonesia sehari-hari yang SANTAI, LUWES, TIDAK BAKU, dan tetap enak dirasakan sesuai vibe lagunya.")
                 appendLine("Judul: $trackTitle")
                 appendLine("Artis: $artist")
-                appendLine("ATURAN WAJIB:")
+                appendLine("GAYA BAHASA WAJIB (TIDAK BAKU):")
+                appendLine("- JANGAN pakai bahasa baku/kaku/resmi seperti 'saya', 'Anda', 'engkau', 'diriku', 'dirimu', 'tidaklah', 'sungguh', 'oleh karena itu', 'apabila', 'hendak', atau terjemahan kaku ala kamus.")
+                appendLine("- Pakai gaya ngobrol anak muda / lirik pop Indonesia yang natural: 'aku / kamu' untuk lagu romantis, sedih, galau, atau santai; boleh pakai 'gue / lo' kalau lagunya jelas bernuansa rap, hip-hop, atau slang keras.")
+                appendLine("- Gunakan kata sehari-hari yang mengalir alami (misalnya 'nggak', 'cuma', 'kayak', 'bikin', 'udah', 'banget', 'lagi', 'kangen', 'nggak apa-apa', 'soal'), tapi tetap jaga emosi & rasa lagunya (jangan dibuat alay atau berlebihan).")
+                appendLine("- Terjemahkan makna & idiomnya secara alami, bukan kata per kata.")
+                appendLine("ATURAN STRUKTUR WAJIB:")
                 appendLine("- Kembalikan array `translations` dengan JUMLAH ELEMEN YANG SAMA PERSIS (${lines.size} baris) dan urutan 1-per-1 sesuai input.")
                 appendLine("- Jangan menggabungkan atau menghapus baris. Jika baris hanya berupa simbol musik (♪) atau kosong, kembalikan string kosong \"\".")
-                appendLine("- Jika baris sudah berbahasa Indonesia, pertahankan atau rapikan maknanya secara singkat.")
+                appendLine("- Jika baris sudah berbahasa Indonesia, biarkan tetap natural dan singkat.")
                 appendLine("- Jangan sertakan nomor baris pada hasil terjemahan.")
                 appendLine()
                 appendLine("LIRIK (${lines.size} baris):")
@@ -269,7 +286,8 @@ object LyricsTranslator {
             val merged = (existing ?: CachedLyricsAiData(lineCount = lines.size)).copy(
                 lineCount = lines.size,
                 translatedLines = translated,
-                detectedIndonesian = alreadyId
+                detectedIndonesian = alreadyId,
+                translationStyleVersion = TRANSLATION_STYLE_VERSION
             )
             saveCacheEntry(trackId, merged)
             Result.success(TranslatedLyricsResult(lines = translated, detectedIndonesian = alreadyId))

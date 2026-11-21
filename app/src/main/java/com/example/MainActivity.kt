@@ -45,6 +45,9 @@ import androidx.compose.material.icons.outlined.Groups
 import androidx.compose.material.icons.outlined.Home
 import androidx.compose.material.icons.outlined.LibraryMusic
 import androidx.compose.material.icons.outlined.Search
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.material.icons.rounded.ChatBubble
 import androidx.compose.material.icons.rounded.Explore
 import androidx.compose.material.icons.rounded.Groups
 import androidx.compose.material.icons.rounded.Home
@@ -105,6 +108,11 @@ import com.example.model.CollectionDetailType
 import com.example.model.Track
 import com.example.ui.components.AddToPlaylistDialog
 import com.example.ui.components.CreatePlaylistDialog
+import com.example.ui.components.FloatingRoomChatOverlay
+import com.example.ui.components.LyricsTextSearchSheet
+import com.example.ui.components.RoomQuickChatBottomSheet
+import com.example.ui.components.MusicStoryStudioSheet
+import com.example.ui.components.ShazamAudioSearchSheet
 import com.example.ui.components.TrackOptionsBottomSheet
 import com.example.ui.player.FloatingMiniPlayer
 import com.example.ui.player.FullScreenPlayerModal
@@ -166,6 +174,14 @@ class MainActivity : ComponentActivity() {
                 onEnterPipMode = { enterVideoPipMode() },
                 onToggleVideoFullscreen = { enabled -> setLandscapeVideoFullscreen(enabled) }
             )
+        }
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        if (intent.hasExtra("FIREBASE_APPCHECK_DEBUG_TOKEN")) {
+            configureAppCheck(this, intent)
         }
     }
 
@@ -417,6 +433,9 @@ private fun KoplingfyAppRoot(
     var showCreatePlaylistDialog by remember { mutableStateOf(false) }
     var savingQueueAsPlaylist by remember { mutableStateOf(false) }
     var showTechStatsTrack by remember { mutableStateOf<Track?>(null) }
+    var storyStudioRequest by remember { mutableStateOf<StoryStudioRequest?>(null) }
+    var showShazamSearchSheet by remember { mutableStateOf(false) }
+    var showLyricsSearchSheet by remember { mutableStateOf(false) }
 
     // Keep MainActivity informed whether auto-PiP on Home press should trigger
     LaunchedEffect(playerState.isVideoMode, playerState.isPlaying, playerState.isPlayerExpanded) {
@@ -667,6 +686,37 @@ private fun KoplingfyAppRoot(
         runCatching { context.startActivity(Intent.createChooser(shareIntent, "Bagikan Lagu")) }
     }
 
+    val openSingleStoryStudio: (Track) -> Unit = { track ->
+        val pool = buildList {
+            add(track)
+            addAll(playerState.queue)
+            addAll(likedTracks.take(12))
+            addAll(playHistory.take(12))
+        }.distinctBy { it.id }
+        storyStudioRequest = StoryStudioRequest(
+            seedTrack = track,
+            candidateTracks = pool,
+            initialMultiMode = false,
+            initialSelectedTracks = pool.take(4),
+            defaultMixTitle = "Lagi Dengerin Ini"
+        )
+    }
+
+    val openMultiStoryStudio: (String, List<Track>) -> Unit = { title, tracks ->
+        val pool = buildList {
+            addAll(tracks)
+            addAll(playerState.queue)
+            addAll(likedTracks.take(10))
+        }.distinctBy { it.id }
+        storyStudioRequest = StoryStudioRequest(
+            seedTrack = tracks.firstOrNull(),
+            candidateTracks = pool,
+            initialMultiMode = true,
+            initialSelectedTracks = tracks.take(5),
+            defaultMixTitle = title.ifBlank { "Lagi Dengerin Ini" }
+        )
+    }
+
     val shareLyricsText: (Track, String) -> Unit = { track, text ->
         val shareIntent = Intent(Intent.ACTION_SEND).apply {
             type = "text/plain"
@@ -691,6 +741,25 @@ private fun KoplingfyAppRoot(
         onOverlayPageChange(OverlayPage.NONE)
         onSelectedTabChange(3)
     }
+
+    var showRoomChatPopup by remember(activeRoom?.roomCode) { mutableStateOf(false) }
+    val activeRoomChatMessages = remember(activeRoom?.chatMessages) {
+        activeRoom?.parsedChatMessages().orEmpty()
+    }
+    var lastReadRoomChatCount by remember(activeRoom?.roomCode) {
+        mutableIntStateOf(activeRoomChatMessages.size)
+    }
+    LaunchedEffect(showRoomChatPopup, activeRoomChatMessages.size) {
+        if (showRoomChatPopup) {
+            lastReadRoomChatCount = activeRoomChatMessages.size
+        }
+    }
+    val unreadRoomChatCount = if (isActiveRoomMember) {
+        (activeRoomChatMessages.size - lastReadRoomChatCount).coerceAtLeast(0)
+    } else 0
+    val openRoomChatPopupLambda: (() -> Unit)? = if (isActiveRoomMember && listenViewModel != null) {
+        { showRoomChatPopup = true }
+    } else null
 
     KoplingfyTheme(
         themeMode = settings.themeMode,
@@ -821,7 +890,8 @@ private fun KoplingfyAppRoot(
                                         onStartArtistRadio = viewModel::startArtistRadio,
                                         onPlayNext = swipePlayNext,
                                         onAddToQueue = swipeAddToQueue,
-                                        swipeQueueLabel = swipeQueueLabel
+                                        swipeQueueLabel = swipeQueueLabel,
+                                        onShareStory = { title, tracks -> openMultiStoryStudio(title, tracks) }
                                     )
                                 }
                                 OverlayPage.SETTINGS -> {
@@ -959,7 +1029,9 @@ private fun KoplingfyAppRoot(
                                             onPlayNext = swipePlayNext,
                                             onAddToQueue = swipeAddToQueue,
                                             swipeQueueLabel = swipeQueueLabel,
-                                            onShowSnackbar = viewModel::showMessage
+                                            onShowSnackbar = viewModel::showMessage,
+                                            onOpenShazamSearch = { showShazamSearchSheet = true },
+                                            onOpenLyricsSearch = { showLyricsSearchSheet = true }
                                         )
                                         3 -> ListenTogetherScreenHost(
                                             currentUser = currentGoogleUser,
@@ -1149,7 +1221,7 @@ private fun KoplingfyAppRoot(
                                     else viewModel.downloadTrack(currentTrack)
                                 },
                                 onStartRadio = { viewModel.startRadio(currentTrack) },
-                                onShareTrack = { shareTrack(currentTrack) },
+                                onShareTrack = { openSingleStoryStudio(currentTrack) },
                                 onShareLyrics = { text -> shareLyricsText(currentTrack, text) },
                                 onOpenYouTubeLogin = openYouTubeLogin,
                                 onOpenListenTogether = openListenTogether,
@@ -1218,12 +1290,88 @@ private fun KoplingfyAppRoot(
                                 onEnterPipMode = onEnterPipMode,
                                 onToggleLyricsTranslation = viewModel::toggleLyricsTranslation,
                                 onToggleLyricsRomanization = viewModel::toggleLyricsRomanization,
+                                onAnalyzeSongMeaning = viewModel::analyzeCurrentSongMeaning,
+                                unreadRoomChatCount = unreadRoomChatCount,
+                                onOpenRoomChatPopup = openRoomChatPopupLambda,
                                 onShowSnackbar = viewModel::showMessage
                             )
                         }
                     }
+
+                    // ---- Clickable Floating Room Chat Pill when browsing outside Bersama & Full Player ----
+                    if (isActiveRoomMember &&
+                        openRoomChatPopupLambda != null &&
+                        !playerState.isPlayerExpanded &&
+                        selectedTab != 3 &&
+                        overlayPage == OverlayPage.NONE
+                    ) {
+                        Surface(
+                            onClick = openRoomChatPopupLambda,
+                            shape = CircleShape,
+                            color = MaterialTheme.colorScheme.surfaceContainerHigh,
+                            border = BorderStroke(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.55f)),
+                            shadowElevation = 8.dp,
+                            modifier = Modifier
+                                .align(Alignment.BottomEnd)
+                                .navigationBarsPadding()
+                                .padding(
+                                    end = 16.dp,
+                                    bottom = if (hasActiveTrack) {
+                                        if (isExpandedWidth) 104.dp else 168.dp
+                                    } else {
+                                        if (isExpandedWidth) 24.dp else 94.dp
+                                    }
+                                )
+                                .size(52.dp)
+                                .testTag("floating_room_chat_fab")
+                        ) {
+                            Box(contentAlignment = Alignment.Center) {
+                                BadgedBox(
+                                    badge = {
+                                        if (unreadRoomChatCount > 0) {
+                                            Badge(containerColor = MaterialTheme.colorScheme.primary) {
+                                                Text(
+                                                    text = unreadRoomChatCount.coerceAtMost(9).toString(),
+                                                    color = MaterialTheme.colorScheme.onPrimary
+                                                )
+                                            }
+                                        }
+                                    }
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Rounded.ChatBubble,
+                                        contentDescription = "Buka popup obrolan room",
+                                        tint = MaterialTheme.colorScheme.primary,
+                                        modifier = Modifier.size(22.dp)
+                                    )
+                                }
+                            }
+                        }
+                    }
+
+                    // ---- Floating Live Room Chat Toast Overlay (visible across entire app!) ----
+                    if (isActiveRoomMember && openRoomChatPopupLambda != null) {
+                        FloatingRoomChatOverlay(
+                            room = activeRoom,
+                            currentUserId = currentGoogleUser?.uid,
+                            isChatPopupOpen = showRoomChatPopup,
+                            onOpenQuickChat = openRoomChatPopupLambda,
+                            modifier = Modifier.align(Alignment.TopCenter)
+                        )
+                    }
                 }
             }
+        }
+
+        // ---- Interactive Quick Chat Room Popup Sheet ----
+        if (showRoomChatPopup && activeRoom != null && activeRoom.status == "active" && listenViewModel != null) {
+            RoomQuickChatBottomSheet(
+                room = activeRoom,
+                currentUserId = currentGoogleUser?.uid,
+                onSendMessage = listenViewModel::sendChatMessage,
+                onSendReaction = listenViewModel::sendReaction,
+                onDismiss = { showRoomChatPopup = false }
+            )
         }
 
         // ---- Track Options Bottom Sheet ----
@@ -1276,11 +1424,62 @@ private fun KoplingfyAppRoot(
                         )
                     )
                 },
-                onShare = { shareTrack(activeOptionTrack) },
+                onShare = { openSingleStoryStudio(activeOptionTrack) },
                 onShowTechStats = { showTechStatsTrack = activeOptionTrack },
                 onAddToListenRoom = addToListenRoomLambda,
                 onRemoveAction = removeLambda,
                 removeActionLabel = removeLabel
+            )
+        }
+
+        // ---- Aesthetic Music & Multi-Track Story Studio Sheet ----
+        val activeStoryRequest = storyStudioRequest
+        if (activeStoryRequest != null) {
+            MusicStoryStudioSheet(
+                seedTrack = activeStoryRequest.seedTrack,
+                candidateTracks = activeStoryRequest.candidateTracks,
+                initialMultiMode = activeStoryRequest.initialMultiMode,
+                initialSelectedTracks = activeStoryRequest.initialSelectedTracks,
+                defaultMixTitle = activeStoryRequest.defaultMixTitle,
+                accentColor = MaterialTheme.colorScheme.primary,
+                onDismiss = { storyStudioRequest = null },
+                onShareTextFallback = shareTrack,
+                onShowSnackbar = viewModel::showMessage
+            )
+        }
+
+        // ---- Shazam-style Audio & Humming Song Recognition Sheet ----
+        if (showShazamSearchSheet) {
+            ShazamAudioSearchSheet(
+                likedIds = likedIds,
+                onPauseMusicIfPlaying = viewModel::pausePlaybackForMicRecognition,
+                onRecognizeAudio = viewModel::recognizeSongFromAudio,
+                onPlayTrack = { track, list -> playTrackWithRoomSync(track, list, false) },
+                onToggleLike = viewModel::toggleLike,
+                onTrackOptions = { optionsTrack = it },
+                onFallbackSearchQuery = { query ->
+                    onOverlayPageChange(OverlayPage.NONE)
+                    onSelectedTabChange(2)
+                    viewModel.submitSearch(query)
+                },
+                onDismiss = { showShazamSearchSheet = false }
+            )
+        }
+
+        // ---- Lyrics-to-Song Smart Text Search Sheet ----
+        if (showLyricsSearchSheet) {
+            LyricsTextSearchSheet(
+                likedIds = likedIds,
+                onSearchByLyrics = viewModel::findSongsByLyricsText,
+                onPlayTrack = { track, list -> playTrackWithRoomSync(track, list, false) },
+                onToggleLike = viewModel::toggleLike,
+                onTrackOptions = { optionsTrack = it },
+                onFallbackSearchQuery = { query ->
+                    onOverlayPageChange(OverlayPage.NONE)
+                    onSelectedTabChange(2)
+                    viewModel.submitSearch(query)
+                },
+                onDismiss = { showLyricsSearchSheet = false }
             )
         }
 
@@ -1337,3 +1536,12 @@ private fun KoplingfyAppRoot(
         }
     }
 }
+
+private data class StoryStudioRequest(
+    val seedTrack: Track?,
+    val candidateTracks: List<Track>,
+    val initialMultiMode: Boolean,
+    val initialSelectedTracks: List<Track>,
+    val defaultMixTitle: String
+)
+

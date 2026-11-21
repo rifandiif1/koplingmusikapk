@@ -26,6 +26,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.ArrowBack
 import androidx.compose.material.icons.rounded.Add
+import androidx.compose.material.icons.rounded.AutoAwesome
 import androidx.compose.material.icons.rounded.DeleteSweep
 import androidx.compose.material.icons.rounded.MusicNote
 import androidx.compose.material.icons.rounded.PlayArrow
@@ -78,7 +79,8 @@ fun CollectionDetailScreen(
     onStartArtistRadio: ((String, Track?) -> Unit)? = null,
     onPlayNext: ((Track) -> Unit)? = null,
     onAddToQueue: ((Track) -> Unit)? = null,
-    swipeQueueLabel: String = "Antrean"
+    swipeQueueLabel: String = "Antrean",
+    onShareStory: ((String, List<Track>) -> Unit)? = null
 ) {
     BackHandler(onBack = onBack)
 
@@ -383,6 +385,29 @@ fun CollectionDetailScreen(
                                 contentDescription = "Putar semua",
                                 tint = MaterialTheme.colorScheme.onPrimary,
                                 modifier = Modifier.size(22.dp)
+                            )
+                        }
+                    }
+                }
+
+                if (onShareStory != null && detailState.tracks.isNotEmpty()) {
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Surface(
+                        onClick = { onShareStory(detailState.title, detailState.tracks) },
+                        shape = CircleShape,
+                        color = MaterialTheme.colorScheme.surfaceContainerLow.copy(
+                            alpha = (0.82f - collapseProgress * 0.35f).coerceIn(0.45f, 0.85f)
+                        ),
+                        modifier = Modifier
+                            .size(44.dp)
+                            .testTag("detail_share_story_button")
+                    ) {
+                        Box(contentAlignment = Alignment.Center) {
+                            Icon(
+                                imageVector = Icons.Rounded.AutoAwesome,
+                                contentDescription = "Buat kartu Story untuk koleksi ini",
+                                tint = MaterialTheme.colorScheme.primary,
+                                modifier = Modifier.size(20.dp)
                             )
                         }
                     }

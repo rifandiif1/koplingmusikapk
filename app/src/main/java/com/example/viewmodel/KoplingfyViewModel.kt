@@ -9,6 +9,9 @@ import android.view.TextureView
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.example.ai.LyricsTranslator
+import com.example.ai.SongMeaningAnalyzer
+import com.example.ai.SongRecognitionResult
+import com.example.ai.SongRecognitionService
 import com.example.data.CloudLibraryRepository
 import com.example.data.MusicRepository
 import com.example.data.OfflineDownloadManager
@@ -41,6 +44,9 @@ import com.example.model.YouTubeAccount
 import com.example.player.KoplingfyAudioEngine
 import com.example.player.KoplingfyMediaBridge
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
@@ -214,6 +220,7 @@ class KoplingfyViewModel(application: Application) : AndroidViewModel(applicatio
     private var lyricsJob: Job? = null
     private var translateLyricsJob: Job? = null
     private var romanizeLyricsJob: Job? = null
+    private var meaningLyricsJob: Job? = null
     private var videoResolveJob: Job? = null
     private var sleepTimerJob: Job? = null
     private var detailObserveJob: Job? = null
@@ -225,6 +232,7 @@ class KoplingfyViewModel(application: Application) : AndroidViewModel(applicatio
 
     init {
         LyricsTranslator.init(getApplication())
+        SongMeaningAnalyzer.init(getApplication())
         InnerTubeClient.warmupAsync()
         registerMediaBridgeCallbacks()
         observeAudioEngine()
@@ -319,6 +327,48 @@ class KoplingfyViewModel(application: Application) : AndroidViewModel(applicatio
         if (query.isBlank()) return emptyList()
         return repository.fetchTracksByQuery(query.trim(), limit = 15)
     }
+
+    fun pausePlaybackForMicRecognition() {
+        if (_playerState.value.isPlaying) {
+            audioEngine.pause()
+        }
+    }
+
+    suspend fun recognizeSongFromAudio(
+        audioBytes: ByteArray,
+        mimeType: String = "audio/mp4"
+    ): Result<SongRecognitionResult> {
+        val rawResult = SongRecognitionService.recognizeFromAudioBytes(audioBytes, mimeType)
+        return rawResult.map { res ->
+            if (!res.found || res.matches.isEmpty()) res
+            else resolveRecognizedTracks(res)
+        }
+    }
+
+    suspend fun findSongsByLyricsText(lyricSnippet: String): Result<SongRecognitionResult> {
+        val rawResult = SongRecognitionService.searchByLyricsText(lyricSnippet)
+        return rawResult.map { res ->
+            if (!res.found || res.matches.isEmpty()) res
+            else resolveRecognizedTracks(res)
+        }
+    }
+
+    private suspend fun resolveRecognizedTracks(result: SongRecognitionResult): SongRecognitionResult =
+        coroutineScope {
+            val resolvedMatches = result.matches.map { match ->
+                async {
+                    val candidates = runCatching {
+                        repository.fetchTracksByQuery("${match.title} ${match.artist}", limit = 4)
+                    }.getOrDefault(emptyList())
+                    val bestTrack = candidates.firstOrNull { candidate ->
+                        candidate.title.contains(match.title, ignoreCase = true) ||
+                            match.title.contains(candidate.title, ignoreCase = true)
+                    } ?: candidates.firstOrNull()
+                    match.copy(resolvedTrack = bestTrack)
+                }
+            }.awaitAll()
+            result.copy(matches = resolvedMatches)
+        }
 
     // ---- Home & Explore ----
     fun loadHomeFeed(mood: MoodFilter = _homeState.value.selectedMood) {
@@ -949,10 +999,12 @@ class KoplingfyViewModel(application: Application) : AndroidViewModel(applicatio
         lyricsJob?.cancel()
         translateLyricsJob?.cancel()
         romanizeLyricsJob?.cancel()
+        meaningLyricsJob?.cancel()
         lyricsJob = viewModelScope.launch {
             _playerState.update { it.copy(lyricsState = LyricsState(isLoading = true)) }
             val result = repository.fetchLyrics(track)
             val cachedAi = LyricsTranslator.getCachedEntry(track.id)
+            val cachedMeaning = SongMeaningAnalyzer.getCached(track.id)
             val hasSynced = result.syncedLines.isNotEmpty()
             val plainCount = result.plainLyrics?.lines()?.count { it.isNotBlank() } ?: 0
 
@@ -978,6 +1030,9 @@ class KoplingfyViewModel(application: Application) : AndroidViewModel(applicatio
                         )
                     } else hydrated
                 }
+            }
+            if (cachedMeaning != null) {
+                hydrated = hydrated.copy(songMeaning = cachedMeaning)
             }
             _playerState.update { it.copy(lyricsState = hydrated) }
         }
@@ -1174,6 +1229,78 @@ class KoplingfyViewModel(application: Application) : AndroidViewModel(applicatio
                             isRomanizing = false,
                             showRomanization = false,
                             romanizationError = message
+                        )
+                    )
+                }
+                showMessage(message)
+            }
+        }
+    }
+
+    // ---- Song Meaning Breakdown ("Bedah Makna Lagu") via Firebase AI Logic + Local Disk Cache ----
+    fun analyzeCurrentSongMeaning(forceRefresh: Boolean = false) {
+        val state = _playerState.value
+        val track = state.currentTrack ?: return
+        val lyrics = state.lyricsState
+        if (lyrics.isLoading) return
+        if (lyrics.isInstrumental) {
+            showMessage("Lagu instrumental tidak memiliki lirik untuk dibedah")
+            return
+        }
+        if (!forceRefresh && lyrics.songMeaning != null) {
+            return
+        }
+
+        val sourceLines = if (lyrics.syncedLines.isNotEmpty()) {
+            lyrics.syncedLines.map { it.text }
+        } else {
+            lyrics.plainLyrics?.lines()?.map { it.trim() }?.filter { it.isNotBlank() }.orEmpty()
+        }
+        if (sourceLines.isEmpty()) {
+            val msg = "Belum ada lirik yang bisa dibedah untuk lagu ini."
+            _playerState.update { cur ->
+                cur.copy(lyricsState = cur.lyricsState.copy(isAnalyzingMeaning = false, meaningError = msg))
+            }
+            showMessage(msg)
+            return
+        }
+
+        meaningLyricsJob?.cancel()
+        meaningLyricsJob = viewModelScope.launch {
+            _playerState.update { cur ->
+                cur.copy(
+                    lyricsState = cur.lyricsState.copy(
+                        isAnalyzingMeaning = true,
+                        meaningError = null
+                    )
+                )
+            }
+            val result = SongMeaningAnalyzer.analyzeSongMeaning(
+                trackId = track.id,
+                trackTitle = track.title,
+                artist = track.artist,
+                lyricsLines = sourceLines,
+                forceRefresh = forceRefresh
+            )
+            if (_playerState.value.currentTrack?.id != track.id) return@launch
+
+            result.onSuccess { meaning ->
+                _playerState.update { cur ->
+                    cur.copy(
+                        lyricsState = cur.lyricsState.copy(
+                            songMeaning = meaning,
+                            isAnalyzingMeaning = false,
+                            meaningError = null
+                        )
+                    )
+                }
+            }.onFailure { err ->
+                val message = err.message ?: "Gagal membedah makna lagu."
+                _playerState.update { cur ->
+                    cur.copy(
+                        lyricsState = cur.lyricsState.copy(
+                            isAnalyzingMeaning = false,
+                            meaningError = message
                         )
                     )
                 }
