@@ -224,11 +224,14 @@ class KoplingfyViewModel(application: Application) : AndroidViewModel(applicatio
     private var videoResolveJob: Job? = null
     private var sleepTimerJob: Job? = null
     private var detailObserveJob: Job? = null
-    private var retriedExpiredTrackId: String? = null
+    private var streamErrorRetryJob: Job? = null
+    private var streamErrorRetryTrackId: String? = null
+    private var streamErrorRetryCount: Int = 0
     private var preEndPrefetchedTrackId: String? = null
     private var autoQueuedRadioForTrackId: String? = null
     private var consecutiveAutoSkipFailures: Int = 0
     private var isAutoAdvancingTrack: Boolean = false
+    @Volatile private var isTransitioningTrack: Boolean = false
 
     init {
         LyricsTranslator.init(getApplication())
@@ -244,21 +247,41 @@ class KoplingfyViewModel(application: Application) : AndroidViewModel(applicatio
 
     private fun registerMediaBridgeCallbacks() {
         KoplingfyMediaBridge.onTogglePlayPause = { togglePlayPause() }
-        KoplingfyMediaBridge.onPlay = { audioEngine.resume() }
-        KoplingfyMediaBridge.onPause = { audioEngine.pause() }
+        KoplingfyMediaBridge.onPlay = {
+            if (_playerState.value.audioError != null) {
+                togglePlayPause()
+            } else {
+                audioEngine.resume()
+            }
+        }
+        KoplingfyMediaBridge.onPause = {
+            isTransitioningTrack = false
+            audioEngine.pause()
+        }
         KoplingfyMediaBridge.onNext = { skipNext() }
         KoplingfyMediaBridge.onPrevious = { skipPrevious() }
         KoplingfyMediaBridge.onSeekTo = { seekTo(it) }
     }
 
     private fun publishMediaBridgeState(state: PlayerUiState) {
+        val activeLyric = if (settings.value.notificationBarLyrics &&
+            state.isPlaying &&
+            state.lyricsState.syncedLines.isNotEmpty()
+        ) {
+            val adjPos = (state.positionMs + state.lyricsOffsetMs).coerceAtLeast(0L)
+            val idx = state.lyricsState.syncedLines.indexOfLast { it.timestampMs <= adjPos + 250L }
+            state.lyricsState.syncedLines.getOrNull(idx)?.text?.trim()?.takeIf { it.isNotEmpty() }
+        } else null
+
         KoplingfyMediaBridge.publishState(
             context = getApplication(),
             track = state.currentTrack,
             isPlaying = state.isPlaying,
             isBuffering = state.isBuffering,
             positionMs = state.positionMs,
-            durationMs = state.durationMs
+            durationMs = state.durationMs,
+            activeLyricLine = activeLyric,
+            isTransitioning = isTransitioningTrack
         )
     }
 
@@ -273,11 +296,23 @@ class KoplingfyViewModel(application: Application) : AndroidViewModel(applicatio
     private fun observeAudioEngine() {
         viewModelScope.launch {
             audioEngine.state.collectLatest { engine ->
+                if (engine.isPlaying) {
+                    isTransitioningTrack = false
+                    if (engine.positionMs > 15_000L && streamErrorRetryCount > 0) {
+                        streamErrorRetryCount = 0
+                    }
+                } else if (engine.errorMessage != null) {
+                    isTransitioningTrack = false
+                }
                 var updatedState: PlayerUiState? = null
                 _playerState.update { state ->
+                    // Never allow stale STATE_ENDED/non-buffering emissions from the previous track
+                    // to clear buffering while we are actively resolving the next track in background.
+                    val effectiveBuffering = engine.isBuffering ||
+                        (isTransitioningTrack && !engine.isPlaying && engine.errorMessage == null)
                     val next = state.copy(
                         isPlaying = engine.isPlaying,
-                        isBuffering = engine.isBuffering,
+                        isBuffering = effectiveBuffering,
                         positionMs = engine.positionMs,
                         durationMs = if (engine.durationMs > 0) engine.durationMs else state.currentTrack?.durationMs ?: 0L,
                         audioError = engine.errorMessage ?: state.audioError,
@@ -470,6 +505,12 @@ class KoplingfyViewModel(application: Application) : AndroidViewModel(applicatio
     fun playTrack(track: Track, queue: List<Track> = listOf(track), expandPlayer: Boolean = false) {
         val safeQueue = if (queue.any { it.id == track.id }) queue else listOf(track) + queue
         val idx = safeQueue.indexOfFirst { it.id == track.id }.coerceAtLeast(0)
+        streamErrorRetryJob?.cancel()
+        if (streamErrorRetryTrackId != track.id) {
+            streamErrorRetryTrackId = track.id
+            streamErrorRetryCount = 0
+        }
+        isTransitioningTrack = true
         audioEngine.setAbLoop(null, null)
         _playerState.update {
             it.copy(
@@ -494,6 +535,9 @@ class KoplingfyViewModel(application: Application) : AndroidViewModel(applicatio
                 videoQualityLabel = ""
             )
         }
+        // Immediately notify PlaybackService BEFORE async network stream resolution starts
+        // so ForegroundService + CPU WakeLock remain active with zero gap in background!
+        publishMediaBridgeState(_playerState.value)
         preEndPrefetchedTrackId = null
         val keepVideoMode = _playerState.value.isVideoMode && !track.isLocal
         if (keepVideoMode) {
@@ -528,14 +572,39 @@ class KoplingfyViewModel(application: Application) : AndroidViewModel(applicatio
     private fun handleStreamExpiredRetry(): Boolean {
         val state = _playerState.value
         val current = state.currentTrack ?: return false
-        if (current.isLocal || retriedExpiredTrackId == current.id) return false
-        retriedExpiredTrackId = current.id
-        if (state.isVideoMode && !state.selectedVideoId.isNullOrBlank()) {
-            audioEngine.setNextTrackStartOptions(startPositionMs = state.positionMs, autoStart = true)
-            playSelectedVideoId(state.selectedVideoId, startPositionMs = state.positionMs)
-        } else {
-            audioEngine.setNextTrackStartOptions(startPositionMs = state.positionMs, autoStart = true)
-            resolveAndPlayTrack(current, forceRefresh = true)
+        if (current.isLocal) return false
+
+        if (streamErrorRetryTrackId != current.id) {
+            streamErrorRetryTrackId = current.id
+            streamErrorRetryCount = 0
+        }
+        if (streamErrorRetryCount >= 3) {
+            // If playback died mid-song after 3 retries while auto-playing a queue, try advancing instead of dying silently
+            if (tryAutoSkipAfterFailure(current)) return true
+            isTransitioningTrack = false
+            return false
+        }
+        streamErrorRetryCount += 1
+        val attempt = streamErrorRetryCount
+        val resumePosMs = maxOf(state.positionMs, audioEngine.lastKnownGoodPositionMs).coerceAtLeast(0L)
+
+        isTransitioningTrack = true
+        _playerState.update { it.copy(isBuffering = true, audioError = null) }
+        publishMediaBridgeState(_playerState.value)
+
+        streamErrorRetryJob?.cancel()
+        streamErrorRetryJob = viewModelScope.launch {
+            // Short backoff lets transient Wi-Fi <-> Cellular handoffs settle before re-resolving stream URL
+            delay(750L * attempt)
+            val latest = _playerState.value
+            if (latest.currentTrack?.id != current.id) return@launch
+            if (latest.isVideoMode && !latest.selectedVideoId.isNullOrBlank()) {
+                audioEngine.setNextTrackStartOptions(startPositionMs = resumePosMs, autoStart = true)
+                playSelectedVideoId(latest.selectedVideoId, startPositionMs = resumePosMs)
+            } else {
+                audioEngine.setNextTrackStartOptions(startPositionMs = resumePosMs, autoStart = true)
+                resolveAndPlayTrack(current, forceRefresh = true)
+            }
         }
         return true
     }
@@ -546,8 +615,10 @@ class KoplingfyViewModel(application: Application) : AndroidViewModel(applicatio
         fromAutoAdvance: Boolean = isAutoAdvancingTrack
     ) {
         if (!forceRefresh) {
-            retriedExpiredTrackId = null
+            streamErrorRetryTrackId = track.id
+            streamErrorRetryCount = 0
         }
+        isTransitioningTrack = true
         videoResolveJob?.cancel()
         resolveStreamJob?.cancel()
         prefetchJob?.cancel()
@@ -555,13 +626,23 @@ class KoplingfyViewModel(application: Application) : AndroidViewModel(applicatio
             _playerState.update {
                 it.copy(isBuffering = true, audioError = null, requiresYouTubeLogin = false)
             }
+            publishMediaBridgeState(_playerState.value)
             val useDataSaver = settings.value.dataSaverCellular && isOnCellular()
             val effectiveQuality = if (useDataSaver) AudioQuality.LOW else settings.value.audioQuality
-            when (val result = repository.resolveFullAudioStream(track, effectiveQuality, forceRefresh = forceRefresh)) {
+            var result = repository.resolveFullAudioStream(track, effectiveQuality, forceRefresh = forceRefresh)
+            // Automatic single fresh retry on transient background network glitches before skipping/stopping
+            if (result is StreamResolveResult.Unavailable && !forceRefresh && !track.isLocal) {
+                delay(1_000L)
+                if (_playerState.value.currentTrack?.id != track.id) return@launch
+                result = repository.resolveFullAudioStream(track, effectiveQuality, forceRefresh = true)
+            }
+            if (_playerState.value.currentTrack?.id != track.id) return@launch
+
+            when (val finalResult = result) {
                 is StreamResolveResult.Success -> {
                     consecutiveAutoSkipFailures = 0
                     isAutoAdvancingTrack = false
-                    val stream = result.stream
+                    val stream = finalResult.stream
                     val sourceTag = if (useDataSaver && !track.isLocal && !track.isDownloaded) {
                         "${stream.sourceLabel} • HEMAT KUOTA"
                     } else stream.sourceLabel
@@ -585,26 +666,30 @@ class KoplingfyViewModel(application: Application) : AndroidViewModel(applicatio
                 is StreamResolveResult.LoginRequired -> {
                     if (fromAutoAdvance && tryAutoSkipAfterFailure(track)) return@launch
                     isAutoAdvancingTrack = false
+                    isTransitioningTrack = false
                     _playerState.update {
                         it.copy(
                             isPlaying = false,
                             isBuffering = false,
-                            audioError = result.reason,
+                            audioError = finalResult.reason,
                             requiresYouTubeLogin = true
                         )
                     }
+                    publishMediaBridgeState(_playerState.value)
                 }
                 is StreamResolveResult.Unavailable -> {
                     if (fromAutoAdvance && tryAutoSkipAfterFailure(track)) return@launch
                     isAutoAdvancingTrack = false
+                    isTransitioningTrack = false
                     _playerState.update {
                         it.copy(
                             isPlaying = false,
                             isBuffering = false,
-                            audioError = result.reason,
+                            audioError = finalResult.reason,
                             requiresYouTubeLogin = !youtubeAccount.value.isLoggedIn
                         )
                     }
+                    publishMediaBridgeState(_playerState.value)
                 }
             }
         }
@@ -612,20 +697,20 @@ class KoplingfyViewModel(application: Application) : AndroidViewModel(applicatio
 
     /**
      * Prevents queue playback from stalling permanently if a single track in a playlist/radio
-     * fails to resolve during automatic transition (capped at 3 consecutive skips).
+     * fails to resolve during automatic transition (capped at 5 consecutive skips).
      */
     private fun tryAutoSkipAfterFailure(failedTrack: Track): Boolean {
         val state = _playerState.value
         val hasNext = state.currentIndex + 1 < state.queue.size ||
-            (state.repeatMode == RepeatMode.ALL && state.queue.size > 1)
-        if (!hasNext || consecutiveAutoSkipFailures >= 3) {
+            (state.repeatMode == RepeatMode.ALL && state.queue.size > 1) ||
+            (settings.value.autoplayRadio && !failedTrack.isLocal)
+        if (!hasNext || consecutiveAutoSkipFailures >= 5) {
             consecutiveAutoSkipFailures = 0
             return false
         }
         consecutiveAutoSkipFailures += 1
         showMessage("Melewati \"${failedTrack.title}\" (stream tidak tersedia)…")
-        skipNext(fromAutoAdvance = true)
-        return true
+        return skipNext(fromAutoAdvance = true)
     }
 
     private fun schedulePrefetchNextTrack(quality: AudioQuality, delayMs: Long = 1_200L) {
@@ -760,9 +845,12 @@ class KoplingfyViewModel(application: Application) : AndroidViewModel(applicatio
         }
     }
 
-    fun skipNext(fromAutoAdvance: Boolean = false) {
+    fun skipNext(fromAutoAdvance: Boolean = false): Boolean {
         val state = _playerState.value
-        if (state.queue.isEmpty()) return
+        if (state.queue.isEmpty()) {
+            isTransitioningTrack = false
+            return false
+        }
         isAutoAdvancingTrack = fromAutoAdvance
         val nextIndex = when {
             state.isShuffleEnabled && state.queue.size > 1 -> {
@@ -775,8 +863,11 @@ class KoplingfyViewModel(application: Application) : AndroidViewModel(applicatio
                 // Metrolist Autoplay Radio with multi-tier fallback so continuous playback never dies
                 val seed = state.currentTrack
                 if (settings.value.autoplayRadio && seed != null && !seed.isLocal) {
+                    // Lock foreground & WakeLock BEFORE starting the async radio fetch!
+                    isTransitioningTrack = true
+                    _playerState.update { it.copy(isBuffering = true) }
+                    publishMediaBridgeState(_playerState.value)
                     viewModelScope.launch {
-                        _playerState.update { it.copy(isBuffering = true) }
                         val existingIds = state.queue.map { it.id }.toSet()
                         var extra = repository.fetchRadioQueue(seed)
                             .filter { it.id !in existingIds }
@@ -795,16 +886,21 @@ class KoplingfyViewModel(application: Application) : AndroidViewModel(applicatio
                             playTrack(extra.first(), newQueue)
                         } else {
                             isAutoAdvancingTrack = false
-                            _playerState.update { it.copy(isBuffering = false) }
+                            isTransitioningTrack = false
+                            _playerState.update { it.copy(isPlaying = false, isBuffering = false) }
+                            publishMediaBridgeState(_playerState.value)
                         }
                     }
+                    return true
                 } else {
                     isAutoAdvancingTrack = false
+                    isTransitioningTrack = false
+                    return false
                 }
-                return
             }
         }
         playTrack(state.queue[nextIndex], state.queue)
+        return true
     }
 
     fun skipPrevious() {
@@ -823,26 +919,33 @@ class KoplingfyViewModel(application: Application) : AndroidViewModel(applicatio
         playTrack(state.queue[prevIndex], state.queue)
     }
 
-    private fun handleTrackCompleted() {
+    private fun handleTrackCompleted(): Boolean {
         val state = _playerState.value
         if (state.sleepAfterCurrentTrack) {
+            isTransitioningTrack = false
             _playerState.update { it.copy(sleepAfterCurrentTrack = false) }
             showMessage("Timer tidur aktif — pemutaran dihentikan.")
-            return
+            return false
         }
-        when (state.repeatMode) {
+        return when (state.repeatMode) {
             RepeatMode.ONE -> {
-                state.currentTrack?.let { track ->
-                    if (state.isVideoMode && !state.selectedVideoId.isNullOrBlank()) {
-                        playSelectedVideoId(state.selectedVideoId, startPositionMs = 0L)
-                    } else {
-                        resolveAndPlayTrack(track, fromAutoAdvance = false)
-                    }
+                val track = state.currentTrack ?: return false
+                isTransitioningTrack = true
+                publishMediaBridgeState(state.copy(isBuffering = true))
+                if (state.isVideoMode && !state.selectedVideoId.isNullOrBlank()) {
+                    playSelectedVideoId(state.selectedVideoId, startPositionMs = 0L)
+                } else {
+                    resolveAndPlayTrack(track, fromAutoAdvance = false)
                 }
+                true
             }
             else -> {
                 val handledByRoom = onAutoAdvanceOverride?.invoke() == true
-                if (!handledByRoom) {
+                if (handledByRoom) {
+                    isTransitioningTrack = true
+                    publishMediaBridgeState(state.copy(isBuffering = true))
+                    true
+                } else {
                     skipNext(fromAutoAdvance = true)
                 }
             }
@@ -1390,9 +1493,11 @@ class KoplingfyViewModel(application: Application) : AndroidViewModel(applicatio
                 _playerState.update {
                     it.copy(
                         isLoadingVideo = false,
-                        videoError = "Lyric video tidak ditemukan untuk lagu ini."
+                        videoError = "Lyric video tidak ditemukan — beralih ke audio…"
                     )
                 }
+                // Automatic audio fallback so background auto-next never dies in Video Mode
+                resolveAndPlayTrack(track)
                 return@launch
             }
 
@@ -1470,9 +1575,17 @@ class KoplingfyViewModel(application: Application) : AndroidViewModel(applicatio
         _playerState.update {
             it.copy(
                 isLoadingVideo = false,
-                isBuffering = false,
                 videoError = lastError
             )
+        }
+        // Seamless audio fallback if all video streams fail during background playback
+        val fallbackTrack = _playerState.value.currentTrack
+        if (fallbackTrack != null) {
+            resolveAndPlayTrack(fallbackTrack)
+        } else {
+            isTransitioningTrack = false
+            _playerState.update { it.copy(isBuffering = false) }
+            publishMediaBridgeState(_playerState.value)
         }
     }
 
@@ -2113,6 +2226,25 @@ class KoplingfyViewModel(application: Application) : AndroidViewModel(applicatio
     fun setCrossfadeSeconds(seconds: Int) = viewModelScope.launch { preferences.setCrossfadeSeconds(seconds) }
     fun setDataSaverCellular(enabled: Boolean) = viewModelScope.launch { preferences.setDataSaverCellular(enabled) }
     fun setDownloadWifiOnly(enabled: Boolean) = viewModelScope.launch { preferences.setDownloadWifiOnly(enabled) }
+    fun setDynamicIslandLyrics(enabled: Boolean) = viewModelScope.launch { preferences.setDynamicIslandLyrics(enabled) }
+    fun setNotificationBarLyrics(enabled: Boolean) = viewModelScope.launch {
+        preferences.setNotificationBarLyrics(enabled)
+        val st = _playerState.value
+        KoplingfyMediaBridge.publishState(
+            context = getApplication(),
+            track = st.currentTrack,
+            isPlaying = st.isPlaying,
+            isBuffering = st.isBuffering,
+            positionMs = st.positionMs,
+            durationMs = st.durationMs,
+            activeLyricLine = if (enabled && st.isPlaying && st.lyricsState.syncedLines.isNotEmpty()) {
+                val adj = (st.positionMs + st.lyricsOffsetMs).coerceAtLeast(0L)
+                val idx = st.lyricsState.syncedLines.indexOfLast { it.timestampMs <= adj + 250L }
+                st.lyricsState.syncedLines.getOrNull(idx)?.text?.trim()?.takeIf { it.isNotEmpty() }
+            } else null,
+            isTransitioning = isTransitioningTrack
+        )
+    }
 
     fun showMessage(msg: String) {
         _snackbarMessage.value = msg

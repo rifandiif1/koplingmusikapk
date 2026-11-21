@@ -539,6 +539,8 @@ fun SettingsScreen(
     onKeepScreenOnLyricsChange: (Boolean) -> Unit,
     onGaplessChange: (Boolean) -> Unit,
     onDynamicArtworkColorChange: (Boolean) -> Unit = {},
+    onDynamicIslandLyricsChange: (Boolean) -> Unit = {},
+    onNotificationBarLyricsChange: (Boolean) -> Unit = {},
     onCrossfadeSecondsChange: (Int) -> Unit = {},
     onDataSaverCellularChange: (Boolean) -> Unit = {},
     onDownloadWifiOnlyChange: (Boolean) -> Unit = {},
@@ -957,6 +959,18 @@ fun SettingsScreen(
                     subtitle = "Cegah layar mati otomatis saat membaca lirik",
                     checked = settings.keepScreenOnLyrics,
                     onCheckedChange = onKeepScreenOnLyricsChange
+                )
+                SettingsToggleRow(
+                    title = "Dynamic Island Lirik (Non-Klik)",
+                    subtitle = "Tampilkan pill lirik berjalan di bawah status bar tanpa mengganggu sentuhan layar",
+                    checked = settings.dynamicIslandLyrics,
+                    onCheckedChange = onDynamicIslandLyricsChange
+                )
+                SettingsToggleRow(
+                    title = "Lirik di Notifikasi Bar Mini Player",
+                    subtitle = "Tampilkan baris lirik aktif di notifikasi pemutar & layar kunci",
+                    checked = settings.notificationBarLyrics,
+                    onCheckedChange = onNotificationBarLyricsChange
                 )
             }
         }

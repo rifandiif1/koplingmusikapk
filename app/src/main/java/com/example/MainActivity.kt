@@ -108,6 +108,7 @@ import com.example.model.CollectionDetailType
 import com.example.model.Track
 import com.example.ui.components.AddToPlaylistDialog
 import com.example.ui.components.CreatePlaylistDialog
+import com.example.ui.components.DynamicIslandLyricsOverlay
 import com.example.ui.components.FloatingRoomChatOverlay
 import com.example.ui.components.LyricsTextSearchSheet
 import com.example.ui.components.RoomQuickChatBottomSheet
@@ -116,6 +117,7 @@ import com.example.ui.components.ShazamAudioSearchSheet
 import com.example.ui.components.TrackOptionsBottomSheet
 import com.example.ui.player.FloatingMiniPlayer
 import com.example.ui.player.FullScreenPlayerModal
+import com.example.ui.player.StandByVisualizerOverlay
 import com.example.ui.player.StreamTechStatsDialog
 import com.example.ui.screens.CollectionDetailScreen
 import com.example.ui.screens.ExploreScreen
@@ -436,6 +438,7 @@ private fun KoplingfyAppRoot(
     var storyStudioRequest by remember { mutableStateOf<StoryStudioRequest?>(null) }
     var showShazamSearchSheet by remember { mutableStateOf(false) }
     var showLyricsSearchSheet by remember { mutableStateOf(false) }
+    var showStandByVisualizer by remember { mutableStateOf(false) }
 
     // Keep MainActivity informed whether auto-PiP on Home press should trigger
     LaunchedEffect(playerState.isVideoMode, playerState.isPlaying, playerState.isPlayerExpanded) {
@@ -923,6 +926,8 @@ private fun KoplingfyAppRoot(
                                         onKeepScreenOnLyricsChange = viewModel::setKeepScreenOnLyrics,
                                         onGaplessChange = viewModel::setGaplessPlayback,
                                         onDynamicArtworkColorChange = viewModel::setDynamicArtworkColor,
+                                        onDynamicIslandLyricsChange = viewModel::setDynamicIslandLyrics,
+                                        onNotificationBarLyricsChange = viewModel::setNotificationBarLyrics,
                                         onCrossfadeSecondsChange = viewModel::setCrossfadeSeconds,
                                         onDataSaverCellularChange = viewModel::setDataSaverCellular,
                                         onDownloadWifiOnlyChange = viewModel::setDownloadWifiOnly,
@@ -1293,9 +1298,26 @@ private fun KoplingfyAppRoot(
                                 onAnalyzeSongMeaning = viewModel::analyzeCurrentSongMeaning,
                                 unreadRoomChatCount = unreadRoomChatCount,
                                 onOpenRoomChatPopup = openRoomChatPopupLambda,
+                                onOpenStandByMode = { showStandByVisualizer = true },
                                 onShowSnackbar = viewModel::showMessage
                             )
                         }
+                    }
+
+                    // ---- Full-Screen Desk / Bedside StandBy Clock & Visualizer Mode ----
+                    if (showStandByVisualizer && playerState.currentTrack != null) {
+                        val standByTrack = playerState.currentTrack!!
+                        StandByVisualizerOverlay(
+                            playerState = playerState,
+                            isLiked = standByTrack.id in likedIds,
+                            accentPrimary = MaterialTheme.colorScheme.primary,
+                            onTogglePlayPause = togglePlayPauseWithRoomSync,
+                            onSeek = seekWithRoomSync,
+                            onPrevious = skipPreviousWithRoomSync,
+                            onNext = skipNextWithRoomSync,
+                            onToggleLike = { viewModel.toggleLike(standByTrack) },
+                            onExitStandBy = { showStandByVisualizer = false }
+                        )
                     }
 
                     // ---- Clickable Floating Room Chat Pill when browsing outside Bersama & Full Player ----
@@ -1359,6 +1381,18 @@ private fun KoplingfyAppRoot(
                             modifier = Modifier.align(Alignment.TopCenter)
                         )
                     }
+
+                    // ---- Fixed Non-Clickable Dynamic Island Lyrics Pill (Below Status Bar) ----
+                    DynamicIslandLyricsOverlay(
+                        playerState = playerState,
+                        accentColor = MaterialTheme.colorScheme.primary,
+                        visible = settings.dynamicIslandLyrics &&
+                            !showStandByVisualizer &&
+                            !isVideoFullscreen &&
+                            !isInPipMode &&
+                            !playerState.isDrivingMode,
+                        modifier = Modifier.align(Alignment.TopCenter)
+                    )
                 }
             }
         }

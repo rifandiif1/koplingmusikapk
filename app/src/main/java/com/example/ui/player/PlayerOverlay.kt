@@ -57,6 +57,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.PlaylistAdd
 import androidx.compose.material.icons.automirrored.rounded.QueueMusic
+import androidx.compose.material.icons.rounded.AccessTime
 import androidx.compose.material.icons.rounded.Add
 import androidx.compose.material.icons.rounded.ArrowDownward
 import androidx.compose.material.icons.rounded.ArrowUpward
@@ -478,6 +479,7 @@ fun FullScreenPlayerModal(
     onAnalyzeSongMeaning: (Boolean) -> Unit = {},
     unreadRoomChatCount: Int = 0,
     onOpenRoomChatPopup: (() -> Unit)? = null,
+    onOpenStandByMode: () -> Unit = {},
     onShowSnackbar: (String) -> Unit = {}
 ) {
     val track = playerState.currentTrack ?: return
@@ -657,6 +659,7 @@ fun FullScreenPlayerModal(
                     { showSharedQueueSearchSheet = true }
                 } else null,
                 onToggleDrivingMode = onToggleDrivingMode,
+                onOpenStandByMode = onOpenStandByMode,
                 onSetVideoMode = onSetVideoMode,
                 onSelectVideoCandidate = onSelectVideoCandidate,
                 onAttachVideoTextureView = onAttachVideoTextureView,
@@ -844,6 +847,17 @@ fun FullScreenPlayerModal(
                                 )
                             }
                         }
+                    }
+                    IconButton(
+                        onClick = onOpenStandByMode,
+                        modifier = Modifier.size(40.dp).testTag("player_standby_mode_button")
+                    ) {
+                        Icon(
+                            imageVector = Icons.Rounded.AccessTime,
+                            contentDescription = "Mode Meja / StandBy Visualizer",
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.size(20.dp)
+                        )
                     }
                     IconButton(
                         onClick = { onToggleDrivingMode(true) },

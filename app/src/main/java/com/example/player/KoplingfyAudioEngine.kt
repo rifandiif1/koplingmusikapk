@@ -64,7 +64,7 @@ data class AudioEngineState(
 @OptIn(UnstableApi::class)
 class KoplingfyAudioEngine(
     private val context: Context,
-    private val onTrackCompleted: () -> Unit,
+    private val onTrackCompleted: () -> Boolean,
     private val onStreamExpiredError: (() -> Boolean)? = null
 ) {
     private val appContext = context.applicationContext
@@ -93,6 +93,11 @@ class KoplingfyAudioEngine(
     private var pendingAutoStart: Boolean = true
     private var activeCacheKey: String? = null
     private var attachedTextureView: TextureView? = null
+    private var isHandlingTrackCompletion: Boolean = false
+
+    @Volatile
+    var lastKnownGoodPositionMs: Long = 0L
+        private set
 
     private val _state = MutableStateFlow(AudioEngineState())
     val state: StateFlow<AudioEngineState> = _state.asStateFlow()
@@ -127,6 +132,7 @@ class KoplingfyAudioEngine(
                     val totalDur = player.duration.takeIf { it != C.TIME_UNSET && it > 0L }
                         ?: _state.value.durationMs
                     val pos = player.currentPosition.coerceAtLeast(0L)
+                    if (pos > 0L) lastKnownGoodPositionMs = pos
                     val playingNow = player.isPlaying || player.playWhenReady
                     if (playingNow) {
                         startProgressPolling()
@@ -146,13 +152,25 @@ class KoplingfyAudioEngine(
                     stopProgressPolling()
                     val dur = player.duration.takeIf { it != C.TIME_UNSET && it > 0L }
                         ?: _state.value.durationMs
+                    isHandlingTrackCompletion = true
+                    // Keep isBuffering = true across the synchronous onTrackCompleted() handoff so
+                    // ForegroundService & MediaBridge never see a false "stopped" gap between tracks!
                     _state.value = _state.value.copy(
                         isPlaying = false,
-                        isBuffering = false,
+                        isBuffering = true,
                         positionMs = dur,
                         durationMs = dur
                     )
-                    onTrackCompleted()
+                    val transitioningToNext = runCatching { onTrackCompleted() }.getOrDefault(false)
+                    isHandlingTrackCompletion = false
+                    if (!transitioningToNext) {
+                        _state.value = _state.value.copy(
+                            isPlaying = false,
+                            isBuffering = false,
+                            positionMs = dur,
+                            durationMs = dur
+                        )
+                    }
                 }
                 Player.STATE_IDLE -> {
                     stopProgressPolling()
@@ -163,15 +181,20 @@ class KoplingfyAudioEngine(
         override fun onIsPlayingChanged(isPlaying: Boolean) {
             val player = exoPlayer ?: return
             val pos = player.currentPosition.coerceAtLeast(0L)
+            if (pos > 0L) lastKnownGoodPositionMs = pos
             val dur = player.duration.takeIf { it != C.TIME_UNSET && it > 0L } ?: _state.value.durationMs
             if (isPlaying) {
                 startProgressPolling()
             } else {
                 stopProgressPolling()
             }
+            // Do not clear isBuffering during track-end handoff (ExoPlayer emits isPlaying=false right
+            // before/alongside STATE_ENDED).
+            val keepBuffering = player.playbackState == Player.STATE_BUFFERING ||
+                (!isPlaying && (isHandlingTrackCompletion || player.playbackState == Player.STATE_ENDED))
             _state.value = _state.value.copy(
                 isPlaying = isPlaying,
-                isBuffering = player.playbackState == Player.STATE_BUFFERING,
+                isBuffering = keepBuffering,
                 positionMs = pos,
                 durationMs = dur
             )
@@ -179,19 +202,26 @@ class KoplingfyAudioEngine(
 
         override fun onPlayerError(error: PlaybackException) {
             stopProgressPolling()
+            val playerPos = exoPlayer?.currentPosition?.takeIf { it > 0L }
+            if (playerPos != null) {
+                lastKnownGoodPositionMs = playerPos
+            }
             // Evict potentially corrupt/partial cached stream before attempting recovery
             activeCacheKey?.let { key ->
                 runCatching { sharedStreamCache?.removeResource(key) }
             }
 
             val cause = error.cause
-            val isRecoverableStreamError = (cause is HttpDataSource.InvalidResponseCodeException &&
-                (cause.responseCode == 403 || cause.responseCode == 410 || cause.responseCode == 404 || cause.responseCode == 416)) ||
+            val isRecoverableStreamError = cause is HttpDataSource.HttpDataSourceException ||
                 error.errorCode == PlaybackException.ERROR_CODE_IO_BAD_HTTP_STATUS ||
                 error.errorCode == PlaybackException.ERROR_CODE_IO_UNSPECIFIED ||
                 error.errorCode == PlaybackException.ERROR_CODE_IO_NETWORK_CONNECTION_FAILED ||
                 error.errorCode == PlaybackException.ERROR_CODE_IO_NETWORK_CONNECTION_TIMEOUT ||
                 error.errorCode == PlaybackException.ERROR_CODE_IO_READ_POSITION_OUT_OF_RANGE ||
+                error.errorCode == PlaybackException.ERROR_CODE_IO_FILE_NOT_FOUND ||
+                error.errorCode == PlaybackException.ERROR_CODE_TIMEOUT ||
+                error.errorCode == PlaybackException.ERROR_CODE_BEHIND_LIVE_WINDOW ||
+                error.errorCode == PlaybackException.ERROR_CODE_UNSPECIFIED ||
                 error.errorCode == PlaybackException.ERROR_CODE_PARSING_CONTAINER_MALFORMED ||
                 error.errorCode == PlaybackException.ERROR_CODE_PARSING_CONTAINER_UNSUPPORTED
 
@@ -207,7 +237,7 @@ class KoplingfyAudioEngine(
             _state.value = AudioEngineState(
                 isPlaying = false,
                 isBuffering = false,
-                positionMs = _state.value.positionMs,
+                positionMs = lastKnownGoodPositionMs.coerceAtLeast(_state.value.positionMs),
                 durationMs = _state.value.durationMs,
                 errorMessage = "Gagal memutar stream audio. Coba putar ulang atau Login YouTube Music."
             )
@@ -270,6 +300,7 @@ class KoplingfyAudioEngine(
         val shouldAutoStart = pendingAutoStart
         pendingStartPositionMs = 0L
         pendingAutoStart = true
+        lastKnownGoodPositionMs = safeStartPos
 
         _state.value = AudioEngineState(
             isPlaying = false,
@@ -638,6 +669,7 @@ class KoplingfyAudioEngine(
                         player.seekTo(loopA)
                         pos = loopA
                     }
+                    if (pos > 0L) lastKnownGoodPositionMs = pos
                     applyCrossfadeVolume(player, pos, dur)
                     _state.value = _state.value.copy(
                         isPlaying = true,

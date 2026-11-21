@@ -45,6 +45,8 @@ class PreferencesRepository(private val context: Context) {
         val DOWNLOAD_WIFI_ONLY = booleanPreferencesKey("download_wifi_only")
         val SKIP_SILENCE = booleanPreferencesKey("skip_silence")
         val REVERB_ENABLED = booleanPreferencesKey("reverb_enabled")
+        val DYNAMIC_ISLAND_LYRICS = booleanPreferencesKey("dynamic_island_lyrics")
+        val NOTIFICATION_BAR_LYRICS = booleanPreferencesKey("notification_bar_lyrics")
 
         // YouTube Music Account (Metrolist InnerTube auth)
         val YTM_COOKIE = stringPreferencesKey("ytm_cookie")
@@ -95,7 +97,9 @@ class PreferencesRepository(private val context: Context) {
             dataSaverCellular = prefs[Keys.DATA_SAVER_CELLULAR] ?: false,
             downloadWifiOnly = prefs[Keys.DOWNLOAD_WIFI_ONLY] ?: false,
             skipSilence = prefs[Keys.SKIP_SILENCE] ?: false,
-            reverbEnabled = prefs[Keys.REVERB_ENABLED] ?: false
+            reverbEnabled = prefs[Keys.REVERB_ENABLED] ?: false,
+            dynamicIslandLyrics = prefs[Keys.DYNAMIC_ISLAND_LYRICS] ?: true,
+            notificationBarLyrics = prefs[Keys.NOTIFICATION_BAR_LYRICS] ?: true
         )
     }
 
@@ -230,5 +234,13 @@ class PreferencesRepository(private val context: Context) {
 
     suspend fun setReverbEnabled(enabled: Boolean) {
         context.koplingfyDataStore.edit { it[Keys.REVERB_ENABLED] = enabled }
+    }
+
+    suspend fun setDynamicIslandLyrics(enabled: Boolean) {
+        context.koplingfyDataStore.edit { it[Keys.DYNAMIC_ISLAND_LYRICS] = enabled }
+    }
+
+    suspend fun setNotificationBarLyrics(enabled: Boolean) {
+        context.koplingfyDataStore.edit { it[Keys.NOTIFICATION_BAR_LYRICS] = enabled }
     }
 }

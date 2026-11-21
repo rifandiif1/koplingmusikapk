@@ -26,6 +26,7 @@ import androidx.compose.material.icons.automirrored.rounded.QueueMusic
 import androidx.compose.material.icons.rounded.Bedtime
 import androidx.compose.material.icons.rounded.ChatBubble
 import androidx.compose.material.icons.rounded.CheckCircle
+import androidx.compose.material.icons.rounded.AccessTime
 import androidx.compose.material.icons.rounded.DirectionsCar
 import androidx.compose.material.icons.rounded.Download
 import androidx.compose.material.icons.rounded.Equalizer
@@ -127,6 +128,7 @@ internal fun DualColumnLandscapePlayer(
     onOpenAudioFxSheet: () -> Unit,
     onOpenSharedQueueSearch: (() -> Unit)?,
     onToggleDrivingMode: (Boolean) -> Unit,
+    onOpenStandByMode: () -> Unit = {},
     onSetVideoMode: (Boolean) -> Unit,
     onSelectVideoCandidate: (VideoCandidate) -> Unit,
     onAttachVideoTextureView: (TextureView?) -> Unit,
@@ -261,6 +263,17 @@ internal fun DualColumnLandscapePlayer(
                                 )
                             }
                         }
+                    }
+                    IconButton(
+                        onClick = onOpenStandByMode,
+                        modifier = Modifier.size(38.dp).testTag("player_standby_mode_button")
+                    ) {
+                        Icon(
+                            imageVector = Icons.Rounded.AccessTime,
+                            contentDescription = "Mode Meja / StandBy Visualizer",
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.size(19.dp)
+                        )
                     }
                     IconButton(
                         onClick = { onToggleDrivingMode(true) },

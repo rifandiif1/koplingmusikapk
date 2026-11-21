@@ -219,7 +219,9 @@ data class AudioSettings(
     val dataSaverCellular: Boolean = false,
     val downloadWifiOnly: Boolean = false,
     val skipSilence: Boolean = false,
-    val reverbEnabled: Boolean = false
+    val reverbEnabled: Boolean = false,
+    val dynamicIslandLyrics: Boolean = true,
+    val notificationBarLyrics: Boolean = true
 )
 
 @Immutable
