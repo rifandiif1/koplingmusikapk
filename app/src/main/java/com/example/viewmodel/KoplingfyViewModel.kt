@@ -1222,6 +1222,14 @@ class KoplingfyViewModel(application: Application) : AndroidViewModel(applicatio
             return
         }
 
+        if (lyrics.isTranslating) {
+            // Translation is already running (e.g. auto-translate); just make sure it displays when ready
+            _playerState.update {
+                it.copy(lyricsState = it.lyricsState.copy(showTranslation = true, translationError = null))
+            }
+            return
+        }
+
         val sourceLines = if (hasSynced) {
             lyrics.syncedLines.map { it.text }
         } else {
@@ -1255,7 +1263,26 @@ class KoplingfyViewModel(application: Application) : AndroidViewModel(applicatio
                 trackId = track.id,
                 trackTitle = track.title,
                 artist = track.artist,
-                lines = sourceLines
+                lines = sourceLines,
+                onPartialResult = { partialLines ->
+                    if (_playerState.value.currentTrack?.id == track.id) {
+                        _playerState.update { cur ->
+                            val updatedLyrics = if (hasSynced) {
+                                cur.lyricsState.copy(
+                                    translatedSyncedLines = partialLines,
+                                    showTranslation = true
+                                )
+                            } else {
+                                cur.lyricsState.copy(
+                                    translatedPlainLines = partialLines,
+                                    showTranslation = true
+                                )
+                            }
+                            cur.copy(lyricsState = updatedLyrics)
+                        }
+                        publishMediaBridgeState(_playerState.value)
+                    }
+                }
             )
             // Guard against track change while translating
             if (_playerState.value.currentTrack?.id != track.id) return@launch

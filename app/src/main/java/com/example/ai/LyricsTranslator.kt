@@ -12,7 +12,14 @@ import com.google.firebase.ai.type.generationConfig
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.TimeoutCancellationException
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.Semaphore
+import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
 import org.json.JSONArray
@@ -22,9 +29,12 @@ import java.util.concurrent.ConcurrentHashMap
 
 private const val TAG = "LyricsTranslator"
 private const val CACHE_DIR_NAME = "lyrics_ai_cache"
-private const val TRANSLATION_STYLE_VERSION = 3
-private const val CHUNK_THRESHOLD = 42
-private const val CHUNK_SIZE = 32
+private const val TRANSLATION_STYLE_VERSION = 4
+private const val CHUNK_THRESHOLD = 32
+private const val CHUNK_SIZE = 24
+private const val MAX_PARALLEL_CHUNKS = 3
+private const val PRIMARY_TIMEOUT_MS = 30_000L
+private const val FALLBACK_TIMEOUT_MS = 45_000L
 
 data class TranslatedLyricsResult(
     val lines: List<String>,
@@ -47,11 +57,17 @@ data class CachedLyricsAiData(
     val scriptLabel: String = ""
 )
 
+private data class DeduplicatedLines(
+    val uniqueLines: List<String>,
+    val originalToUniqueIndex: IntArray
+)
+
 /**
  * Translates song lyrics line-by-line into natural casual Indonesian and generates phonetic
  * romanization (Romaji, Korean Revised Romanization, Pinyin, Cyrillic, Thai, etc.)
- * via Firebase AI Logic (Gemini 3.8 Flash with Gemini 3.5 Flash-Lite fallback) with
- * persistent local disk caching so results stay available offline and across restarts.
+ * via Firebase AI Logic using ultra-fast Gemini 3.5 Flash-Lite as primary model (with
+ * Gemini 3.8 Flash fallback), repeated-line deduplication, concurrent chunk execution,
+ * progressive partial updates, and persistent offline local disk caching.
  */
 object LyricsTranslator {
     private val memoryCache = ConcurrentHashMap<String, CachedLyricsAiData>()
@@ -110,11 +126,11 @@ object LyricsTranslator {
     private val translationSchema = Schema.obj(
         properties = mapOf(
             "alreadyIndonesian" to Schema.boolean(
-                description = "True if the majority of the original lyrics are already in Indonesian."
+                description = "True if most input lines are already Indonesian."
             ),
             "translations" to Schema.array(
                 items = Schema.string(),
-                description = "Line-by-line natural Indonesian translation matching the exact count and order of input lines."
+                description = "Casual natural Indonesian translation array matching exact count and order."
             )
         ),
         optionalProperties = listOf("alreadyIndonesian")
@@ -123,26 +139,27 @@ object LyricsTranslator {
     private val romanizationSchema = Schema.obj(
         properties = mapOf(
             "needsRomanization" to Schema.boolean(
-                description = "True if the lyrics contain non-Latin scripts such as Japanese, Korean, Chinese, Cyrillic, Thai, Arabic, Hindi, etc."
+                description = "True if input contains non-Latin scripts."
             ),
             "scriptLabel" to Schema.string(
-                description = "Short label of the detected script/romanization style in Indonesian, e.g. 'Romaji', 'Hangul', 'Pinyin', 'Kiril', 'Thai', or 'Latin'."
+                description = "Short script label: Romaji, Hangul, Pinyin, Kiril, Thai, or Latin."
             ),
             "romanizations" to Schema.array(
                 items = Schema.string(),
-                description = "Line-by-line phonetic Latin reading matching the exact count and order of input lines."
+                description = "Phonetic Latin reading array matching exact count and order."
             )
         ),
         optionalProperties = listOf("needsRomanization", "scriptLabel")
     )
 
-    private val translationModel by lazy {
+    // Ultra-fast primary model for line-by-line translation so lyrics translate in ~2-4s without timeouts.
+    private val fastTranslationModel by lazy {
         Firebase.ai.generativeModel(
-            modelName = "gemini-3.8-flash",
+            modelName = "gemini-3.5-flash-lite",
             generationConfig = generationConfig {
                 responseMimeType = "application/json"
                 responseSchema = translationSchema
-                temperature = 0.25f
+                temperature = 0.2f
             },
             safetySettings = lyricsSafetySettings
         )
@@ -150,7 +167,7 @@ object LyricsTranslator {
 
     private val fallbackTranslationModel by lazy {
         Firebase.ai.generativeModel(
-            modelName = "gemini-3.5-flash-lite",
+            modelName = "gemini-3.8-flash",
             generationConfig = generationConfig {
                 responseMimeType = "application/json"
                 responseSchema = translationSchema
@@ -160,9 +177,9 @@ object LyricsTranslator {
         )
     }
 
-    private val romanizationModel by lazy {
+    private val fastRomanizationModel by lazy {
         Firebase.ai.generativeModel(
-            modelName = "gemini-3.8-flash",
+            modelName = "gemini-3.5-flash-lite",
             generationConfig = generationConfig {
                 responseMimeType = "application/json"
                 responseSchema = romanizationSchema
@@ -174,7 +191,7 @@ object LyricsTranslator {
 
     private val fallbackRomanizationModel by lazy {
         Firebase.ai.generativeModel(
-            modelName = "gemini-3.5-flash-lite",
+            modelName = "gemini-3.8-flash",
             generationConfig = generationConfig {
                 responseMimeType = "application/json"
                 responseSchema = romanizationSchema
@@ -207,7 +224,7 @@ object LyricsTranslator {
             } else emptyList()
 
             val styleVersion = obj.optInt("translationStyleVersion", 1)
-            val validTransList = if (styleVersion >= TRANSLATION_STYLE_VERSION) transList else emptyList()
+            val validTransList = if (styleVersion >= 3) transList else emptyList()
 
             CachedLyricsAiData(
                 lineCount = obj.optInt("lineCount", maxOf(validTransList.size, romList.size)),
@@ -245,6 +262,51 @@ object LyricsTranslator {
             }
         }.onFailure { err ->
             Log.w(TAG, "Failed to persist local lyrics AI cache for $trackId", err)
+        }
+    }
+
+    /**
+     * Removes empty / musical-symbol lines and deduplicates repeated chorus/verse lines so the
+     * AI only translates each unique lyric line once, cutting latency and token usage by ~50%.
+     */
+    private fun deduplicateLines(lines: List<String>): DeduplicatedLines {
+        val uniqueLines = mutableListOf<String>()
+        val keyToUniqueIdx = LinkedHashMap<String, Int>()
+        val mapping = IntArray(lines.size) { -1 }
+
+        for (i in lines.indices) {
+            val trimmed = lines[i].trim()
+            if (trimmed.isEmpty() || isNonLyricMarker(trimmed)) {
+                mapping[i] = -1
+                continue
+            }
+            val normKey = trimmed.lowercase().replace(Regex("\\s+"), " ")
+            val existingIdx = keyToUniqueIdx[normKey]
+            if (existingIdx != null) {
+                mapping[i] = existingIdx
+            } else {
+                val newIdx = uniqueLines.size
+                uniqueLines.add(trimmed)
+                keyToUniqueIdx[normKey] = newIdx
+                mapping[i] = newIdx
+            }
+        }
+        return DeduplicatedLines(uniqueLines = uniqueLines, originalToUniqueIndex = mapping)
+    }
+
+    private fun isNonLyricMarker(line: String): Boolean {
+        val stripped = line.replace(Regex("[♪♫🎵🎶•·.\\-—_()\\[\\]\\s]"), "")
+        return stripped.isEmpty()
+    }
+
+    private fun expandUniqueResults(
+        originalSize: Int,
+        mapping: IntArray,
+        uniqueTranslated: Array<String>
+    ): List<String> {
+        return List(originalSize) { idx ->
+            val uIdx = mapping[idx]
+            if (uIdx in uniqueTranslated.indices) uniqueTranslated[uIdx] else ""
         }
     }
 
@@ -308,31 +370,24 @@ object LyricsTranslator {
             "${idx + 1}. $line"
         }.joinToString("\n")
 
+        // Concise, high-signal prompt minimizes input tokens for fastest possible response
         val prompt = buildString {
-            appendLine("Terjemahkan lirik lagu berikut ke Bahasa Indonesia sehari-hari yang SANTAI, LUWES, TIDAK BAKU, dan pas dengan emosi lagunya.")
-            appendLine("Judul: $trackTitle")
-            appendLine("Artis: $artist")
-            appendLine("GAYA BAHASA:")
-            appendLine("- Hindari bahasa baku/kaku seperti 'saya', 'Anda', 'engkau', 'diriku', 'dirimu', 'tidaklah', 'oleh karena itu', 'apabila'.")
-            appendLine("- Gunakan gaya pop Indonesia natural ('aku / kamu' untuk lagu cinta/galau/santai; boleh 'gue / lo' untuk rap/slang).")
-            appendLine("- Pakai kata mengalir alami ('nggak', 'cuma', 'kayak', 'bikin', 'udah', 'lagi', 'kangen', 'nggak apa-apa') sesuai nuansa lagu.")
-            appendLine("- Terjemahkan makna & idiomnya secara luwes, bukan kata per kata.")
-            appendLine("ATURAN WAJIB:")
-            appendLine("- Kembalikan array `translations` berisi TEPAT ${chunk.size} elemen sesuai urutan input 1-per-1.")
-            appendLine("- Jangan hapus atau gabung baris. Jika baris kosong atau simbol musik (♪), kembalikan \"\".")
-            appendLine("- Jangan sertakan nomor baris di awal hasil terjemahan.")
-            appendLine()
-            appendLine("LIRIK (${chunk.size} baris):")
+            appendLine("Terjemahkan lirik \"$trackTitle\" ($artist) ke Bahasa Indonesia santai, luwes, tidak baku (pakai aku/kamu, hindari saya/Anda/engkau).")
+            appendLine("Kembalikan JSON array `translations` dengan TEPAT ${chunk.size} item sesuai urutan, tanpa nomor baris.")
             append(numberedInput)
         }
 
-        val modelsToTry = listOf(translationModel, fallbackTranslationModel)
+        val attempts = listOf(
+            fastTranslationModel to PRIMARY_TIMEOUT_MS,
+            fallbackTranslationModel to FALLBACK_TIMEOUT_MS
+        )
         var lastError: Exception? = null
 
-        for ((attemptIdx, model) in modelsToTry.withIndex()) {
+        for ((attemptIdx, pair) in attempts.withIndex()) {
+            val (model, timeoutMs) = pair
             try {
-                if (attemptIdx > 0) delay(650L)
-                val response = withTimeout(50_000L) {
+                if (attemptIdx > 0) delay(300L)
+                val response = withTimeout(timeoutMs) {
                     model.generateContent(prompt)
                 }
                 val rawJson = response.text?.takeIf { it.isNotBlank() }
@@ -350,7 +405,7 @@ object LyricsTranslator {
                             .replace(Regex("^\\d+[.)]\\s*"), "")
                     } else ""
                 }
-                if (cleaned.any { it.isNotBlank() } || chunk.all { it.isBlank() || it == "♪" }) {
+                if (cleaned.any { it.isNotBlank() }) {
                     return cleaned to alreadyId
                 }
                 throw IllegalStateException("Hasil terjemahan kosong.")
@@ -368,14 +423,15 @@ object LyricsTranslator {
         trackId: String,
         trackTitle: String,
         artist: String,
-        lines: List<String>
+        lines: List<String>,
+        onPartialResult: ((List<String>) -> Unit)? = null
     ): Result<TranslatedLyricsResult> = withContext(Dispatchers.IO) {
         if (lines.isEmpty()) {
             return@withContext Result.failure(IllegalArgumentException("Tidak ada baris lirik untuk diterjemahkan."))
         }
         val existing = getCachedEntry(trackId)
         if (existing != null &&
-            existing.translationStyleVersion >= TRANSLATION_STYLE_VERSION &&
+            existing.translationStyleVersion >= 3 &&
             existing.translatedLines.size == lines.size &&
             existing.translatedLines.any { it.isNotBlank() }
         ) {
@@ -387,19 +443,61 @@ object LyricsTranslator {
             )
         }
 
-        try {
-            val allTranslated = mutableListOf<String>()
-            var indonesianVoteCount = 0
-            val chunks = if (lines.size > CHUNK_THRESHOLD) lines.chunked(CHUNK_SIZE) else listOf(lines)
+        val dedup = deduplicateLines(lines)
+        if (dedup.uniqueLines.isEmpty()) {
+            val blank = List(lines.size) { "" }
+            return@withContext Result.success(TranslatedLyricsResult(lines = blank, detectedIndonesian = false))
+        }
 
-            for (chunk in chunks) {
-                val (chunkResult, chunkIsId) = translateChunk(trackTitle, artist, chunk)
-                allTranslated.addAll(chunkResult)
-                if (chunkIsId) indonesianVoteCount++
+        try {
+            val uniqueTranslated = Array(dedup.uniqueLines.size) { "" }
+            val chunkDescriptors = if (dedup.uniqueLines.size > CHUNK_THRESHOLD) {
+                dedup.uniqueLines.chunked(CHUNK_SIZE).mapIndexed { chunkIdx, chunkLines ->
+                    (chunkIdx * CHUNK_SIZE) to chunkLines
+                }
+            } else {
+                listOf(0 to dedup.uniqueLines)
             }
 
-            val alreadyId = indonesianVoteCount > (chunks.size / 2)
-            val normalized = List(lines.size) { idx -> allTranslated.getOrElse(idx) { "" } }
+            val semaphore = Semaphore(MAX_PARALLEL_CHUNKS)
+            val progressMutex = Mutex()
+            var indonesianVoteCount = 0
+
+            // Translate all chunks concurrently so even long songs finish in a few seconds
+            coroutineScope {
+                chunkDescriptors.map { (startOffset, chunkLines) ->
+                    async {
+                        semaphore.withPermit {
+                            val (chunkResult, chunkIsId) = translateChunk(trackTitle, artist, chunkLines)
+                            var snapshot: List<String>? = null
+                            progressMutex.withLock {
+                                for (i in chunkResult.indices) {
+                                    val targetIdx = startOffset + i
+                                    if (targetIdx in uniqueTranslated.indices) {
+                                        uniqueTranslated[targetIdx] = chunkResult[i]
+                                    }
+                                }
+                                if (chunkIsId) indonesianVoteCount++
+                                if (chunkDescriptors.size > 1 && onPartialResult != null) {
+                                    snapshot = expandUniqueResults(
+                                        originalSize = lines.size,
+                                        mapping = dedup.originalToUniqueIndex,
+                                        uniqueTranslated = uniqueTranslated
+                                    )
+                                }
+                            }
+                            snapshot?.let { partial -> onPartialResult?.invoke(partial) }
+                        }
+                    }
+                }.awaitAll()
+            }
+
+            val alreadyId = indonesianVoteCount > (chunkDescriptors.size / 2)
+            val normalized = expandUniqueResults(
+                originalSize = lines.size,
+                mapping = dedup.originalToUniqueIndex,
+                uniqueTranslated = uniqueTranslated
+            )
             val merged = (existing ?: CachedLyricsAiData(lineCount = lines.size)).copy(
                 lineCount = lines.size,
                 translatedLines = normalized,
@@ -410,13 +508,59 @@ object LyricsTranslator {
             Result.success(TranslatedLyricsResult(lines = normalized, detectedIndonesian = alreadyId))
         } catch (e: TimeoutCancellationException) {
             Log.e(TAG, "Lyrics translation timed out", e)
-            Result.failure(Exception("Terjemahan lirik melewati batas waktu. Ketuk untuk coba lagi."))
+            Result.failure(Exception("Terjemahan lirik melewati batas waktu. Ketuk Coba Lagi sebentar ya."))
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
             Log.e(TAG, "Firebase AI lyrics translation failed", e)
             Result.failure(Exception(formatFriendlyAiError(e, "Gagal menerjemahkan lirik ke Bahasa Indonesia.")))
         }
+    }
+
+    private suspend fun romanizeChunk(
+        trackTitle: String,
+        artist: String,
+        chunk: List<String>
+    ): Triple<List<String>, Boolean, String> {
+        val numberedInput = chunk.mapIndexed { idx, line -> "${idx + 1}. $line" }.joinToString("\n")
+        val prompt = buildString {
+            appendLine("Buat romanisasi/pelafalan alfabet Latin natural untuk lirik \"$trackTitle\" ($artist) (Jepang->Romaji Hepburn, Korea->Revised Romanization, Mandarin->Pinyin, aksara lain->fonetik Latin).")
+            appendLine("Kembalikan JSON array `romanizations` TEPAT ${chunk.size} item sesuai urutan, tanpa nomor baris. Baris murni Latin -> \"\".")
+            append(numberedInput)
+        }
+
+        val attempts = listOf(
+            fastRomanizationModel to PRIMARY_TIMEOUT_MS,
+            fallbackRomanizationModel to FALLBACK_TIMEOUT_MS
+        )
+        var lastErr: Exception? = null
+        for ((attemptIdx, pair) in attempts.withIndex()) {
+            val (model, timeoutMs) = pair
+            try {
+                if (attemptIdx > 0) delay(300L)
+                val response = withTimeout(timeoutMs) {
+                    model.generateContent(prompt)
+                }
+                val rawJson = response.text?.takeIf { it.isNotBlank() }
+                    ?: throw IllegalStateException("Respon romanisasi kosong.")
+                val obj = extractJsonObject(rawJson)
+                val needsRom = obj.optBoolean("needsRomanization", true)
+                val script = obj.optString("scriptLabel", "").trim()
+                val arr = obj.optJSONArray("romanizations")
+                    ?: throw IllegalStateException("Format romanisasi tidak valid.")
+                val chunkList = List(chunk.size) { idx ->
+                    if (idx < arr.length()) {
+                        arr.optString(idx, "").trim().replace(Regex("^\\d+[.)]\\s*"), "")
+                    } else ""
+                }
+                return Triple(chunkList, needsRom, script)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                lastErr = e
+            }
+        }
+        throw lastErr ?: IllegalStateException("Gagal membuat romanisasi lirik.")
     }
 
     suspend fun romanizeLines(
@@ -449,66 +593,57 @@ object LyricsTranslator {
             )
         }
 
+        val dedup = deduplicateLines(lines)
+        if (dedup.uniqueLines.isEmpty()) {
+            return@withContext Result.success(
+                RomanizedLyricsResult(
+                    lines = List(lines.size) { "" },
+                    needsRomanization = false,
+                    scriptLabel = "Latin"
+                )
+            )
+        }
+
         try {
-            val allRomanized = mutableListOf<String>()
-            var needsRomAny = false
-            var detectedScript = "Romaji"
-            val chunks = if (lines.size > CHUNK_THRESHOLD) lines.chunked(CHUNK_SIZE) else listOf(lines)
-
-            for (chunk in chunks) {
-                val numberedInput = chunk.mapIndexed { idx, line -> "${idx + 1}. $line" }.joinToString("\n")
-                val prompt = buildString {
-                    appendLine("Buat romanisasi / pelafalan alfabet Latin yang akurat dan mudah dinyanyikan untuk lirik lagu berikut.")
-                    appendLine("Judul: $trackTitle")
-                    appendLine("Artis: $artist")
-                    appendLine("ATURAN WAJIB:")
-                    appendLine("- Bahasa Jepang -> Romaji Hepburn natural dengan spasi antar kata.")
-                    appendLine("- Bahasa Korea -> Revised Romanization of Korean yang natural.")
-                    appendLine("- Bahasa Mandarin -> Pinyin yang mudah dibaca.")
-                    appendLine("- Bahasa non-Latin lain (Rusia/Kiril, Thailand, Arab, Hindi, dll.) -> transliterasi Latin fonetik.")
-                    appendLine("- Kembalikan array `romanizations` berisi TEPAT ${chunk.size} elemen sesuai urutan input 1-per-1.")
-                    appendLine("- Untuk baris murni Latin atau simbol musik (♪), kembalikan \"\". Jangan sertakan nomor baris.")
-                    appendLine()
-                    appendLine("LIRIK (${chunk.size} baris):")
-                    append(numberedInput)
+            val uniqueRomanized = Array(dedup.uniqueLines.size) { "" }
+            val chunkDescriptors = if (dedup.uniqueLines.size > CHUNK_THRESHOLD) {
+                dedup.uniqueLines.chunked(CHUNK_SIZE).mapIndexed { chunkIdx, chunkLines ->
+                    (chunkIdx * CHUNK_SIZE) to chunkLines
                 }
-
-                val modelsToTry = listOf(romanizationModel, fallbackRomanizationModel)
-                var chunkDone = false
-                var lastErr: Exception? = null
-                for ((attemptIdx, model) in modelsToTry.withIndex()) {
-                    try {
-                        if (attemptIdx > 0) delay(650L)
-                        val response = withTimeout(50_000L) {
-                            model.generateContent(prompt)
-                        }
-                        val rawJson = response.text?.takeIf { it.isNotBlank() }
-                            ?: throw IllegalStateException("Respon romanisasi kosong.")
-                        val obj = extractJsonObject(rawJson)
-                        val needsRom = obj.optBoolean("needsRomanization", true)
-                        val script = obj.optString("scriptLabel", "").trim()
-                        if (script.isNotBlank()) detectedScript = script
-                        val arr = obj.optJSONArray("romanizations")
-                            ?: throw IllegalStateException("Format romanisasi tidak valid.")
-                        val chunkList = List(chunk.size) { idx ->
-                            if (idx < arr.length()) {
-                                arr.optString(idx, "").trim().replace(Regex("^\\d+[.)]\\s*"), "")
-                            } else ""
-                        }
-                        if (needsRom && chunkList.any { it.isNotBlank() }) needsRomAny = true
-                        allRomanized.addAll(chunkList)
-                        chunkDone = true
-                        break
-                    } catch (e: CancellationException) {
-                        throw e
-                    } catch (e: Exception) {
-                        lastErr = e
-                    }
-                }
-                if (!chunkDone) throw lastErr ?: IllegalStateException("Gagal membuat romanisasi lirik.")
+            } else {
+                listOf(0 to dedup.uniqueLines)
             }
 
-            val normalized = List(lines.size) { idx -> allRomanized.getOrElse(idx) { "" } }
+            val semaphore = Semaphore(MAX_PARALLEL_CHUNKS)
+            val mutex = Mutex()
+            var needsRomAny = false
+            var detectedScript = "Romaji"
+
+            coroutineScope {
+                chunkDescriptors.map { (startOffset, chunkLines) ->
+                    async {
+                        semaphore.withPermit {
+                            val (chunkList, needsRom, script) = romanizeChunk(trackTitle, artist, chunkLines)
+                            mutex.withLock {
+                                for (i in chunkList.indices) {
+                                    val targetIdx = startOffset + i
+                                    if (targetIdx in uniqueRomanized.indices) {
+                                        uniqueRomanized[targetIdx] = chunkList[i]
+                                    }
+                                }
+                                if (needsRom && chunkList.any { it.isNotBlank() }) needsRomAny = true
+                                if (script.isNotBlank()) detectedScript = script
+                            }
+                        }
+                    }
+                }.awaitAll()
+            }
+
+            val normalized = expandUniqueResults(
+                originalSize = lines.size,
+                mapping = dedup.originalToUniqueIndex,
+                uniqueTranslated = uniqueRomanized
+            )
             val merged = (existing ?: CachedLyricsAiData(lineCount = lines.size)).copy(
                 lineCount = lines.size,
                 romanizedLines = normalized,

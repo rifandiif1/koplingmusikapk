@@ -20,6 +20,7 @@ import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -36,6 +37,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -44,11 +46,15 @@ import androidx.compose.material.icons.rounded.Close
 import androidx.compose.material.icons.rounded.Equalizer
 import androidx.compose.material.icons.rounded.Favorite
 import androidx.compose.material.icons.rounded.FavoriteBorder
+import androidx.compose.material.icons.rounded.FormatListBulleted
 import androidx.compose.material.icons.rounded.GraphicEq
+import androidx.compose.material.icons.rounded.Lyrics
 import androidx.compose.material.icons.rounded.Pause
 import androidx.compose.material.icons.rounded.PlayArrow
 import androidx.compose.material.icons.rounded.SkipNext
 import androidx.compose.material.icons.rounded.SkipPrevious
+import androidx.compose.material.icons.rounded.Translate
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -97,14 +103,15 @@ import kotlin.math.sin
 enum class StandByVisualizerStyle(val label: String) {
     NEON_SPECTRUM("Spektrum Neon"),
     OSCILLOSCOPE("Osiloskop"),
-    LIGHT_RING("Cincin Cahaya")
+    LIGHT_RING("Cincin Cahaya"),
+    FULLSCREEN_LYRICS("Lirik Penuh")
 }
 
 /**
- * Full-Screen Desk / Bedside StandBy Clock & Aesthetic Audio Visualizer Overlay.
+ * Full-Screen Desk / Bedside StandBy Clock, Aesthetic Audio Visualizer, & Full-Screen Lyrics Overlay.
  * Features a giant OLED digital clock, live synced lyrics, 3 selectable audio visualizer modes
- * (Neon Spectrum, Oscilloscope Wave, Aurora Light Ring), keep-screen-on support, and
- * adaptive Portrait + Landscape layouts with auto-hiding HUD controls.
+ * (Neon Spectrum, Oscilloscope Wave, Aurora Light Ring), a dedicated Full-Screen Lyrics mode
+ * with bounded auto-sizing typography, keep-screen-on support, and adaptive Portrait + Landscape layouts.
  */
 @Composable
 fun StandByVisualizerOverlay(
@@ -116,6 +123,7 @@ fun StandByVisualizerOverlay(
     onPrevious: () -> Unit,
     onNext: () -> Unit,
     onToggleLike: () -> Unit,
+    onToggleTranslation: () -> Unit = {},
     onExitStandBy: () -> Unit
 ) {
     val track = playerState.currentTrack ?: return
@@ -132,6 +140,7 @@ fun StandByVisualizerOverlay(
     }
 
     var visualizerStyle by remember { mutableStateOf(StandByVisualizerStyle.NEON_SPECTRUM) }
+    var fullLyricsListMode by remember { mutableStateOf(false) }
     var showHud by remember { mutableStateOf(true) }
     var hudInteractionTick by remember { mutableLongStateOf(0L) }
 
@@ -217,7 +226,20 @@ fun StandByVisualizerOverlay(
     ) {
         val isLandscape = maxWidth > maxHeight && maxWidth >= 560.dp
 
-        if (isLandscape) {
+        if (visualizerStyle == StandByVisualizerStyle.FULLSCREEN_LYRICS) {
+            StandByFullScreenLyricsStage(
+                track = track,
+                playerState = playerState,
+                clockTime = clockTime,
+                accentPrimary = accentPrimary,
+                isLandscape = isLandscape,
+                isListMode = fullLyricsListMode,
+                onSeekToLine = { tsMs ->
+                    hudInteractionTick++
+                    onSeek(tsMs)
+                }
+            )
+        } else if (isLandscape) {
             // ---- LANDSCAPE DESK / BEDSIDE STANDBY LAYOUT ----
             Row(
                 modifier = Modifier
@@ -424,15 +446,21 @@ fun StandByVisualizerOverlay(
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.SpaceBetween
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
             ) {
-                Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                Row(
+                    modifier = Modifier
+                        .weight(1f)
+                        .horizontalScroll(rememberScrollState()),
+                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
                     StandByVisualizerStyle.entries.forEach { style ->
                         val selected = visualizerStyle == style
                         val icon = when (style) {
                             StandByVisualizerStyle.NEON_SPECTRUM -> Icons.Rounded.Equalizer
                             StandByVisualizerStyle.OSCILLOSCOPE -> Icons.Rounded.GraphicEq
                             StandByVisualizerStyle.LIGHT_RING -> Icons.Rounded.AutoAwesome
+                            StandByVisualizerStyle.FULLSCREEN_LYRICS -> Icons.Rounded.Lyrics
                         }
                         Surface(
                             onClick = {
@@ -448,7 +476,7 @@ fun StandByVisualizerOverlay(
                             modifier = Modifier.testTag("standby_style_${style.name.lowercase()}")
                         ) {
                             Row(
-                                modifier = Modifier.padding(horizontal = 11.dp, vertical = 7.dp),
+                                modifier = Modifier.padding(horizontal = 11.dp, vertical = 8.dp),
                                 verticalAlignment = Alignment.CenterVertically,
                                 horizontalArrangement = Arrangement.spacedBy(5.dp)
                             ) {
@@ -461,7 +489,8 @@ fun StandByVisualizerOverlay(
                                 Text(
                                     text = style.label,
                                     style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold),
-                                    color = if (selected) Color(0xFF0A0A0D) else Color.White
+                                    color = if (selected) Color(0xFF0A0A0D) else Color.White,
+                                    maxLines = 1
                                 )
                             }
                         }
@@ -473,7 +502,7 @@ fun StandByVisualizerOverlay(
                     shape = CircleShape,
                     color = Color.White.copy(alpha = 0.14f),
                     modifier = Modifier
-                        .size(40.dp)
+                        .size(44.dp)
                         .testTag("exit_standby_button")
                 ) {
                     Box(contentAlignment = Alignment.Center) {
@@ -524,6 +553,91 @@ fun StandByVisualizerOverlay(
                         },
                         modifier = Modifier.fillMaxWidth()
                     )
+                    if (visualizerStyle == StandByVisualizerStyle.FULLSCREEN_LYRICS) {
+                        val lyricsState = playerState.lyricsState
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(bottom = 2.dp),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.CenterHorizontally),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Surface(
+                                onClick = {
+                                    hudInteractionTick++
+                                    onToggleTranslation()
+                                },
+                                shape = RoundedCornerShape(50),
+                                color = if (lyricsState.showTranslation) neonGlow.copy(alpha = 0.24f) else Color.White.copy(alpha = 0.08f),
+                                border = BorderStroke(
+                                    0.8.dp,
+                                    if (lyricsState.showTranslation) neonGlow else Color.White.copy(alpha = 0.16f)
+                                ),
+                                modifier = Modifier.testTag("standby_lyrics_translate_chip")
+                            ) {
+                                Row(
+                                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                                ) {
+                                    if (lyricsState.isTranslating) {
+                                        CircularProgressIndicator(
+                                            color = neonGlow,
+                                            strokeWidth = 1.8.dp,
+                                            modifier = Modifier.size(13.dp)
+                                        )
+                                    } else {
+                                        Icon(
+                                            imageVector = Icons.Rounded.Translate,
+                                            contentDescription = null,
+                                            tint = if (lyricsState.showTranslation) neonGlow else Color.White,
+                                            modifier = Modifier.size(14.dp)
+                                        )
+                                    }
+                                    Text(
+                                        text = if (lyricsState.isTranslating) "Menerjemahkan..." else "Terjemahan ID",
+                                        style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.SemiBold),
+                                        color = if (lyricsState.showTranslation) neonGlow else Color.White
+                                    )
+                                }
+                            }
+
+                            if (lyricsState.syncedLines.isNotEmpty()) {
+                                Surface(
+                                    onClick = {
+                                        hudInteractionTick++
+                                        fullLyricsListMode = !fullLyricsListMode
+                                    },
+                                    shape = RoundedCornerShape(50),
+                                    color = if (fullLyricsListMode) neonGlow.copy(alpha = 0.24f) else Color.White.copy(alpha = 0.08f),
+                                    border = BorderStroke(
+                                        0.8.dp,
+                                        if (fullLyricsListMode) neonGlow else Color.White.copy(alpha = 0.16f)
+                                    ),
+                                    modifier = Modifier.testTag("standby_lyrics_layout_chip")
+                                ) {
+                                    Row(
+                                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                                    ) {
+                                        Icon(
+                                            imageVector = if (fullLyricsListMode) Icons.Rounded.Lyrics else Icons.Rounded.FormatListBulleted,
+                                            contentDescription = null,
+                                            tint = if (fullLyricsListMode) neonGlow else Color.White,
+                                            modifier = Modifier.size(14.dp)
+                                        )
+                                        Text(
+                                            text = if (fullLyricsListMode) "Mode Fokus Besar" else "Mode Daftar Lirik",
+                                            style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.SemiBold),
+                                            color = if (fullLyricsListMode) neonGlow else Color.White
+                                        )
+                                    }
+                                }
+                            }
+                        }
+                    }
+
                     Row(
                         modifier = Modifier.fillMaxWidth(),
                         horizontalArrangement = Arrangement.SpaceEvenly,
@@ -816,6 +930,8 @@ private fun StandByVisualizerStage(
                     )
                 }
             }
+
+            StandByVisualizerStyle.FULLSCREEN_LYRICS -> Unit
         }
     }
 }

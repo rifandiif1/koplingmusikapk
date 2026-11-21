@@ -1385,6 +1385,7 @@ private fun KoplingfyAppRoot(
                             onPrevious = skipPreviousWithRoomSync,
                             onNext = skipNextWithRoomSync,
                             onToggleLike = { viewModel.toggleLike(standByTrack) },
+                            onToggleTranslation = viewModel::toggleLyricsTranslation,
                             onExitStandBy = { showStandByVisualizer = false }
                         )
                     }
