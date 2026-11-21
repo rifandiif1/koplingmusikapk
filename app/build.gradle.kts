@@ -16,8 +16,10 @@ android {
     applicationId = "com.aistudio.koplingfy.rfnxkp"
     minSdk = 24
     targetSdk = 36
-    versionCode = 1
-    versionName = "1.0"
+    val ciVersionCode = System.getenv("APP_VERSION_CODE")?.toIntOrNull()
+    val ciVersionName = System.getenv("APP_VERSION_NAME")?.trim()?.takeIf { it.isNotEmpty() }
+    versionCode = ciVersionCode ?: 1
+    versionName = ciVersionName ?: "1.0"
 
     testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
   }

@@ -189,8 +189,8 @@ object GitHubUpdateChecker {
                 }
             }
 
-            // 2. Fallback: check /releases?per_page=1 (covers pre-releases)
-            val listUrl = "https://api.github.com/repos/$validSlug/releases?per_page=1"
+            // 2. Fallback: check recent /releases?per_page=5 (covers pre-releases & Actions auto-builds)
+            val listUrl = "https://api.github.com/repos/$validSlug/releases?per_page=5"
             httpClient.newCall(buildGitHubRequest(listUrl)).execute().use { resp ->
                 val bodyStr = resp.body?.string().orEmpty()
                 when (resp.code) {
@@ -199,8 +199,16 @@ object GitHubUpdateChecker {
                         if (arr.length() == 0) {
                             return@withContext UpdateCheckResult.NoReleasesYet(validSlug)
                         }
-                        val parsed = parseReleaseJson(arr.getJSONObject(0), validSlug, currentVersionName)
-                        return@withContext UpdateCheckResult.Success(parsed)
+                        val candidates = (0 until arr.length()).mapNotNull { idx ->
+                            val obj = arr.optJSONObject(idx) ?: return@mapNotNull null
+                            if (obj.optBoolean("draft", false)) return@mapNotNull null
+                            parseReleaseJson(obj, validSlug, currentVersionName)
+                        }
+                        val best = candidates.firstOrNull { it.apkDownloadUrl != null && it.versionName.any(Char::isDigit) }
+                            ?: candidates.firstOrNull { it.apkDownloadUrl != null }
+                            ?: candidates.firstOrNull()
+                            ?: return@withContext UpdateCheckResult.NoReleasesYet(validSlug)
+                        return@withContext UpdateCheckResult.Success(best)
                     }
                     404 -> {
                         return@withContext UpdateCheckResult.NoReleasesYet(validSlug)
@@ -372,10 +380,23 @@ object GitHubUpdateChecker {
             }
         }
 
-        val isNewer = isRemoteVersionNewer(cleanVersion, currentVersionName)
+        val rawTagVersion = normalizeVersionTag(tagName)
+        val extractedVersion = if (rawTagVersion.any(Char::isDigit)) {
+            rawTagVersion
+        } else {
+            val regex = Regex("""v?(\d+(?:\.\d+)+)""")
+            regex.find(bestApkName.orEmpty())?.groupValues?.getOrNull(1)
+                ?: regex.find(releaseTitle)?.groupValues?.getOrNull(1)
+                ?: rawTagVersion
+        }
+        val isNewer = if (extractedVersion.any(Char::isDigit)) {
+            isRemoteVersionNewer(extractedVersion, currentVersionName)
+        } else {
+            bestApkUrl != null && normalizeVersionTag(currentVersionName) == "1.0"
+        }
         return GitHubReleaseInfo(
             tagName = tagName,
-            versionName = cleanVersion,
+            versionName = extractedVersion,
             releaseTitle = releaseTitle,
             changelog = changelog,
             releasePageUrl = safeReleaseUrl,
